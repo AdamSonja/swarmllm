@@ -75,3 +75,10 @@ A generated token on the 27B = ~111 ms on the GB10: **82 ms streaming 15 GB of w
 ## Open items
 - Prefill GEMM: `benchmarks/bench_gemm.js` is correct and 1.25× over the batched GEMV path; still latency-bound at ~30 GB/s. Next: register prefetch tuning, split-K for small matrices, 256-thread workgroups.
 - Register-resident `dn_delta` (see [deltanet-prefill-spec.md](deltanet-prefill-spec.md)): ~4% of a pass, bit-identical.
+- MoE expert GEMV layout (`engine/wgsl/moe.js`, engine option `moeKernel`): the expert kernels are generated from
+  `{ WG, TPR, R, U, wide, xsh }` per kernel (threads per workgroup, threads per row group, rows per group,
+  unroll, 16 B whole-block loads, input staged transposed in workgroup memory). `MOE_DEFAULT` (wide 16 B loads,
+  staged x, 16 rows per gate/up workgroup and 64 per down workgroup) is not yet timed on hardware;
+  `moeKernel: "legacy"` gives the first coop build's bits exactly. Sweep with `tests/bench/moe_kernel_sweep.js`,
+  select at runtime with `MOE_KERNEL=<preset|JSON>` (Deno tests) or a 3rd argument to `chrome_bench.mjs`.
+  Index math is checked on the CPU for ~400 layouts by `tests/unit/moe_kernels_test.js`.

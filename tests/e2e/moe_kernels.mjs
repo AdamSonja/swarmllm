@@ -1,12 +1,13 @@
 // engine/wgsl/moe.js on its own: random Q4_0 / Q8_0 experts in the engine's layout, random inputs,
 // router -> gate/up -> down -> combine on the GPU vs a float64 JavaScript reference, and every
-// column of a 4-column launch bit-identical to the same column launched alone.
-//   NODE_PATH=... node tests/e2e/moe_kernels.mjs
+// column of a 4-column launch bit-identical to the same column launched alone, for the legacy and
+// default expert-GEMV layouts and a few others (engine/wgsl/moe.js moeKernelConfig).
+//   NODE_PATH=... node tests/e2e/moe_kernels.mjs [extra moeKernel JSON]
 import { loadPlaywright, chromiumPath, GPU_ARGS, serveRepo } from "./engine_synth.mjs";
 const PORT = 18984;
 
-async function pageMain() {
-  const { moeWGSL } = await import("/engine/wgsl/moe.js");
+async function pageMain(extra) {
+  const { moeWGSL, moeKernelConfig } = await import("/engine/wgsl/moe.js");
   const { f16ToF32, f32ToF16 } = await import("/engine/gguf.js");
   const out = [], res = [];
   const check = (n, ok, d = "") => { res.push(ok); out.push(`${ok ? "PASS" : "FAIL"} ${n}${d ? "  " + d : ""}`); };
@@ -18,20 +19,28 @@ struct Frame { pos: u32, seqLen: u32, nCols: u32, snap: u32 };
 @group(0) @binding(0) var<uniform> cfg: Config;
 @group(0) @binding(1) var<uniform> frame: Frame;
 `;
-  const mod = device.createShaderModule({ code: HEAD + moeWGSL() });
-  const info = await mod.getCompilationInfo();
-  const bad = info.messages.filter((m) => m.type === "error");
-  if (bad.length) return { out: ["shader errors: " + bad.map((m) => m.lineNum + ": " + m.message).join(" | ")], ok: false };
   const U = GPUBufferUsage;
   const buf = (data, usage = U.STORAGE) => { const b = device.createBuffer({ size: Math.max(16, Math.ceil(data.byteLength / 16) * 16), usage: usage | U.COPY_DST | U.COPY_SRC }); device.queue.writeBuffer(b, 0, data); return b; };
   const empty = (bytes) => device.createBuffer({ size: Math.max(16, Math.ceil(bytes / 16) * 16), usage: U.STORAGE | U.COPY_SRC | U.COPY_DST });
   const uni = (a) => buf(new Uint32Array(a), U.UNIFORM);
   const g0 = device.createBindGroupLayout({ entries: [0, 1].map((b) => ({ binding: b, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } })) });
   const T = { u: "uniform", ro: "read-only-storage", rw: "storage" };
+  let mod;
   const pipe = (name, spec) => {
     const l1 = device.createBindGroupLayout({ entries: spec.map((t, i) => ({ binding: i, visibility: GPUShaderStage.COMPUTE, buffer: { type: T[t] } })) });
     return device.createComputePipeline({ layout: device.createPipelineLayout({ bindGroupLayouts: [g0, l1] }), compute: { module: mod, entryPoint: name } });
   };
+  const CONFIGS = [["legacy", "legacy"], ["default", undefined],
+    ["narrow", { gu: { WG: 64, TPR: 8, R: 1, U: 3, wide: true, xsh: false }, dn: { WG: 256, TPR: 16, R: 4, U: 1, wide: false, xsh: true } }],
+    ["coop-staged", { gu: { WG: 256, TPR: 32, R: 4, U: 2, wide: false, xsh: true }, dn: { WG: 64, TPR: 4, R: 4, U: 3, wide: true, xsh: false } }],
+    ...(extra ? [["extra", JSON.parse(extra)]] : [])];
+  const dim = 256, inter = 96, nExp = 16, K = 4, C = 4;
+  for (const [cname, copt] of CONFIGS) {
+  const cfg = moeKernelConfig(copt, { dim, inter });
+  mod = device.createShaderModule({ code: HEAD + moeWGSL(cfg) });
+  const info = await mod.getCompilationInfo();
+  const bad = info.messages.filter((m) => m.type === "error");
+  if (bad.length) { check(`${cname}: shader compiles`, false, bad.map((m) => m.lineNum + ": " + m.message).join(" | ")); continue; }
   const P = {
     router: pipe("moe_router", ["ro", "rw", "rw", "u"]),
     gu_q4: pipe("moe_gu_q4", ["ro", "ro", "ro", "ro", "ro", "rw", "ro", "u"]), gu_q8: pipe("moe_gu_q8", ["ro", "ro", "ro", "ro", "ro", "rw", "ro", "u"]),
@@ -61,7 +70,6 @@ struct Frame { pos: u32, seqLen: u32, nCols: u32, snap: u32 };
     };
     return { qs, sc, deq };
   };
-  const dim = 256, inter = 96, nExp = 16, K = 4, C = 4;
   for (const [gfmt, dfmt] of [["q4", "q8"], ["q8", "q4"]]) {
     const Wg = quant(gfmt, nExp * inter, dim), Wu = quant(gfmt, nExp * inter, dim), Wd = quant(dfmt, nExp * dim, inter);
     const x = Float32Array.from({ length: C * dim }, () => rnd() - 0.5);
@@ -77,8 +85,8 @@ struct Frame { pos: u32, seqLen: u32, nCols: u32, snap: u32 };
       const enc = device.createCommandEncoder(), p = enc.beginComputePass();
       const go = (pp, bufs, x, y) => { p.setPipeline(pp); p.setBindGroup(0, bg0(pp)); p.setBindGroup(1, bg1(pp, bufs)); p.dispatchWorkgroups(x, y); };
       go(P.router, [bL, bSel, bW, uni([0, 0, K, nExp, nExp, 0, 1, 0])], n, 1);
-      go(P["gu_" + gfmt], [buf(Wg.qs), buf(Wg.sc), buf(Wu.qs), buf(Wu.sc), bX, bH, bSel, uni([inter, dim, K, nExp, dim, inter, 0, 0])], Math.ceil(inter / 4), n * K);
-      go(P["dn_" + dfmt], [buf(Wd.qs), buf(Wd.sc), bH, bY, bSel, uni([dim, inter, K, nExp, inter, dim, 0, 0])], Math.ceil(dim / 4), n * K);
+      go(P["gu_" + gfmt], [buf(Wg.qs), buf(Wg.sc), buf(Wu.qs), buf(Wu.sc), bX, bH, bSel, uni([inter, dim, K, nExp, dim, inter, 0, 0])], Math.ceil(inter / cfg.gu.rows), n * K);
+      go(P["dn_" + dfmt], [buf(Wd.qs), buf(Wd.sc), bH, bY, bSel, uni([dim, inter, K, nExp, inter, dim, 0, 0])], Math.ceil(dim / cfg.dn.rows), n * K);
       go(P.combine, [bOut, bY, bW, bSh, bSg, uni([dim, 0, K, dim, dim, dim, 1, 4])], Math.ceil(dim / 64), n);
       p.end(); device.queue.submit([enc.finish()]);
       return read(bOut, n * dim);
@@ -86,7 +94,7 @@ struct Frame { pos: u32, seqLen: u32, nCols: u32, snap: u32 };
     const all = await run(0, C);
     let same = true;
     for (let c = 0; c < C; c++) { const one = await run(c, 1); for (let i = 0; i < dim; i++) if (!Object.is(one[i], all[c * dim + i])) same = false; }
-    check(`${gfmt} gate/up + ${dfmt} down: ${C} columns in one launch == one at a time (bit-identical)`, same);
+    check(`${cname} ${gfmt} gate/up + ${dfmt} down: ${C} columns in one launch == one at a time (bit-identical)`, same);
     // reference in float64
     let maxErr = 0, maxRef = 0;
     for (let c = 0; c < C; c++) {
@@ -110,7 +118,8 @@ struct Frame { pos: u32, seqLen: u32, nCols: u32, snap: u32 };
         maxErr = Math.max(maxErr, Math.abs(ref - all[c * dim + i])); maxRef = Math.max(maxRef, Math.abs(ref));
       }
     }
-    check(`${gfmt} gate/up + ${dfmt} down vs float64 reference`, maxErr / maxRef < 1e-4, `max err ${maxErr.toExponential(2)} (${(maxErr / maxRef).toExponential(1)} of max)`);
+    check(`${cname} ${gfmt} gate/up + ${dfmt} down vs float64 reference`, maxErr / maxRef < 1e-4, `max err ${maxErr.toExponential(2)} (${(maxErr / maxRef).toExponential(1)} of max)`);
+  }
   }
   check("no GPU validation errors", !errs.length, errs.slice(0, 2).join(" | "));
   return { out, ok: res.every(Boolean) };
@@ -121,7 +130,7 @@ const browser = await chromium.launch({ executablePath: chromiumPath(), args: GP
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.error("[pageerror]", String(e).slice(0, 300)));
 await page.goto(`http://127.0.0.1:${PORT}/favicon.svg`);
-const r = await page.evaluate(pageMain);
+const r = await page.evaluate(pageMain, process.argv[2] || "");
 for (const l of r.out) console.log(l);
 console.log(r.ok ? "MOE KERNELS PASS" : "MOE KERNELS FAIL");
 await browser.close(); srv.close();
