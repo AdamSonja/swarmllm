@@ -1185,6 +1185,10 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead) {
       ...(new URLSearchParams(location.search).get("fuse") === "0" ? { attnGlue: false, dnFuse: false, attnMC: false } : {}),
       // ?kv=q8: int8 KV cache (~56% of f16's memory) for long contexts; changes the numerics a little
       kvQ8: new URLSearchParams(location.search).get("kv") === "q8",
+      // ?moefuse=0: the unfused MoE FFN kernels (A/B). The fused path (the default) gives different
+      // MoE bits, so every device of a room should run the same setting; ?moednrows=1|2|4 tunes it
+      moeFuse: new URLSearchParams(location.search).get("moefuse") !== "0",
+      moeDnRows: parseInt(new URLSearchParams(location.search).get("moednrows"), 10) || 1,
     });
   } else if (M.kind === "gguf") {
     aiStatus("reading model index\u2026");

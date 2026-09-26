@@ -6,6 +6,6 @@ const srv = spawn("node", [root + "tests/bench/serve.mjs", root, "8791"], { stdi
 const b = await chromium.launch({ headless: false, args: ["--no-sandbox", "--headless=new", "--enable-unsafe-webgpu", "--use-gl=angle", "--use-angle=gl-egl", "--enable-features=Vulkan", "--ignore-gpu-blocklist", "--js-flags=--max-old-space-size=65536"] });
 const p = await b.newPage(); p.on("console", (m) => console.log("  tab:", m.text())); p.on("crash", () => console.log("TAB CRASHED"));
 const gold = GOLD[Object.keys(GOLD).find((k) => model.includes(k))] || [];
-await p.goto(`http://127.0.0.1:8791/tests/bench/bench.html?model=/${model}&tokens=${N}&gold=${encodeURIComponent(JSON.stringify(gold))}${process.argv[4] ? "&" + process.argv[4] : ""}`);
+await p.goto(`http://127.0.0.1:8791/tests/bench/bench.html?model=/${model}&tokens=${N}&gold=${encodeURIComponent(JSON.stringify(gold))}${process.argv[4] ? "&" + process.argv[4] : ""}${process.env.MOE_FUSE === "0" ? "&moefuse=0" : ""}${process.env.MOE_DN_ROWS ? "&moednrows=" + process.env.MOE_DN_ROWS : ""}`);
 await p.waitForFunction(() => window.RESULT, null, { timeout: 30 * 60e3, polling: 2000 }).catch((e) => console.log("timeout", e.message));
 await b.close(); srv.kill();
