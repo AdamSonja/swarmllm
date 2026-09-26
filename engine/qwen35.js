@@ -155,17 +155,22 @@ export class Qwen35Engine {
       const { nExp: nE, inter: ei } = this.moe;
       const q = (e) => !!e && (e.kind === "q4" || e.kind === "q8");
       const COPY = GPUBufferUsage.COPY_SRC;
-      const packable = (e) => q(e) && (e.gpu ? !!(e.gpu.qs?.usage & COPY) && !!(e.gpu.sc?.usage & COPY) : !!(e.qs && e.scales));
+      // packGU needs 4-byte aligned parts (CPU copies: an odd Q4/Q8 block count falls back to unfused)
+      const packable = (e) => q(e) && (e.gpu ? !!(e.gpu.qs?.usage & COPY) && !!(e.gpu.sc?.usage & COPY)
+        : !!(e.qs && e.scales) && e.qs.byteLength % 4 === 0 && e.scales.byteLength % 4 === 0);
       const f32 = (e, n) => !!e && e.kind === "f32" && !!e.data && e.data.length === n;
       const moeLs = [...weights.layers, ...(weights.mtp && hasHead ? [weights.mtp.layer] : [])].filter((L) => L.moe);
       const ok = (L) => f32(L.router, nE * M["qwen35.embedding_length"]) && f32(L.shRouter, M["qwen35.embedding_length"])
         && q(L.expGate) && q(L.expDown) && L.shGate && L.shUp && L.shGate.kind === L.shUp.kind && packable(L.shGate) && packable(L.shUp) && q(L.shDown);
-      if (moeLs.length && moeLs.every(ok) && inter % 32 === 0 && [1, 2, 4].includes(moeDnRows)) {
+      // moe_dnc keeps (K + 1) * R * 64 f32 partial sums in workgroup memory
+      const wgMemOK = (this.moe.K + 1) * moeDnRows * 64 * 4 <= device.limits.maxComputeWorkgroupStorageSize;
+      if (moeLs.length && moeLs.every(ok) && inter % 32 === 0 && [1, 2, 4].includes(moeDnRows) && wgMemOK) {
         this.moeFuse = true;
         this.moe.KS = this.moe.K + 1; this.moe.sDim = inter; this.moe.hs = Math.max(ei, inter); this.moe.R = moeDnRows;
         this.moe.guPairs = [...new Set(moeLs.map((L) => L.expGate.kind + "_" + L.shGate.kind))];
         this.moe.dnPairs = [...new Set(moeLs.map((L) => L.expDown.kind + "_" + L.shDown.kind))];
-      }
+      } else console.warn(`MoE: fused FFN off (unfused kernels): ${!moeLs.length ? "no MoE layers" : ![1, 2, 4].includes(moeDnRows) ? `moeDnRows ${moeDnRows} not 1, 2 or 4`
+        : !wgMemOK ? "moe_dnc workgroup memory over the device limit" : "a layer's router / shared-expert tensors are not fusable"}`);
     }
     const dState = M["qwen35.ssm.state_size"];
     const nKH = M["qwen35.ssm.group_count"];
@@ -474,7 +479,9 @@ export class Qwen35Engine {
         else (enc ||= device.createCommandEncoder()).copyBufferToBuffer(b, 0, buf, offs[i], sizes[i]);
       });
       if (enc) device.queue.submit([enc.finish()]);
-      g.qs = g.scales = u.qs = u.scales = null;   // release the CPU copies
+      // release the originals: CPU copies, or (streamed room path) the GPU buffers once the copy has run
+      for (const e of [g, u]) if (e.gpu) { e.gpu.qs.destroy(); e.gpu.sc.destroy(); e.gpu = null; }
+      g.qs = g.scales = u.qs = u.scales = null;
       return { buf, oUq: offs[1] / 4, oGs: offs[2] / 4, oUs: offs[3] / 4 };
     };
     const moeKind = (e, what) => {
