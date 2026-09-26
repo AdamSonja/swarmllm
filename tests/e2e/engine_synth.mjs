@@ -46,7 +46,11 @@ export function chromiumPath() {
   for (const p of ["/opt/pw-browsers/chromium-1194/chrome-linux/chrome"]) if (fs.existsSync(p)) return p;
   return undefined;   // playwright's own download
 }
-export const GPU_ARGS = ["--no-sandbox", "--headless=new", "--enable-unsafe-webgpu", "--use-webgpu-adapter=swiftshader", "--enable-features=Vulkan"];
+// E2E_GPU=real: the machine's GPU (as tests/bench/chrome_bench.mjs launches it) instead of SwiftShader,
+// for hosts where SwiftShader has no adapter (the GB10)
+export const GPU_ARGS = process.env.E2E_GPU === "real"
+  ? ["--no-sandbox", "--headless=new", "--enable-unsafe-webgpu", "--use-gl=angle", "--use-angle=gl-egl", "--enable-features=Vulkan", "--ignore-gpu-blocklist"]
+  : ["--no-sandbox", "--headless=new", "--enable-unsafe-webgpu", "--use-webgpu-adapter=swiftshader", "--enable-features=Vulkan"];
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png" };
 // static server for the repo root; extra: { "/__x": "/abs/file" } serves files outside it
 export function serveRepo(port, extra = {}) {
