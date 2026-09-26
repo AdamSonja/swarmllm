@@ -6,7 +6,11 @@
 // Paths are relative, "/"-separated, and may not climb out of the root ("..").
 //
 // interface: list(dir) -> [{ name, dir: bool }], read(path) -> string, write(path, text),
+//            readBytes(path) -> Uint8Array, writeBytes(path, u8), remove(path) (file or folder),
 //            exists(path) -> bool, walk() -> [path] (every file, for search)
+// watch(ws) adds onChange(fn) so the preview server hears about every write made through it.
+
+const enc = new TextEncoder(), dec = new TextDecoder();
 
 export function normPath(p) {
   const parts = [];
@@ -18,14 +22,24 @@ export function normPath(p) {
   return parts.join("/");
 }
 
+// Values are text or Uint8Array (images for the preview); each read converts as needed.
 export class MemoryWorkspace {
   constructor(files = {}) { this.files = new Map(Object.entries(files).map(([k, v]) => [normPath(k), v])); }
-  async read(p) {
+  _get(p) {
     const k = normPath(p);
     if (!this.files.has(k)) throw new Error(`no such file: ${k}`);
     return this.files.get(k);
   }
-  async write(p, text) { this.files.set(normPath(p), text); }
+  async read(p) { const v = this._get(p); return typeof v === "string" ? v : dec.decode(v); }
+  async readBytes(p) { const v = this._get(p); return typeof v === "string" ? enc.encode(v) : v; }
+  async write(p, text) { this.files.set(normPath(p), String(text)); }
+  async writeBytes(p, u8) { this.files.set(normPath(p), new Uint8Array(u8)); }
+  async remove(p) {
+    const k = normPath(p), pre = k + "/";
+    let n = 0;
+    for (const f of [...this.files.keys()]) if (f === k || f.startsWith(pre)) { this.files.delete(f); n++; }
+    if (!n) throw new Error(`no such file: ${k}`);
+  }
   async exists(p) { const k = normPath(p); return this.files.has(k) || [...this.files.keys()].some((f) => f.startsWith(k + "/")); }
   async list(dir = "") {
     const d = normPath(dir), pre = d ? d + "/" : "", seen = new Map();
@@ -50,15 +64,21 @@ export class DirWorkspace {
     for (const s of parts) h = await h.getDirectoryHandle(s, { create });
     return h;
   }
-  async read(p) {
+  async _file(p) {
     const parts = normPath(p).split("/");
-    const f = await (await this._dir(parts.slice(0, -1))).getFileHandle(parts[parts.length - 1]);
-    return (await f.getFile()).text();
+    return (await (await this._dir(parts.slice(0, -1))).getFileHandle(parts[parts.length - 1])).getFile();
   }
+  async read(p) { return (await this._file(p)).text(); }
+  async readBytes(p) { return new Uint8Array(await (await this._file(p)).arrayBuffer()); }
   async write(p, text) {
     const parts = normPath(p).split("/");
     const f = await (await this._dir(parts.slice(0, -1), true)).getFileHandle(parts[parts.length - 1], { create: true });
     const w = await f.createWritable(); await w.write(text); await w.close();
+  }
+  async writeBytes(p, u8) { return this.write(p, u8); }   // createWritable takes a BufferSource too
+  async remove(p) {
+    const parts = normPath(p).split("/");
+    await (await this._dir(parts.slice(0, -1))).removeEntry(parts[parts.length - 1], { recursive: true });
   }
   async exists(p) {
     const parts = normPath(p).split("/");
@@ -85,4 +105,18 @@ export class DirWorkspace {
     await go(this.root, "");
     return out.sort();
   }
+}
+
+// A view of ws whose writes and removes are reported to onChange listeners after they land
+// ({ path, kind: "write" | "remove" }). Reads go straight through. Watching a watched workspace
+// returns it as is, so the tools and the preview server can each call watch() safely.
+export function watch(ws) {
+  if (ws.onChange) return ws;
+  const fns = new Set(), w = Object.create(ws);
+  const emit = (path, kind) => { for (const f of [...fns]) { try { f({ path, kind }); } catch (e) { console.error(e); } } };
+  w.write = async (p, t) => { await ws.write(p, t); emit(normPath(p), "write"); };
+  w.writeBytes = async (p, u8) => { await ws.writeBytes(p, u8); emit(normPath(p), "write"); };
+  w.remove = async (p) => { await ws.remove(p); emit(normPath(p), "remove"); };
+  w.onChange = (fn) => { fns.add(fn); return () => fns.delete(fn); };
+  return w;
 }

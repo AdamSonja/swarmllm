@@ -24,7 +24,7 @@ Deno.test("list_dir, read_file, search", async () => {
   const ws = project();
   eq(await tool(ws, "list_dir").run({}), "README.md\nsrc/");
   eq(await tool(ws, "list_dir").run({ path: "src" }), "add.js\nutil/");
-  ok((await tool(ws, "read_file").run({ path: "src/add.js" })).includes("    2\t  return a - b;"));
+  ok((await tool(ws, "read_file").run({ path: "src/add.js" })).includes("2|  return a - b;"));
   eq(await tool(ws, "search").run({ pattern: "return" }), "src/add.js:2: return a - b;");
   eq(await tool(ws, "search").run({ pattern: "UPPER", ignore_case: true, path: "src/util" }), "src/util/str.js:1: export const up = (s) => s.toUpperCase();");
   ok((await tool(ws, "search").run({ pattern: "(" })).startsWith("error: bad pattern"));
@@ -33,17 +33,17 @@ Deno.test("list_dir, read_file, search", async () => {
 Deno.test("read_file pages long files", async () => {
   const ws = new MemoryWorkspace({ "big.txt": Array.from({ length: 1000 }, (_, i) => "line " + (i + 1)).join("\n") });
   const r = await tool(ws, "read_file").run({ path: "big.txt" });
-  ok(r.includes("(lines 1-400 of 1000; read on with start_line=401)"));
+  ok(r.includes("(lines 1-200 of 1000; read on with start_line=201)"));
   ok((await tool(ws, "read_file").run({ path: "big.txt", start_line: 990 })).trim().endsWith("line 1000"));
 });
 
 Deno.test("edit_file needs one exact match", async () => {
   const ws = project();
   const ed = tool(ws, "edit_file");
-  ok((await ed.run({ path: "src/add.js", old_string: "a + b", new_string: "x" })).includes("not found"));
+  ok((await ed.run({ path: "src/add.js", old: "a + b", new: "x" })).includes("not found"));
   await ws.write("dup.js", "x\nx\n");
-  ok((await ed.run({ path: "dup.js", old_string: "x", new_string: "y" })).includes("appears 2 times"));
-  eq(await ed.run({ path: "src/add.js", old_string: "a - b", new_string: "a + b" }), "edited src/add.js at line 2: -1 +1 lines");
+  ok((await ed.run({ path: "dup.js", old: "x", new: "y" })).includes("appears 2 times"));
+  eq(await ed.run({ path: "src/add.js", old_string: "a - b", new_string: "a + b" }), "edited src/add.js line 2 (1 -> 1 lines)", "old_string/new_string still accepted");
   eq(await ws.read("src/add.js"), "export function add(a, b) {\n  return a + b;\n}\n");
 });
 
@@ -71,7 +71,7 @@ Deno.test("agent: read, edit, answer", async () => {
   ok(seen[0].system.includes("<tools>") && seen[0].system.endsWith("You are Tabby."), "tools in the system prompt");
   const t1 = seen[1].turns;
   eq(t1.map((t) => t.role), ["user", "assistant", "user"]);
-  ok(t1[2].text.startsWith("<tool_response>\n    1\texport function add"), "results go back as <tool_response>");
+  ok(t1[2].text.startsWith("<tool_response>\n1|export function add"), "results go back as <tool_response>");
   ok(events.includes("tool") && events[events.length - 1] === "done");
 });
 
@@ -97,7 +97,7 @@ Deno.test("agent stops at maxSteps", async () => {
 });
 
 Deno.test("agent trims old tool outputs past its budget, oldest first, keeping the latest", async () => {
-  const big = "x".repeat(3000);
+  const big = Array(40).fill("x".repeat(74)).join("\n");   // 3,000 chars; read_file cuts single long lines
   const ws = new MemoryWorkspace({ "a.txt": big, "b.txt": big, "c.txt": big });
   const call = (f) => `<tool_call>\n<function=read_file>\n<parameter=path>\n${f}\n</parameter>\n</function>\n</tool_call>`;
   const seen = [];
