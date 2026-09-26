@@ -121,7 +121,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -179,6 +179,15 @@ export class Qwen35Engine {
     this.attnGlue = this.attnGlueOn;
     // dn_delta + dn_gatenorm in one dispatch for decode (bit-identical); engine.dnFuse = false for A/B
     this.dnFuse = dnFuse !== false;
+    // Merged projection GEMVs (docs/research/kernels-next-2026-09.md D5): at load, the DeltaNet
+    // [qkv | z] and [beta | alpha] weights and the attention [k | v] weights are row-concatenated
+    // into one matrix each (and the MoE router with the shared-expert gate), so one GEMV launch
+    // replaces two. Every row keeps its kernel, its reduction order and its full/tail branch, so
+    // the output is bit-identical (see _fuseW). The per-tensor ops still exist over the same
+    // memory: engine.fuseProj = false switches back at runtime for A/B; fuseProj: false at create
+    // keeps the old separate buffers entirely. Only for the coop GEMV ladder.
+    this.fuseProjOn = fuseProj !== false && matvecVariant === "coop";
+    this.fuseProj = this.fuseProjOn;
     // batched attention for verify / prefill passes (one dispatch per stage for all columns instead
     // of three per column; bit-identical, needs the workgroup softmax). engine.attnMC = false for A/B.
     this.attnMCOn = attnMC !== false && this.softmaxWG;
@@ -331,11 +340,23 @@ export class Qwen35Engine {
     this.g = device.createBuffer({ size: inter * 4, usage: S });
     this.u = device.createBuffer({ size: inter * 4, usage: S });
     // delta-net
-    this.qkv = device.createBuffer({ size: convDim * 4, usage: S });
+    // fuseProj: the outputs of a merged GEMV share one buffer; each tensor is a 256-byte aligned
+    // view of it (segment starts padded to 64 rows), bound exactly like the old buffer
+    const segBufs = (sizes) => {   // sizes: [rows, view bytes] per segment -> views of one buffer
+      const offs = Qwen35Engine._segOffs(sizes.map(([r]) => r));
+      const buf = device.createBuffer({ size: Math.max(...sizes.map(([, b], i) => offs[i] * 4 + b)), usage: S });
+      return sizes.map(([, b], i) => Qwen35Engine._view(buf, offs[i] * 4, b));
+    };
+    if (this.fuseProjOn) {
+      [this.qkv, this.z] = segBufs([[convDim, convDim * 4], [dInner, dInner * 4]]);
+      [this.betaRaw, this.alpha] = segBufs([[nVH, 64 * 4], [nVH, 64 * 4]]);
+    } else {
+      this.qkv = device.createBuffer({ size: convDim * 4, usage: S });
+      this.z = device.createBuffer({ size: dInner * 4, usage: S });
+      this.alpha = device.createBuffer({ size: 64 * 4, usage: S });
+      this.betaRaw = device.createBuffer({ size: 64 * 4, usage: S });
+    }
     this.convOut = device.createBuffer({ size: convDim * 4, usage: S });
-    this.z = device.createBuffer({ size: dInner * 4, usage: S });
-    this.alpha = device.createBuffer({ size: 64 * 4, usage: S });
-    this.betaRaw = device.createBuffer({ size: 64 * 4, usage: S });
     this.beta = device.createBuffer({ size: 64 * 4, usage: S });
     this.decay = device.createBuffer({ size: 64 * 4, usage: S });
     this.dOut = device.createBuffer({ size: dInner * 4, usage: S });
@@ -344,8 +365,13 @@ export class Qwen35Engine {
     this.qFull = device.createBuffer({ size: nH * hd * 2 * 4, usage: S });
     this.q = device.createBuffer({ size: qDim * 4, usage: S });
     this.gAttn = device.createBuffer({ size: qDim * 4, usage: S });
-    this.k = device.createBuffer({ size: kvDim * 4, usage: S });
-    this.v = device.createBuffer({ size: kvDim * 4, usage: S });
+    // k and v share a buffer under fuseProj; q stays apart: attn_glue reads qFull read-only while
+    // it rewrites k, and one dispatch cannot bind a buffer both read-only and writable
+    if (this.fuseProjOn) [this.k, this.v] = segBufs([[kvDim, kvDim * 4], [kvDim, kvDim * 4]]);
+    else {
+      this.k = device.createBuffer({ size: kvDim * 4, usage: S });
+      this.v = device.createBuffer({ size: kvDim * 4, usage: S });
+    }
     this.attnOut = device.createBuffer({ size: qDim * 4, usage: S });
     this.scores = device.createBuffer({ size: (this.flash ? 1 : nH * maxSeq) * 4, usage: S });
     if (this.flash) {   // split partials for every batch column (column 0 doubles as the decode's)
@@ -362,7 +388,7 @@ export class Qwen35Engine {
       if (e2.gpu) return e2.gpu;          // already streamed onto the GPU during download
       let r;
       if (e2.kind === "q8" || e2.kind === "q4")
-        r = { kind: e2.kind, qs: this._buf(e2.qs, GPUBufferUsage.STORAGE), sc: this._buf(e2.scales, GPUBufferUsage.STORAGE) };
+        r = { kind: e2.kind, qs: this._buf(e2.qs, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC), sc: this._buf(e2.scales, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC) };
       else r = { kind: "f32", buf: this._buf(e2.data, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC) };
       e2.qs = e2.scales = e2.data = null; // release CPU copy once it lives on the GPU
       return r;
@@ -397,14 +423,29 @@ export class Qwen35Engine {
     this.layers = [];
     if (this.moe) {   // one token's routing and expert activations
       const { nExp, K, inter: ei } = this.moe;
-      this.moeB = { logits: device.createBuffer({ size: nExp * 4, usage: S }), sel: device.createBuffer({ size: 16 * 4, usage: S }),
+      // fuseProj: router logits and the shared-expert gate come out of one GEMV (one buffer)
+      const [logits, sg] = this.fuseProjOn ? segBufs([[nExp, nExp * 4], [1, 16]])
+        : [device.createBuffer({ size: nExp * 4, usage: S }), device.createBuffer({ size: 16, usage: S })];
+      this.moeB = { logits, sel: device.createBuffer({ size: 16 * 4, usage: S }),
         selw: device.createBuffer({ size: 16 * 4, usage: S }), h: device.createBuffer({ size: K * ei * 4, usage: S }),
-        y: device.createBuffer({ size: K * dim * 4, usage: S }), sh: device.createBuffer({ size: dim * 4, usage: S }),
-        sg: device.createBuffer({ size: 16, usage: S }) };
+        y: device.createBuffer({ size: K * dim * 4, usage: S }), sh: device.createBuffer({ size: dim * 4, usage: S }), sg };
     }
     const moeKind = (e, what) => {
       if (e.kind !== "q4" && e.kind !== "q8") throw new Error(`MoE ${what} weights must be Q4_0 or Q8_0 (got ${e.kind})`);
       return e.kind;
+    };
+    // fuseProj: row-concatenate same-format weights (see _fuseW); R.<name> become views into the
+    // merged matrix, and the merged op is built only if the decode kernel's row grouping keeps
+    // every original row in the same full/tail branch
+    // engine.fuseStats: how many groups were merged / left apart (a quick check for validators)
+    this.fuseStats = { merged: 0, apart: 0, decodeOps: 0 };
+    const fuse = (parts, dIn) => {
+      if (!this.fuseProjOn) return null;
+      const m = this._fuseW(parts.map(([src, w, rows]) => ({ src, w, rows })), dIn);
+      this.fuseStats[m ? "merged" : "apart"]++;
+      const decodeOK = !!m && Qwen35Engine._rowsKeep(parts.map((p) => p[2]), this.coopRows);
+      if (decodeOK) this.fuseStats.decodeOps++;
+      return m && { ...m, decodeOK };
     };
     const buildLayer = (L) => {
       const R = { isFull: L.isFull };
@@ -433,6 +474,13 @@ export class Qwen35Engine {
           R.mvUp = mv(R.ffnUp, this.xn, this.u, inter, dim);
           R.gu = guOp(R.ffnGate, R.ffnUp, this.xn, this.g, inter, dim);
           R.mvShDown = mv(R.ffnDown, this.g, MB.sh, dim, inter);
+          const f = fuse([[L.router, R.router, nExp], [L.shRouter, R.shRouter, 1]], dim);
+          if (f) {
+            [R.router, R.shRouter] = f.parts;
+            R.fRS = f;
+            R.mvRouter = mv(R.router, this.xn, MB.logits, nExp, dim);
+            if (f.decodeOK) R.mvRS = mv(f.w, this.xn, MB.logits.buffer, f.rows, dim);
+          }
           R.mvShRouter = mv(R.shRouter, this.xn, MB.sg, 1, dim);
         }
         R.bgMoeCombine = this._bg(this.pipes.moe_combine, 1, [this.x, MB.y, MB.selw, MB.sh, MB.sg, U([dim, 0, K, dim, dim, dim, R.shared ? 1 : 0, 1])]);
@@ -452,6 +500,12 @@ export class Qwen35Engine {
         if (this.kvQ8) {
           R.kScale = device.createBuffer({ size: maxSeq * kvDim / 32 * 4, usage: S });
           R.vScale = device.createBuffer({ size: maxSeq * kvDim / 32 * 4, usage: S });
+        }
+        const f = fuse([[L.wk, R.wk, kvDim], [L.wv, R.wv, kvDim]], dim);
+        if (f) {
+          [R.wk, R.wv] = f.parts;
+          R.fKV = f;
+          if (f.decodeOK) R.mvKV = mv(f.w, this.xn, this.k.buffer, f.rows, dim);
         }
         R.mvQ = mv(R.wq, this.xn, this.qFull, nH * hd * 2, dim);
         R.mvK = mv(R.wk, this.xn, this.k, kvDim, dim);
@@ -485,6 +539,18 @@ export class Qwen35Engine {
         R.ssmNorm = this._buf(L.ssmNorm.data, GPUBufferUsage.STORAGE);
         R.convState = device.createBuffer({ size: convDim * 3 * 4, usage: S });
         R.S = device.createBuffer({ size: nVH * dState * dState * 4, usage: S });
+        const fqz = fuse([[L.wqkv, R.wqkv, convDim], [L.wz, R.wz, dInner]], dim);
+        if (fqz) {
+          [R.wqkv, R.wz] = fqz.parts;
+          R.fQZ = fqz;
+          if (fqz.decodeOK) R.mvQZ = mv(fqz.w, this.xn, this.qkv.buffer, fqz.rows, dim);
+        }
+        const fba = fuse([[L.wBeta, R.wBeta, nVH], [L.wAlpha, R.wAlpha, nVH]], dim);
+        if (fba) {
+          [R.wBeta, R.wAlpha] = fba.parts;
+          R.fBA = fba;
+          if (fba.decodeOK) R.mvBA = mv(fba.w, this.xn, this.betaRaw.buffer, fba.rows, dim);
+        }
         R.mvQKV = mv(R.wqkv, this.xn, this.qkv, convDim, dim);
         R.mvZ = mv(R.wz, this.xn, this.z, dInner, dim);
         R.mvBeta = mv(R.wBeta, this.xn, this.betaRaw, nVH, dim);
@@ -622,8 +688,65 @@ export class Qwen35Engine {
   _bg(pipe, group, buffers) {
     return this.device.createBindGroup({
       layout: pipe.getBindGroupLayout(group),
-      entries: buffers.map((b, i) => ({ binding: i, resource: { buffer: b } })),
+      entries: buffers.map((b, i) => ({ binding: i, resource: Qwen35Engine._res(b) })),
     });
+  }
+  // ---- fuseProj: merged projection GEMVs ----
+  // A view is a 256-byte aligned range of a buffer that binds like a buffer of its own.
+  static _view(buffer, offset, size) { return { __view: true, buffer, offset, size }; }
+  static _res(b) { return b && b.__view ? { buffer: b.buffer, offset: b.offset, size: b.size } : { buffer: b }; }
+  // Row offsets of concatenated segments: every segment but the first starts on a multiple of 64
+  // rows, so each segment's weights (Q4/Q8 rows are dIn/2 or dIn bytes plus dIn/16 bytes of f16
+  // scales; f32 rows dIn*4) and its f32 outputs start 256-byte aligned for dIn % 64 == 0.
+  static _segOffs(rows) {
+    const offs = [];
+    let o = 0;
+    for (const r of rows) { offs.push(o); o = Math.ceil((o + r) / 64) * 64; }
+    return offs;
+  }
+  // true if a GEMV with R rows per workgroup puts every row of every segment in the same position
+  // of the same kind of workgroup (all-rows-live "full" branch vs the guarded tail branch) as it
+  // had in its own GEMV: segments start on multiples of R, and only the last one may end in a
+  // partial group (which stays the matrix's last group). The row's arithmetic never depends on R.
+  static _rowsKeep(rows, R) {
+    const offs = Qwen35Engine._segOffs(rows);
+    return offs.every((o) => o % R === 0) && rows.slice(0, -1).every((r) => r % R === 0);
+  }
+  // Row-concatenate GPU weight entries of one format and input width into one matrix (segment
+  // starts from _segOffs, the padding rows stay zero). parts: [{ src: the loader's weight entry,
+  // w: its GPU entry, rows }]. Returns { w: merged entry, parts: per-part view entries, rows, offs }
+  // or null when the formats differ or a source cannot be copied; the caller then keeps the
+  // separate tensors. The old buffers are released and each loader entry's .gpu now points at
+  // its view, so a second engine built from the same weights still finds them.
+  _fuseW(parts, dIn) {
+    const kind = parts[0].w?.kind;
+    if (!["q4", "q8", "f32"].includes(kind) || !parts.every((p) => p.w && p.w.kind === kind) || dIn % 64) return null;
+    const rb = kind === "q4" ? [dIn / 2, dIn / 16] : kind === "q8" ? [dIn, dIn / 16] : [dIn * 4];   // bytes per row
+    const srcs = (w) => kind === "f32" ? [w.buf] : [w.qs, w.sc];
+    const whole = (b) => b.__view ? b : { buffer: b, offset: 0, size: b.size };
+    for (const p of parts) {
+      const ss = srcs(p.w);
+      if (ss.some((b, j) => { const r = whole(b); return !r.buffer || r.size < p.rows * rb[j] || r.offset % 4 || !(r.buffer.usage & GPUBufferUsage.COPY_SRC); })) return null;
+    }
+    const offs = Qwen35Engine._segOffs(parts.map((p) => p.rows));
+    const rows = offs[offs.length - 1] + parts[parts.length - 1].rows;
+    const lim = this.device.limits;
+    if (rb.some((x) => rows * x > lim.maxStorageBufferBindingSize || rows * x > lim.maxBufferSize)) return null;
+    const U = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+    const dst = rb.map((x) => this.device.createBuffer({ size: Math.ceil(rows * x / 4) * 4, usage: U }));
+    const enc = this.device.createCommandEncoder();
+    parts.forEach((p, i) => srcs(p.w).forEach((b, j) => {
+      const r = whole(b);
+      enc.copyBufferToBuffer(r.buffer, r.offset, dst[j], offs[i] * rb[j], p.rows * rb[j]);
+    }));
+    this.device.queue.submit([enc.finish()]);
+    const entry = (bs) => kind === "f32" ? { kind, buf: bs[0] } : { kind, qs: bs[0], sc: bs[1] };
+    const views = parts.map((p, i) => entry(rb.map((x, j) => Qwen35Engine._view(dst[j], offs[i] * x, p.rows * x))));
+    parts.forEach((p, i) => {
+      for (const b of srcs(p.w)) if (!b.__view) b.destroy();   // freed once the copy above has run
+      if (p.src && typeof p.src === "object") p.src.gpu = views[i];
+    });
+    return { w: entry(dst), parts: views, rows, offs, lens: parts.map((p) => p.rows) };
   }
   _bg2(pipe, resources) {
     return this.device.createBindGroup({
@@ -642,7 +765,7 @@ export class Qwen35Engine {
     if (this.skip && this.skip.has(op.pipe)) return;
     // full-width prefill passes go through the row-stationary GEMM; anything
     // narrower (decode, speculative verify, prompt tail) uses the GEMV ladder
-    if (op.gemm && nCols === this.NC && this.gemm !== false && !(op.gemm.q8 && this.gemm8 === false)) {
+    if (this._gemmAt(op, nCols)) {
       const g = op.gemm, z = (this._gz ^= 1);
       this._d3(pass, g.pipe, g.bg[z], g.wgs);
       this._d3(pass, g.red, g.redBg[z], g.redWgs);
@@ -652,6 +775,8 @@ export class Qwen35Engine {
     const W = w <= 4 && op.pipe4 ? 4 : w <= 8 && op.pipe8 ? 8 : 0;
     this._d3(pass, W ? op[`pipe${W}`] : op.pipe, W ? op[`bg${W}`] : op.bg, W ? (op[`wgs${W}`] ?? op.wgs) : op.wgs);
   }
+  // true if _dop would run this op on the prefill GEMM at this width (mirrors the test in _dop)
+  _gemmAt(op, nCols) { return !!(op && op.gemm && nCols === this.NC && this.gemm !== false && !(op.gemm.q8 && this.gemm8 === false)); }
   // rows per workgroup for a W-column batched kernel; mirrors rowsFor() in coop.js
   _rowsFor(W) { return Math.max(1, Math.min(8, Math.round(this.coopRowsB * this.NC / W))); }
   _d3(pass, pipe, bg, wgs) {
@@ -680,8 +805,8 @@ export class Qwen35Engine {
         const p = enc.beginComputePass();
         this._d(p, "rmsnorm", L.bgNorm1, 256, 256);
         this._dop(p, L.mvQ);
-        this._dop(p, L.mvK);
-        this._dop(p, L.mvV);
+        if (this.fuseProj && L.mvKV) this._dop(p, L.mvKV);
+        else { this._dop(p, L.mvK); this._dop(p, L.mvV); }
         if (this.attnGlue) this._d(p, "attn_glue", L.bgGlue, (D.nH + D.nKV) * 64);
         else {
           this._d(p, "qsplit", L.bgQsplit, D.nH * D.hd);
@@ -693,8 +818,9 @@ export class Qwen35Engine {
         p.end();
       }
       if (!this.flash) {
-        enc.copyBufferToBuffer(this.k, 0, L.kCache, pos * D.kvDim * 4, D.kvDim * 4);
-        enc.copyBufferToBuffer(this.v, 0, L.vCache, pos * D.kvDim * 4, D.kvDim * 4);
+        const k = Qwen35Engine._res(this.k), v = Qwen35Engine._res(this.v);
+        enc.copyBufferToBuffer(k.buffer, k.offset || 0, L.kCache, pos * D.kvDim * 4, D.kvDim * 4);
+        enc.copyBufferToBuffer(v.buffer, v.offset || 0, L.vCache, pos * D.kvDim * 4, D.kvDim * 4);
       }
       {
         const p = enc.beginComputePass();
@@ -716,10 +842,10 @@ export class Qwen35Engine {
     } else {
       const p = enc.beginComputePass();
       this._d(p, "rmsnorm", L.bgNorm1, 256, 256);
-      this._dop(p, L.mvQKV);
-      this._dop(p, L.mvZ);
-      this._dop(p, L.mvBeta);
-      this._dop(p, L.mvAlpha);
+      if (this.fuseProj && L.mvQZ) this._dop(p, L.mvQZ);
+      else { this._dop(p, L.mvQKV); this._dop(p, L.mvZ); }
+      if (this.fuseProj && L.mvBA) this._dop(p, L.mvBA);
+      else { this._dop(p, L.mvBeta); this._dop(p, L.mvAlpha); }
       this._d(p, "dn_conv", L.bgConv, D.convDim);
       this._d(p, "dn_pre", L.bgPre, 128, 128);      // gates + L2(q,k) fused
       if (this.dnFuse) this._d(p, "dn_delta_gn", L.bgDeltaGn, D.nVH * 128, 128);
@@ -741,7 +867,8 @@ export class Qwen35Engine {
     this._d(p, "rmsnorm", L.bgNorm2, 256, 256);
     if (L.moe) {
       const { K, inter: ei } = this.moe;
-      this._dop(p, L.mvRouter);
+      const rs = this.fuseProj && L.mvRS;   // router + shared-expert gate in one GEMV
+      this._dop(p, rs || L.mvRouter);
       this._dxyz(p, "moe_router", L.bgRouter, 1, 1, 1);
       this._dxyz(p, L.guPipe, L.bgGu, Math.ceil(ei / 4), K, 1);
       this._dxyz(p, L.dnPipe, L.bgDn, Math.ceil(D.dim / 4), K, 1);
@@ -749,7 +876,7 @@ export class Qwen35Engine {
         if (L.gu) this._dop(p, L.gu);
         else { this._dop(p, L.mvGate); this._dop(p, L.mvUp); this._d(p, "silu_mul", this.bgSilu, D.inter); }
         this._dop(p, L.mvShDown);
-        this._dop(p, L.mvShRouter);
+        if (!rs) this._dop(p, L.mvShRouter);
       }
       this._dxyz(p, "moe_combine", L.bgMoeCombine, Math.ceil(D.dim / 64), 1, 1);
       p.end();
@@ -847,14 +974,30 @@ export class Qwen35Engine {
     const NC = this.NC, cix = Array.from({ length: NC }, (_, c) => c);
     const al = (n) => Math.ceil(n * 4 / 256) * 256;
     const mkB = (n) => ({ buf: dev.createBuffer({ size: NC * al(n), usage: S }), stride: al(n), n });
+    // fuseProj: a merged GEMV writes the column-major [seg0 | seg1] rows of one buffer; each
+    // segment is { buf, stride, n, off } (off: its 256-byte aligned start inside every column)
+    const segB = (rows) => {
+      const offs = Qwen35Engine._segOffs(rows), m = mkB(offs[offs.length - 1] + rows[rows.length - 1]);
+      return rows.map((n, i) => ({ buf: m.buf, stride: m.stride, n, off: offs[i] * 4 }));
+    };
+    const fz = this.fuseProjOn;
+    const [qkv, z] = fz ? segB([D.convDim, D.dInner]) : [mkB(D.convDim), mkB(D.dInner)];
+    const [betaRaw, alpha] = fz ? segB([D.nVH, D.nVH]) : [mkB(D.nVH), mkB(D.nVH)];
+    const [k, v] = fz ? segB([D.kvDim, D.kvDim]) : [mkB(D.kvDim), mkB(D.kvDim)];
+    // dn_gates_mc / dn_pre_mc index alpha, betaRaw, beta and decay with ONE column stride (s0), so
+    // beta and decay must share the merged [betaRaw | alpha] buffer's stride
+    const mkS = (n, stride) => ({ buf: dev.createBuffer({ size: NC * stride, usage: S }), stride, n });
+    const [beta, decay] = fz ? [mkS(D.nVH, alpha.stride), mkS(D.nVH, alpha.stride)] : [mkB(D.nVH), mkB(D.nVH)];
     const B = this.B = {
       x: mkB(D.dim), xn: mkB(D.dim), tmpDim: mkB(D.dim), g: mkB(D.inter), u: mkB(D.inter),
-      qkv: mkB(D.convDim), convOut: mkB(D.convDim), z: mkB(D.dInner),
-      alpha: mkB(D.nVH), betaRaw: mkB(D.nVH), beta: mkB(D.nVH), decay: mkB(D.nVH),
+      qkv, convOut: mkB(D.convDim), z,
+      alpha, betaRaw, beta, decay,
       dOut: mkB(D.dInner), gated: mkB(D.dInner),
       qFull: mkB(D.nH * D.hd * 2), q: mkB(D.qDim), gAttn: mkB(D.qDim),
-      k: mkB(D.kvDim), v: mkB(D.kvDim), attnOut: mkB(D.qDim),
+      k, v, attnOut: mkB(D.qDim),
     };
+    if (!(beta.stride === alpha.stride && decay.stride === alpha.stride && betaRaw.stride === alpha.stride))
+      throw new Error("batched DeltaNet gates: alpha, betaRaw, beta and decay must share one column stride");
     this.stageXB = dev.createBuffer({ size: NC * D.dim * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     if (this.gemmOn) {
       // column-major copies of the three activation tensors the GEMM reads, and
@@ -890,8 +1033,10 @@ export class Qwen35Engine {
     }
     // + 8 x 16 B tail: the fused speculative step (_verifyFused) reads its drafts in the same map
     this.stageLogitsN = dev.createBuffer({ size: NC * D.vocab * 4 + 128, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    const slice = (b, c) => ({ buffer: b.buf, offset: c * b.stride, size: b.n * 4 });
-    const part = (b, c, off, size) => ({ buffer: b.buf, offset: c * b.stride + off, size });
+    const slice = (b, c) => ({ buffer: b.buf, offset: c * b.stride + (b.off || 0), size: b.n * 4 });
+    const part = (b, c, off, size) => ({ buffer: b.buf, offset: c * b.stride + (b.off || 0) + off, size });
+    // a batched tensor bound from its first column on (a fuseProj segment starts at its offset)
+    const yv = (b) => b.off ? Qwen35Engine._view(b.buf, b.off, b.buf.size - b.off) : b.buf;
     this.frameBufsB = cix.map(() => dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
     const colPipes = ["rmsnorm", "head_norm", "attn_scores", "attn_softmax", "attn_softmax_wg", "attn_out",
       "silu_mul", "add_res", "rope_part", "qsplit", "sigmoid_mul",
@@ -910,7 +1055,7 @@ export class Qwen35Engine {
       const base = w.kind === "q8" ? "matvec_q8" : w.kind === "q4" ? "matvec_q4" : "matvec";
       const pipe = base + "_coop_b" + (acc ? "_acc" : "");
       const shp = this._shapeB(dOut, dIn, xB.stride / 16, yB.stride / 4);
-      const bufs = w.kind === "f32" ? [w.buf, xB.buf, yB.buf, shp] : [w.qs, w.sc, xB.buf, yB.buf, shp];
+      const bufs = w.kind === "f32" ? [w.buf, yv(xB), yv(yB), shp] : [w.qs, w.sc, yv(xB), yv(yB), shp];
       const op = { pipe, acc, wgs: Math.ceil(dOut / this._rowsFor(this.NC)), bg: this._bg(this.pipes[pipe], 1, bufs) };
       for (const W of [8, 4]) if (this.NC > W) {
         op[`pipe${W}`] = `${base}_coop_b${W}${acc ? "_acc" : ""}`;
@@ -924,7 +1069,7 @@ export class Qwen35Engine {
           q8: w.kind === "q8",
           pipe: gp, wgs: Math.ceil(dOut / GEMM_TILE) * S2,
           bg: [0, 1].map((z) => this._bg(this.pipes[gp], 1, [w.qs, w.sc, xT, this.gemmP[z], shp])),
-          red: rp, redBg: [0, 1].map((z) => this._bg(this.pipes[rp], 1, [this.gemmP[z], w.sc, w.sc, yB.buf, shp])),
+          red: rp, redBg: [0, 1].map((z) => this._bg(this.pipes[rp], 1, [this.gemmP[z], w.sc, w.sc, yv(yB), shp])),
           redWgs: Math.ceil(this.NC * dOut / 64),
         };
       }
@@ -943,7 +1088,8 @@ export class Qwen35Engine {
     this._mcU = this._mcU || {};
     if (this.moe && !B.mLogits) {   // routing + expert activations for every column
       const { nExp, K, inter: ei } = this.moe;
-      Object.assign(B, { mLogits: mkB(nExp), mSh: mkB(D.dim), mSg: mkB(1),
+      const [mLogits, mSg] = this.fuseProjOn ? segB([nExp, 1]) : [mkB(nExp), mkB(1)];
+      Object.assign(B, { mLogits, mSh: mkB(D.dim), mSg,
         mSel: dev.createBuffer({ size: NC * K * 4, usage: S }), mSelw: dev.createBuffer({ size: NC * K * 4, usage: S }),
         mH: dev.createBuffer({ size: NC * K * ei * 4, usage: S }), mY: dev.createBuffer({ size: NC * K * D.dim * 4, usage: S }) });
     }
@@ -953,7 +1099,7 @@ export class Qwen35Engine {
       return this._mcU[k] || (this._mcU[k] = { buffer: this._buf(new Uint32Array([n, s0, s1, s2]), GPUBufferUsage.UNIFORM) });
     };
     const st = (b) => b.stride / 4;   // column stride in floats
-    const whole = (b) => ({ buffer: b.buf });
+    const whole = (b) => (b.off ? { buffer: b.buf, offset: b.off } : { buffer: b.buf });
     const dn = { buffer: this.dnBuf };
     if (this.hasHead) this.bgFinalNormMC = this._bg2res(this.pipes.rmsnorm_mc,
       [whole(B.x), { buffer: this.finalNorm.buf }, whole(B.xn), mcU(D.dim, st(B.x), st(B.xn))]);
@@ -969,6 +1115,9 @@ export class Qwen35Engine {
     }
     // the draft (MTP) block is a full-attention layer too: it gets batched bind groups at index
     // this.layers.length, so prefill can fill the draft cache for a whole chunk in one pass
+    // a merged batched op must keep the row grouping of every kernel width it can run at
+    const batchWidths = [this.NC, ...[8, 4].filter((W) => this.NC > W)];
+    const batchOK = (f) => batchWidths.every((W) => Qwen35Engine._rowsKeep(f.lens, this._rowsFor(W)));
     this.layerB = (this.mtpLayer ? [...this.layers, this.mtpLayer] : this.layers).map((L) => {
       const bgNormC = (w, c) => this._bg2res(this.pipes.rmsnorm,
         [slice(B.x, c), { buffer: w.buf }, slice(B.xn, c), { buffer: this.uDim }]);
@@ -1038,6 +1187,7 @@ export class Qwen35Engine {
         if (L.shared) {
           R.shDown = mvB(L.ffnDown, B.g, B.mSh, D.dim, D.inter, false, this.gemmOn ? B.gT : null);
           R.shRouter = mvB(L.shRouter, B.xn, B.mSg, 1, D.dim);
+          if (L.fRS && batchOK(L.fRS)) R.rs = mvB(L.fRS.w, B.xn, { buf: B.mLogits.buf, stride: B.mLogits.stride }, L.fRS.rows, D.dim);
         }
         mc.moeCombine = this._bg2res(this.pipes.moe_combine, [whole(B.x), { buffer: B.mY }, { buffer: B.mSelw }, whole(B.mSh), whole(B.mSg),
           U([D.dim, 0, K, st(B.mSh), st(B.x), D.dim, L.shared ? 1 : 0, st(B.mSg)])]);
@@ -1045,6 +1195,7 @@ export class Qwen35Engine {
       if (L.isFull) {
         R.qkvOps = [mvB(L.wq, B.xn, B.qFull, D.nH * D.hd * 2, D.dim, false, this.gemmOn ? B.xnT : null),
           mvB(L.wk, B.xn, B.k, D.kvDim, D.dim, false, this.gemmOn ? B.xnT : null), mvB(L.wv, B.xn, B.v, D.kvDim, D.dim, false, this.gemmOn ? B.xnT : null)];
+        if (L.fKV && batchOK(L.fKV)) R.kv = mvB(L.fKV.w, B.xn, { buf: B.k.buf, stride: B.k.stride }, L.fKV.rows, D.dim);
         R.o = mvB(L.wo, B.attnOut, B.x, D.dim, D.qDim, true, this.gemmOn ? B.aoT : null);
         for (let c = 0; c < NC; c++) Object.assign(R.cols[c], {
           qsplit: this._bg2res(this.pipes.qsplit, [slice(B.qFull, c), slice(B.q, c), slice(B.gAttn, c), { buffer: this.dnBuf }]),
@@ -1060,6 +1211,8 @@ export class Qwen35Engine {
       } else {
         R.dnOps = [mvB(L.wqkv, B.xn, B.qkv, D.convDim, D.dim, false, this.gemmOn ? B.xnT : null), mvB(L.wz, B.xn, B.z, D.dInner, D.dim, false, this.gemmOn ? B.xnT : null),
           mvB(L.wBeta, B.xn, B.betaRaw, D.nVH, D.dim), mvB(L.wAlpha, B.xn, B.alpha, D.nVH, D.dim)];
+        if (L.fQZ && batchOK(L.fQZ)) R.qz = mvB(L.fQZ.w, B.xn, { buf: B.qkv.buf, stride: B.qkv.stride }, L.fQZ.rows, D.dim);
+        if (L.fBA && batchOK(L.fBA)) R.ba = mvB(L.fBA.w, B.xn, { buf: B.betaRaw.buf, stride: B.betaRaw.stride }, L.fBA.rows, D.dim);
         R.out = mvB(L.wOut, B.gated, B.x, D.dim, D.dInner, true, this.gemmOn ? B.aoT : null);
         for (let c = 0; c < NC; c++) Object.assign(R.cols[c], {
           gates: this._bg2res(this.pipes.dn_gates, [slice(B.alpha, c), slice(B.betaRaw, c),
@@ -1095,7 +1248,10 @@ export class Qwen35Engine {
         const p = enc.beginComputePass();
         this._dMC(p, "rmsnorm_mc", M.norm1, 256, 256, nCols);
         if (G) this._dop(p, this.xposeXn);
-        for (const op of LB.qkvOps) this._dop(p, op, nCols);
+        const [oq, ok, ov] = LB.qkvOps;
+        this._dop(p, oq, nCols);
+        if (this.fuseProj && LB.kv && !this._gemmAt(ok, nCols) && !this._gemmAt(ov, nCols)) this._dop(p, LB.kv, nCols);
+        else { this._dop(p, ok, nCols); this._dop(p, ov, nCols); }
         if (this.attnGlue) this._dMC(p, "attn_glue", M.glue, (D.nH + D.nKV) * 64, 64, nCols);
         else {
           this._dMC(p, "qsplit_mc", M.qsplit, D.nH * D.hd, 64, nCols);
@@ -1107,8 +1263,8 @@ export class Qwen35Engine {
         p.end();
       }
       if (!this.flash) for (let c = 0; c < nCols; c++) {
-        enc.copyBufferToBuffer(B.k.buf, c * B.k.stride, L.kCache, (basePos + c) * D.kvDim * 4, D.kvDim * 4);
-        enc.copyBufferToBuffer(B.v.buf, c * B.v.stride, L.vCache, (basePos + c) * D.kvDim * 4, D.kvDim * 4);
+        enc.copyBufferToBuffer(B.k.buf, c * B.k.stride + (B.k.off || 0), L.kCache, (basePos + c) * D.kvDim * 4, D.kvDim * 4);
+        enc.copyBufferToBuffer(B.v.buf, c * B.v.stride + (B.v.off || 0), L.vCache, (basePos + c) * D.kvDim * 4, D.kvDim * 4);
       }
       {
         const p = enc.beginComputePass();
@@ -1140,7 +1296,12 @@ export class Qwen35Engine {
       const p = enc.beginComputePass();
       this._dMC(p, "rmsnorm_mc", M.norm1, 256, 256, nCols);
       if (G) this._dop(p, this.xposeXn);
-      for (const op of LB.dnOps) this._dop(p, op, nCols);
+      const [oqkv, oz, obeta, oalpha] = LB.dnOps;
+      // full-width prefill keeps qkv and z on the GEMM, which has no merged form
+      if (this.fuseProj && LB.qz && !this._gemmAt(oqkv, nCols) && !this._gemmAt(oz, nCols)) this._dop(p, LB.qz, nCols);
+      else { this._dop(p, oqkv, nCols); this._dop(p, oz, nCols); }
+      if (this.fuseProj && LB.ba && !this._gemmAt(obeta, nCols) && !this._gemmAt(oalpha, nCols)) this._dop(p, LB.ba, nCols);
+      else { this._dop(p, obeta, nCols); this._dop(p, oalpha, nCols); }
       this._dMC(p, "dn_conv_mc", M.conv, D.convDim, 64, 1);           // loops over columns
       this._dMC(p, "dn_pre_mc", M.pre, 128, 128, nCols);              // gates + L2(q,k) fused, one WG per column
       this._dMC(p, "dn_delta_mc", M.delta, D.nVH * 128, 128, 1);     // loops over columns
@@ -1157,7 +1318,8 @@ export class Qwen35Engine {
       this._dMC(p, "rmsnorm_mc", M.norm2, 256, 256, nCols);
       if (L.moe) {
         const { K, inter: ei } = this.moe;
-        this._dop(p, LB.router, nCols);
+        const rs = this.fuseProj && LB.rs && !this._gemmAt(LB.router, nCols) && !this._gemmAt(LB.shRouter, nCols) ? LB.rs : null;
+        this._dop(p, rs || LB.router, nCols);   // router (+ shared-expert gate when merged)
         this._dMC(p, "moe_router", M.router, nCols * 256, 256, 1);
         this._dMC(p, L.guPipe, M.gu, Math.ceil(ei / 4) * 64, 64, nCols * K);
         this._dMC(p, L.dnPipe, M.dn, Math.ceil(D.dim / 4) * 64, 64, nCols * K);
@@ -1170,7 +1332,7 @@ export class Qwen35Engine {
           }
           if (G) this._dop(p, this.xposeG);
           this._dop(p, LB.shDown, nCols);
-          this._dop(p, LB.shRouter, nCols);
+          if (!rs) this._dop(p, LB.shRouter, nCols);
         }
         this._dMC(p, "moe_combine", M.moeCombine, D.dim, 64, nCols);
         p.end();
