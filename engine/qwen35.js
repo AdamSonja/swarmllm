@@ -77,6 +77,7 @@ export class Qwen35Engine {
     if (parts.length !== st.parts.length || parts.some((p, i) => p.bytes !== st.parts[i].byteLength)) throw new Error("saved state has the wrong shape");
     parts.forEach((p, i) => { if (p.bytes) this.device.queue.writeBuffer(p.buf, 0, st.parts[i]); });
     this.pos = st.pos;
+    this._pre = null;
   }
   // GPU-side checkpoints: copies on the GPU (no readback), for switching between sessions or
   // rewinding an agent to an earlier turn. Costs GPU memory: the DeltaNet states (~3 MB per
@@ -101,6 +102,7 @@ export class Qwen35Engine {
     parts.forEach((p, i) => { if (p.bytes) enc.copyBufferToBuffer(sl.bufs[i], 0, p.buf, 0, p.bytes); });
     this.device.queue.submit([enc.finish()]);
     this.pos = sl.pos;
+    this._pre = null;
   }
   dropSlot(name) {
     const sl = this.slots?.get(name);
@@ -118,10 +120,11 @@ export class Qwen35Engine {
     }
     this.device.queue.submit([enc.finish()]);
     this.pos = 0;
+    this._pre = null;
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -257,6 +260,14 @@ export class Qwen35Engine {
     }
     this._gemm8Set = new Set(this._gemm8Pairs.map(([dIn, S]) => `${dIn}:${S}`));
     this.gemmOn = this._gemmShapes.size > 0;
+    // A verify pass exactly NC columns wide would go through the prefill GEMM (_encodeLayerBatch
+    // and _dop pick it by width), whose sums differ from the GEMV twins that plain decoding matches
+    // (prefill tolerance, not bit-identical). A 15-draft lookup run at NC=16 was such a pass, so
+    // cap the run one short of that: every verify stays on the GEMV ladder and spec == plain holds
+    // by construction. Drafts only: no kernel changes, a copy run just verifies 14 at a time.
+    // Only when the longest run is exactly one short of NC (NC = 8, 16): at NC = 4 the runs are
+    // up to 7 and a cap of 2 would gut lookup, so NC = 4 keeps its old limit.
+    if (this.gemmOn && this.maxDrafts === batchCols - 1) this.maxDrafts = batchCols - 2;
     this._gemmDIns = [...new Set([...this._gemmShapes.keys()].map((k) => +k.split("x")[1]))];
     this._gemmSplits = [...new Set(this._gemmShapes.values())];
     this._gemmPairs = [...new Set([...this._gemmShapes].map(([k, S]) => `${k.split("x")[1]}:${S}`))].map((x) => x.split(":").map(Number));
@@ -685,6 +696,22 @@ export class Qwen35Engine {
         this.draftVocab = dv;
         this.headOpDraft = mv(this.headEntry, this.xn, this.logits, dv, dim);
         this.bgArgmaxDraft = this._bg(this.pipes.argmax, 1, [this.logits, this.argBuf, this._buf(new Uint32Array([dv, 0, 0, 0]), GPUBufferUsage.UNIFORM)]);
+        // The small head can only draft ids < dv. On English prose and code 1-2.5% of tokens lie
+        // at or above 65536 (benchmarks/draftvocab_coverage.js), but on Chinese it is ~84% and on
+        // Spanish ~18%, where the small head would draft almost nothing right. So watch the
+        // share of prompt and output tokens >= dv (EMA over ~32 tokens) and draft with the full
+        // head while it is high. draftVocabAuto = false keeps the small head always on.
+        this.draftVocabAuto = draftVocabAuto !== false;
+        this._dvMiss = 0; this._dvSmall = true;
+        // Chat-template control tokens (<|im_start|>, <think>, ...) sit at the top of the vocab but
+        // say nothing about the language, and a short chat prompt is ~20% of them, which pushed
+        // every English chat onto the full head. Leave non-normal tokens (GGUF token_type 3/4/5:
+        // control, user-defined, unused) out of the average.
+        const tt = M["tokenizer.ggml.token_type"];
+        if (tt?.length > dv) {
+          this._dvSkip = new Uint8Array(tt.length - dv);
+          for (let i = dv; i < tt.length; i++) if (tt[i] >= 3 && tt[i] <= 5) this._dvSkip[i - dv] = 1;
+        }
       }
     }
 
@@ -723,10 +750,24 @@ export class Qwen35Engine {
     const egRows = Math.min(vocab, this.draftVocab || vocab), egPer = ce && ce.kind === "q4" ? 16 : 32;
     const egBytes = egRows * (dim / 32) * egPer, lim = device.limits || {};
     const egFits = egBytes <= (lim.maxStorageBufferBindingSize ?? Infinity) && egBytes <= (lim.maxBufferSize ?? Infinity);
+    let egQs = null, egSc = null;
     if (draftChain && this.mtp && ce && (ce.kind === "q4" || ce.kind === "q8") && ce.qs && ce.scales && egFits) {
-      const nb = dim / 32, rows = egRows, per = egPer;
-      const qs = this._buf(ce.qs.subarray(0, rows * nb * per), GPUBufferUsage.STORAGE);
-      const sc = this._buf(ce.scales.subarray(0, Math.ceil(rows * nb / 2)), GPUBufferUsage.STORAGE);
+      // the table is an extra allocation on top of the model: if the device cannot hold it, fall back
+      // to per-submit drafts instead of failing the load
+      const nb = dim / 32;
+      device.pushErrorScope("out-of-memory");
+      try {
+        egQs = this._buf(ce.qs.subarray(0, egRows * nb * egPer), GPUBufferUsage.STORAGE);
+        egSc = this._buf(ce.scales.subarray(0, Math.ceil(egRows * nb / 2)), GPUBufferUsage.STORAGE);
+      } catch { /* RangeError from mappedAtCreation: out of memory */ }
+      const oom = await device.popErrorScope();
+      if (oom || !egQs || !egSc) {
+        egQs?.destroy(); egSc?.destroy(); egQs = egSc = null;
+        console.warn(`draft chain off: no GPU memory for the ${(egBytes / 2 ** 20).toFixed(0)} MB embedding table`);
+      }
+    }
+    if (egQs) {
+      const rows = egRows, qs = egQs, sc = egSc;
       const egU = this._buf(new Uint32Array([dim, ce.kind === "q4" ? 0 : 1, rows, 0]), GPUBufferUsage.UNIFORM);
       this._eg = { qs, sc, u: egU, rows };
       this.bgEmbGather = this._bg(this.pipes.emb_gather, 1, [qs, sc, this.argBuf, this.mtp.emb, egU]);
@@ -1506,7 +1547,7 @@ export class Qwen35Engine {
     return this._runBatchAndRead(basePos, n);
   }
   restoreDN(k) { this._restoreDN(k); }
-  setHidden(h) { this.device.queue.writeBuffer(this.x, 0, h); }   // final trunk hidden (chain host) for the draft head
+  setHidden(h) { this._pre = null; this.device.queue.writeBuffer(this.x, 0, h); }   // final trunk hidden (chain host) for the draft head
 
   // final norm + LM head for n hidden states (n*dim floats, or null to use the
   // columns already in B.x) -> array of n logits vectors. Leaves the hiddens
@@ -1531,12 +1572,26 @@ export class Qwen35Engine {
     return out;
   }
 
+  // draft with the reduced-vocabulary head? (see draftVocabAuto in _init)
+  _smallHead() { return !!this.headOpDraft && (!this.draftVocabAuto || this._dvSmall); }
+  _noteDV(ids) {
+    if (!this.headOpDraft || !this.draftVocabAuto) return;
+    const dv = this.draftVocab;
+    let m = this._dvMiss;
+    const skip = this._dvSkip;
+    for (const t of ids) { if (skip && t >= dv && skip[t - dv]) continue; m += ((t >= dv ? 1 : 0) - m) / 32; }
+    this._dvMiss = m;
+    if (this._dvSmall && m > 0.05) this._dvSmall = false;        // hysteresis: off above 5%,
+    else if (!this._dvSmall && m < 0.025) this._dvSmall = true;  // back on below 2.5%
+  }
+
   // ---- speculative decoding with the MTP head ----
   // Run the draft block for the token `tNext` (at position `pos`) given the
   // trunk hidden of the previous position: srcCol === null reads this.x,
   // otherwise batch column srcCol. Appends to the MTP layer's own KV cache.
   // wantLogits -> returns draft logits (argmax = drafted token).
-  async mtpRun(srcCol, tNext, pos, wantLogits) {
+  async mtpRun(srcCol, tNext, pos, wantLogits) { this._pre = null; return this._mtpRun(srcCol, tNext, pos, wantLogits); }
+  async _mtpRun(srcCol, tNext, pos, wantLogits) {
     const M2 = this.mtp, { dim, vocab } = this.dims;
     this.device.queue.writeBuffer(M2.emb, 0, this._embedRowF32(tNext));
     this._setFrame(pos, pos + 1);
@@ -1552,7 +1607,7 @@ export class Qwen35Engine {
     if (wantLogits) {
       const p = enc.beginComputePass();
       this._d(p, "rmsnorm", M2.bgHeadNorm, 256, 256);
-      const small = wantLogits === "argmax" && this.headOpDraft;
+      const small = wantLogits === "argmax" && this._smallHead();
       this._dop(p, small ? this.headOpDraft : this.headOp);
       if (wantLogits === "argmax") this._d(p, "argmax", small ? this.bgArgmaxDraft : this.bgArgmax, 256, 256);
       p.end();
@@ -1712,33 +1767,25 @@ export class Qwen35Engine {
     return !!this.bgFinalNormMC;
   }
 
-  // After the verify: roll back the rejected suffix, re-fill the draft cache for the accepted
-  // positions with the exact trunk hiddens, and leave the hidden of the last accepted column in
-  // this.x. hs = null: the hiddens are still in B.x (fused verify), read there by the GPU.
-  async _specAccept(pos, a, K, out, hs, onReject, refill) {
-    const dim = this.dims.dim;
-    if (a < K) { this._restoreDN(a); if (onReject) await onReject(a); }
-    if (refill) for (let j = 1; j <= a; j++) {
-      if (hs) { this.setHidden(hs.subarray((j - 1) * dim, j * dim)); await this.mtpRun(null, out[j - 1], pos + j, false); }
-      else await this.mtpRun(j - 1, out[j - 1], pos + j, false);   // hnorm reads B.x column j - 1: same bytes as setHidden
-    }
-    if (hs) this.setHidden(hs.subarray(a * dim, (a + 1) * dim));
-    else this._adoptHidden(a);
-    this.pos = pos + a + 1;
-  }
-
   async specStep(tNext, sample, K = 3, { runTrunk = null, onReject = null } = {}) {
     const pos = this.pos, M2 = this.mtp;
     K = Math.max(1, Math.min(7, K));
-    const chain = this.draftChain && this.chainOn !== false;
+    // the chain gathers draft embeddings from a table of the first draftVocab rows, so it drafts with
+    // the small head; while the draftvocab fallback wants the full head (e.g. a Chinese chat), the
+    // drafts go through _mtpRun instead
+    const chain = this.draftChain && this.chainOn !== false && (this._eg.rows >= this.dims.vocab || this._smallHead());
     let drafts = [], lgs, hs = null;
+    // the previous step may already have run the draft block for (tNext, pos) (see _mtpRefill)
+    const pre = chain ? this._takePre(-1, -1) : this._takePre(tNext, pos);
     if (chain && this._canFuse(K + 1, runTrunk)) ({ lgs, drafts } = await this._verifyFused([tNext], pos, K));
     else {
+      const d0 = pre ? await this._preDraft0(pre) : null;
+      if (d0 !== null) drafts.push(d0);   // this.x now holds the draft block's output for column 0
       if (chain) drafts = await this._draftChain(tNext, pos, K);
-      else for (let k = 0; k < K; k++) {
+      else for (let k = drafts.length; k < K; k++) {
         // after the first call this.x holds the MTP block's own output hidden,
         // which is what chained drafting feeds back in
-        drafts.push(await this.mtpRun(null, k === 0 ? tNext : drafts[k - 1], pos + k, "argmax"));
+        drafts.push(await this._mtpRun(null, k === 0 ? tNext : drafts[k - 1], pos + k, "argmax"));
       }
       if (this._canFuse(K + 1, runTrunk)) ({ lgs } = await this._verifyFused([tNext, ...drafts], pos));
       else ({ lgs, hs } = await this.verifyN([tNext, ...drafts], pos, runTrunk));
@@ -1751,7 +1798,13 @@ export class Qwen35Engine {
       if (k < K && t === drafts[k]) a++; else break;
     }
     M2.stats.drafts += K; M2.stats.accepted += a;
-    await this._specAccept(pos, a, K, out, hs, onReject, true);
+    this._noteDV(out);
+    if (a < K) { this._restoreDN(a); if (onReject) await onReject(a); }
+    // re-fill the draft cache for the accepted positions with exact trunk hiddens (and run the
+    // next step's first draft in the same pass); hs = null: the hiddens are still in B.x (fused verify)
+    // (the one-submit chain recomputes that column itself, so it gets the refill alone)
+    await this._refillDrafts(out, hs, pos, a, chain ? "none" : "head");
+    this.pos = pos + a + 1;
     return out;
   }
 
@@ -1764,7 +1817,8 @@ export class Qwen35Engine {
     const pos = this.pos, M2 = this.mtp, { dim } = this.dims;
     const K = Math.max(1, Math.min(this.maxDrafts || 7, drafts.length));
     drafts = drafts.slice(0, K);
-    if (M2) await this.mtpRun(null, tNext, pos, false);
+    // tNext's draft-cache row: already written if the previous step ran its draft block column
+    if (M2 && !this._takePre(tNext, pos)) await this._mtpRun(null, tNext, pos, false);
     let lgs, hs = null;
     if (this._canFuse(K + 1, runTrunk)) ({ lgs } = await this._verifyFused([tNext, ...drafts], pos));
     else ({ lgs, hs } = await this.verifyN([tNext, ...drafts], pos, runTrunk));
@@ -1777,8 +1831,155 @@ export class Qwen35Engine {
     }
     this.lookupStats = this.lookupStats || { drafts: 0, accepted: 0 };
     this.lookupStats.drafts += K; this.lookupStats.accepted += a;
-    await this._specAccept(pos, a, K, out, hs, onReject, !!M2);
+    this._noteDV(out);
+    if (a < K) { this._restoreDN(a); if (onReject) await onReject(a); }
+    // a lookup step is often followed by another one, so pre-run the next draft block column
+    // (its cache row, which every next step needs) but not the head (only specStep needs that)
+    if (M2) await this._refillDrafts(out, hs, pos, a, "row");
+    else if (hs) this.setHidden(hs.subarray(a * dim, (a + 1) * dim));
+    else this._adoptHidden(a);
+    this.pos = pos + a + 1;
     return out;
+  }
+
+  // ---- post-verify draft-cache refill ----
+  // After a verify that accepted `a` drafts, the draft block's cache rows pos+1 .. pos+a have to be
+  // rewritten from the exact trunk hiddens hs[0 .. a-1] (drafting wrote them from the block's own
+  // guesses), and the next step starts by running the draft block on (hs[a], out[a]) for row
+  // pos+a+1. Column c of that work pairs hs[c] with out[c] and writes row pos+c+1, exactly what
+  // _mtpFillBatch does for a prompt chunk, so all of it is one batched pass of a+1 columns instead
+  // of a+1 single-column submits. With `head`, the same submit also runs the draft head on the last
+  // column and starts the readback of the next step's first draft, which specStep picks up if it is
+  // called next with (out[a], pos+a+1).
+  //   mtpBatchRefill = false: the old one-submit-per-row loop (A/B).
+  //   mtpPreDraft = false: no extra column; the next step runs its first draft itself.
+  // Drafts only: the verify pass decides every output token, whatever these rows hold.
+  // next: "head" (pre-run the next step's first draft), "row" (its draft-block column only), "none".
+  // hs = null (fused verify): the trunk hiddens are still in B.x columns 0 .. a (the refill's column c
+  // is verify column c, so the refill reads them in place, the same bytes the CPU copy would hold).
+  async _refillDrafts(out, hs, pos, a, next) {
+    const { dim } = this.dims;
+    const trunkX = hs ? hs.subarray(a * dim, (a + 1) * dim) : null;
+    if (this.mtpBatchRefill === false) {
+      for (let j = 1; j <= a; j++) {
+        if (hs) { this.device.queue.writeBuffer(this.x, 0, hs.subarray((j - 1) * dim, j * dim)); await this._mtpRun(null, out[j - 1], pos + j, false); }
+        else await this._mtpRun(j - 1, out[j - 1], pos + j, false);   // hnorm reads B.x column j - 1
+      }
+      if (hs) this.device.queue.writeBuffer(this.x, 0, trunkX);
+      else this._adoptHidden(a);
+      return;
+    }
+    const pre = next !== "none" && this.mtpPreDraft !== false && pos + a + 1 < this.maxSeq, head = next === "head";
+    const m = a + (pre ? 1 : 0);
+    if (m > 0) {
+      if (!this.B) this._initBatch();
+      if (pre && head && this._preBusy) await this._preBusy;   // the staging buffer's last map
+      const id = this._mtpRefill(out, hs, pos, m, pre && head, a);
+      if (pre) this._pre = { pos: pos + a + 1, tok: out[a], id };
+    } else if (!hs) this._adoptHidden(a);
+    // the trunk hidden the next step starts from; queued after the refill submit, which reads B.x
+    // (its own copy of hs) and leaves the draft block's output for the last column in mtp.xNext
+    // (hs = null: _mtpRefill saved B.x column a first and restores it to this.x at its end)
+    if (hs) this.device.queue.writeBuffer(this.x, 0, trunkX);
+  }
+  // Encode + submit the refill: columns c = 0..m-1 pair hs[c] with toks[c] and write draft-cache
+  // row pos+c+1, in chunks of at most NC columns. Returns the promise of the head's argmax on the
+  // last column when `head`, else null.
+  // hs = null: the hiddens are B.x columns 0 .. m - 1 already (m <= NC); column `a` (the trunk hidden
+  // the next step starts from) is saved first and copied to this.x after everything else.
+  _mtpRefill(toks, hs, pos, m, head, a = m - 1) {
+    const D = this.dims, M2 = this.mtp, B = this.B, dev = this.device;
+    if (!M2.xNext) M2.xNext = dev.createBuffer({ size: D.dim * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    if (!hs && m > this.NC) throw new Error("_mtpRefill: in-place refill wider than one batch pass");
+    const enc = dev.createCommandEncoder();
+    if (!hs) {
+      if (!this._xSave) this._xSave = dev.createBuffer({ size: D.dim * 4, usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      enc.copyBufferToBuffer(B.x.buf, a * B.x.stride, this._xSave, 0, D.dim * 4);
+    }
+    let last = 0;
+    for (let c0 = 0; c0 < m; c0 += this.NC) {
+      const w = Math.min(this.NC, m - c0);
+      // all writes for this chunk land before this submit, and the chunks share B's columns, so
+      // a second chunk needs its own submit after the first
+      for (let j = 0; j < w; j++) {
+        const c = c0 + j;
+        if (hs) dev.queue.writeBuffer(B.x.buf, j * B.x.stride, hs.subarray(c * D.dim, (c + 1) * D.dim));
+        dev.queue.writeBuffer(B.mEmb.buf, j * B.mEmb.stride, this._embedRowF32(toks[c]));
+        dev.queue.writeBuffer(this.frameBufsB[j], 0, new Uint32Array([pos + c + 1, pos + c + 2, w, 0]));
+      }
+      const e = c0 + w < m ? dev.createCommandEncoder() : enc;
+      {
+        const p = e.beginComputePass();
+        this._dMC(p, "rmsnorm_mc", M2.bgENormMC, 256, 256, w);
+        this._dMC(p, "rmsnorm_mc", M2.bgHNormMC, 256, 256, w);
+        this._dop(p, M2.projB, w);
+        p.end();
+      }
+      this._encodeLayerBatch(e, this.layers.length, pos + c0 + 1, w);
+      if (e !== enc) dev.queue.submit([e.finish()]);
+      last = w - 1;
+    }
+    enc.copyBufferToBuffer(B.x.buf, last * B.x.stride, M2.xNext, 0, D.dim * 4);
+    if (!head) {
+      if (!hs) enc.copyBufferToBuffer(this._xSave, 0, this.x, 0, D.dim * 4);
+      dev.queue.submit([enc.finish()]);
+      return null;
+    }
+    // the draft head on the last column, as _mtpRun runs it (this.x -> shared_head_norm -> head)
+    enc.copyBufferToBuffer(B.x.buf, last * B.x.stride, this.x, 0, D.dim * 4);
+    const small = this._smallHead();
+    {
+      const p = enc.beginComputePass();
+      this._d(p, "rmsnorm", M2.bgHeadNorm, 256, 256);
+      this._dop(p, small ? this.headOpDraft : this.headOp);
+      this._d(p, "argmax", small ? this.bgArgmaxDraft : this.bgArgmax, 256, 256);
+      p.end();
+    }
+    if (!this.stagePre) this.stagePre = dev.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    enc.copyBufferToBuffer(this.argBuf, 0, this.stagePre, 0, 16);
+    if (!hs) enc.copyBufferToBuffer(this._xSave, 0, this.x, 0, D.dim * 4);
+    dev.queue.submit([enc.finish()]);
+    const st = this.stagePre;
+    const id = st.mapAsync(GPUMapMode.READ).then(() => { const v = new Uint32Array(st.getMappedRange())[0]; st.unmap(); return v; }, () => null);
+    this._preBusy = id;
+    return id;
+  }
+  // The pending pre-run column if it is the one (tok, pos) needs; clears it either way.
+  _takePre(tok, pos) {
+    const p = this._pre;
+    this._pre = null;
+    return p && p.pos === pos && p.tok === tok && this.mtp?.xNext ? p : null;
+  }
+  // First draft of a step whose draft-block column was pre-run: the pending argmax, or the head
+  // run now on mtp.xNext. Leaves this.x = the block's output (what the second draft reads), the
+  // same state _mtpRun(null, tNext, pos, "argmax") leaves. null: fall back to the normal path.
+  async _preDraft0(pre) {
+    const M2 = this.mtp, dim = this.dims.dim;
+    let id = null;
+    if (pre.id) {
+      id = await pre.id;
+      if (id === null) return null;
+      const enc = this.device.createCommandEncoder();
+      enc.copyBufferToBuffer(M2.xNext, 0, this.x, 0, dim * 4);
+      this.device.queue.submit([enc.finish()]);
+      return id;
+    }
+    const small = this._smallHead();
+    const enc = this.device.createCommandEncoder();
+    enc.copyBufferToBuffer(M2.xNext, 0, this.x, 0, dim * 4);
+    {
+      const p = enc.beginComputePass();
+      this._d(p, "rmsnorm", M2.bgHeadNorm, 256, 256);
+      this._dop(p, small ? this.headOpDraft : this.headOp);
+      this._d(p, "argmax", small ? this.bgArgmaxDraft : this.bgArgmax, 256, 256);
+      p.end();
+    }
+    enc.copyBufferToBuffer(this.argBuf, 0, this.stageArg, 0, 16);
+    this.device.queue.submit([enc.finish()]);
+    await this.stageArg.mapAsync(GPUMapMode.READ);
+    id = new Uint32Array(this.stageArg.getMappedRange())[0];
+    this.stageArg.unmap();
+    return id;
   }
 
   // Fill the draft block's cache for the columns of a chunk that just went through the trunk
@@ -1787,6 +1988,7 @@ export class Qwen35Engine {
   // one batched layer pass for the whole chunk, instead of one submit per column (mtpRun).
   // Drafts only: the output never depends on it. mtpBatchFill = false restores the per-column path.
   _mtpFillBatch(ids, i0, basePos, n) {
+    this._pre = null;
     const m = Math.min(n, ids.length - i0 - 1);   // columns whose next token is in this prompt
     if (m <= 0) return;
     const D = this.dims, M2 = this.mtp, B = this.B;
@@ -1808,6 +2010,8 @@ export class Qwen35Engine {
 
   async prefillTokens(ids) {
     if (!this.B) this._initBatch();
+    this._pre = null;
+    this._noteDV(ids);   // the prompt's language decides the draft head from the first step
     this._snapNow = null;   // not a verify: nothing to keep for replay
     let i = 0, sinceSync = 0;
     const NC = this.NC;
@@ -1863,6 +2067,7 @@ export class Qwen35Engine {
 
   // prefill fast path: layers only, no head, no readback
   async prefillToken(tokenId) {
+    this._pre = null;
     this._setFrame(this.pos, this.pos + 1);
     this.device.queue.writeBuffer(this.x, 0, this._embedRowF32(tokenId));
     const enc = this.device.createCommandEncoder();
@@ -1873,6 +2078,7 @@ export class Qwen35Engine {
   }
 
   async embedRun(tokenId, pos) {
+    this._pre = null;
     const { dim } = this.dims;
     this.pos = pos;
     this._setFrame(pos, pos + 1);
@@ -1884,6 +2090,7 @@ export class Qwen35Engine {
   }
 
   async runHidden(xIn, pos) {
+    this._pre = null;
     const { dim } = this.dims;
     this.pos = pos;
     this._setFrame(pos, pos + 1);
@@ -1895,6 +2102,7 @@ export class Qwen35Engine {
   }
 
   async headFromHidden(xIn) {
+    this._pre = null;
     const { vocab } = this.dims;
     this.device.queue.writeBuffer(this.x, 0, xIn);
     const enc = this.device.createCommandEncoder();
@@ -1911,6 +2119,7 @@ export class Qwen35Engine {
   // Whole token in one encoder + one submit; no hidden-state readback between
   // the last layer and the head (that round trip cost a full pipeline drain).
   async forwardToken(tokenId) {
+    this._pre = null;
     const { vocab } = this.dims;
     this._setFrame(this.pos, this.pos + 1);
     this.device.queue.writeBuffer(this.x, 0, this._embedRowF32(tokenId));
