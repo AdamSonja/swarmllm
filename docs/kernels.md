@@ -81,6 +81,8 @@ A generated token on the 27B = ~111 ms on the GB10: **82 ms streaming 15 GB of w
   staged x; gate/up 128 threads, 32 per row, 4 rows per workgroup; down 128 threads, 8 per row, 16 rows) was
   picked by the sweep on the GB10: in-model moe_gu_q4 69.8 -> 60.7 µs, moe_dn_q4 43.0 -> 38.4 µs (~0.45 ms of
   22.9 ms GPU per token); Chrome decode tok/s is within run-to-run noise of legacy;
-  `moeKernel: "legacy"` gives the first coop build's bits exactly. Sweep with `tests/bench/moe_kernel_sweep.js`,
-  select at runtime with `MOE_KERNEL=<preset|JSON>` (Deno tests) or a 3rd argument to `chrome_bench.mjs`.
+  the tuned layout is therefore opt-in (`moeKernel: "default"`); leaving `moeKernel` unset gives `MOE_LEGACY`, the
+  first coop build's bits exactly. It only affects the unfused `moe_gu` / `moe_dn` kernels (`moeFuse: false`); the
+  fused MoE FFN (the default) has its own kernels. Sweep with `tests/bench/moe_kernel_sweep.js`,
+  select at runtime with `MOE_KERNEL=<preset|JSON>` (Deno tests and `chrome_bench.mjs`).
   Index math is checked on the CPU for ~400 layouts by `tests/unit/moe_kernels_test.js`.
