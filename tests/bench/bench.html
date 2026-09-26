@@ -5,6 +5,7 @@ import { Qwen35Engine } from "../../engine/qwen35.js";
 import { makeTokenizer, argmax } from "../../engine/engine.js";
 import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF, streamEntryToGPU } from "../../engine/gguf.js";
 const q = new URLSearchParams(location.search), MODEL = q.get("model"), N = +(q.get("tokens") || 40), K = +(q.get("k") || 3), GOLD = JSON.parse(q.get("gold") || "[]");
+const MOEK = q.get("moe") ? (q.get("moe").startsWith("{") ? JSON.parse(q.get("moe")) : q.get("moe")) : undefined;   // moeKernel option: preset name or JSON
 const log = (s) => { document.getElementById("log").textContent += s + "\n"; console.log(s); };
 const readAt = async (off, len) => { const r = await fetch(MODEL, { headers: { Range: `bytes=${off}-${off + len - 1}` } }); return new Uint8Array(await r.arrayBuffer()); };
 try {
@@ -17,8 +18,10 @@ try {
   const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true });
   const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,
     draftChain: q.get("draftchain") !== "0", specFuse: q.get("specfuse") !== "0",   // A/B: &draftchain=0, &specfuse=0
-    moeFuse: q.get("moefuse") !== "0", moeDnRows: +(q.get("moednrows") || 1) });   // ?moefuse=0: unfused MoE (A/B)
+    moeFuse: q.get("moefuse") !== "0", moeDnRows: +(q.get("moednrows") || 1),
+    moeKernel: MOEK });   // ?moefuse=0: unfused MoE (A/B); ?moe=legacy|default|JSON: unfused expert GEMV layout
   log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!!eng.mtp}, moeFuse ${!!eng.moeFuse} R ${eng.moe?.R}, adapter ${ad.info?.vendor}`);
+  log(`moeKernel ${JSON.stringify(eng.moeK)}`);
   const V = tok.vocab, chat = (s) => [V["<|im_start|>"], ...tok.encode("user\n" + s), V["<|im_end|>"], ...tok.encode("\n"), V["<|im_start|>"], ...tok.encode("assistant\n"), V["<think>"], ...tok.encode("\n\n"), V["</think>"], ...tok.encode("\n\n")];
   const out = [];
   for (const [i, prompt] of ["Write the Python code for two sum. Code only.", "Explain what a hash map is in two sentences."].entries()) {

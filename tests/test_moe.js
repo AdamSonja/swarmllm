@@ -4,6 +4,7 @@ import { Qwen35Engine } from "../engine/qwen35.js";
 import { makeTokenizer, argmax } from "../engine/engine.js";
 import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
 const N = +(Deno.env.get("TOKENS") || 40), K = +(Deno.env.get("K") || 3);
+const MOEK = Deno.env.get("MOE_KERNEL") ? (Deno.env.get("MOE_KERNEL").startsWith("{") ? JSON.parse(Deno.env.get("MOE_KERNEL")) : Deno.env.get("MOE_KERNEL")) : undefined;   // moeKernel: legacy | default | JSON
 const PATH = Deno.env.get("MOE") || "../models/q36moe/Qwen_Qwen3.6-35B-A3B-Q4_0.gguf";
 const openFile = async (path) => { const fh = await Deno.open(path);
   return async (off, len) => { await fh.seek(off, Deno.SeekMode.Start); const out = new Uint8Array(len); let got = 0;
@@ -22,9 +23,10 @@ const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength)
 const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,
   // DRAFTCHAIN=0 / SPECFUSE=0: per-submit drafts / separate verify submits (A/B; same output)
   draftChain: Deno.env.get("DRAFTCHAIN") !== "0", specFuse: Deno.env.get("SPECFUSE") !== "0",
-  moeFuse: Deno.env.get("MOE_FUSE") !== "0", moeDnRows: +(Deno.env.get("MOE_DN_ROWS") || 1) });   // MOE_FUSE=0: unfused MoE kernels (A/B)
+  moeFuse: Deno.env.get("MOE_FUSE") !== "0", moeDnRows: +(Deno.env.get("MOE_DN_ROWS") || 1), moeKernel: MOEK });   // MOE_FUSE=0: unfused MoE kernels (A/B)
 console.log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}`);
 console.log(`${arch}: ${L} layers, mtp tensors ${hasMtp}, engine mtp ${!!eng.mtp}, moeFuse ${eng.moeFuse}; loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s`);
+if (eng.moeK) console.log("moeKernel", JSON.stringify(eng.moeK));
 const V = tok.vocab;
 const chat = (q) => [V["<|im_start|>"], ...tok.encode("user\n" + q), V["<|im_end|>"], ...tok.encode("\n"), V["<|im_start|>"], ...tok.encode("assistant\n"), V["<think>"], ...tok.encode("\n\n"), V["</think>"], ...tok.encode("\n\n")];
 // (plain "The capital of France is" is a near tie after " Paris": "." 19.029 vs "," 18.968 here, llama.cpp CUDA picks ",". Not used as a golden.)

@@ -8,7 +8,7 @@ import { WGSL } from "./wgsl/base.js";
 import { gemmWGSL, GEMM_S, GEMM_TILE } from "./wgsl/gemm.js";
 import { coopWGSL, probeUnpack } from "./wgsl/coop.js";
 import { WGSL2 } from "./wgsl/qwen35.js";
-import { moeWGSL, moeFusedWGSL } from "./wgsl/moe.js";
+import { moeWGSL, moeFusedWGSL, moeKernelConfig } from "./wgsl/moe.js";
 import { f16ToF32 } from "./gguf.js";
 
 
@@ -121,7 +121,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1 }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -172,6 +172,10 @@ export class Qwen35Engine {
       } else console.warn(`MoE: fused FFN off (unfused kernels): ${!moeLs.length ? "no MoE layers" : ![1, 2, 4].includes(moeDnRows) ? `moeDnRows ${moeDnRows} not 1, 2 or 4`
         : !wgMemOK ? "moe_dnc workgroup memory over the device limit" : "a layer's router / shared-expert tensors are not fusable"}`);
     }
+    // expert GEMV layout (engine/wgsl/moe.js): moeKernel = undefined (MOE_LEGACY) | "default" (the GB10-tuned MOE_DEFAULT) | "legacy" | { gu: {...}, dn: {...} }.
+    // Every (column, slot) runs the same code in every pass width, so any setting keeps batched == one-token.
+    this.moeK = this.moe ? moeKernelConfig(moeKernel, { dim, inter: this.moe.inter }) : null;
+    // (only the unfused moe_gu / moe_dn kernels use it: with moeFuse the fused moe_gus / moe_dnc run instead)
     const dState = M["qwen35.ssm.state_size"];
     const nKH = M["qwen35.ssm.group_count"];
     const nVH = M["qwen35.ssm.time_step_rank"];
@@ -261,7 +265,7 @@ export class Qwen35Engine {
     // ---- pipelines with explicit layouts ----
     const unpack = await probeUnpack(device);
     const mod = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, coopRows, 64, batchCols, coopRowsB, unpack)
-      + (this.moe ? moeWGSL() : "")
+      + (this.moe ? moeWGSL(this.moeK) : "")
       + (this.moeFuse ? moeFusedWGSL({ K: this.moe.K, R: this.moe.R, gu: this.moe.guPairs.map((p) => p.split("_")), dn: this.moe.dnPairs.map((p) => p.split("_")) }) : "")
       + (this.gemmOn ? gemmWGSL({ N: batchCols, pairs: this._gemmPairs, pairs8: this._gemm8Pairs, UNPACK: unpack }) : "") + WGSL2 });
     const C = GPUShaderStage.COMPUTE;
@@ -957,8 +961,8 @@ export class Qwen35Engine {
       const rs = this.fuseProj && L.mvRS;   // router + shared-expert gate in one GEMV
       this._dop(p, rs || L.mvRouter);
       this._dxyz(p, "moe_router", L.bgRouter, 1, 1, 1);
-      this._dxyz(p, L.guPipe, L.bgGu, Math.ceil(ei / 4), K, 1);
-      this._dxyz(p, L.dnPipe, L.bgDn, Math.ceil(D.dim / 4), K, 1);
+      this._dxyz(p, L.guPipe, L.bgGu, Math.ceil(ei / this.moeK.gu.rows), K, 1);
+      this._dxyz(p, L.dnPipe, L.bgDn, Math.ceil(D.dim / this.moeK.dn.rows), K, 1);
       if (L.shared) {
         if (L.gu) this._dop(p, L.gu);
         else { this._dop(p, L.mvGate); this._dop(p, L.mvUp); this._d(p, "silu_mul", this.bgSilu, D.inter); }
@@ -1428,8 +1432,8 @@ export class Qwen35Engine {
         const rs = this.fuseProj && LB.rs && !this._gemmAt(LB.router, nCols) && !this._gemmAt(LB.shRouter, nCols) ? LB.rs : null;
         this._dop(p, rs || LB.router, nCols);   // router (+ shared-expert gate when merged)
         this._dMC(p, "moe_router", M.router, nCols * 256, 256, 1);
-        this._dMC(p, L.guPipe, M.gu, Math.ceil(ei / 4) * 64, 64, nCols * K);
-        this._dMC(p, L.dnPipe, M.dn, Math.ceil(D.dim / 4) * 64, 64, nCols * K);
+        this._dMC(p, L.guPipe, M.gu, Math.ceil(ei / this.moeK.gu.rows), 1, nCols * K);   // same grid per (column, slot) as the one-token path
+        this._dMC(p, L.dnPipe, M.dn, Math.ceil(D.dim / this.moeK.dn.rows), 1, nCols * K);
         if (L.shared) {
           if (G) this._dop(p, this.xposeXn);
           if (LB.gu && !G) this._dop(p, LB.gu, nCols);
