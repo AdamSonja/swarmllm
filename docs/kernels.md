@@ -78,7 +78,9 @@ A generated token on the 27B = ~111 ms on the GB10: **82 ms streaming 15 GB of w
 - MoE expert GEMV layout (`engine/wgsl/moe.js`, engine option `moeKernel`): the expert kernels are generated from
   `{ WG, TPR, R, U, wide, xsh }` per kernel (threads per workgroup, threads per row group, rows per group,
   unroll, 16 B whole-block loads, input staged transposed in workgroup memory). `MOE_DEFAULT` (wide 16 B loads,
-  staged x, 16 rows per gate/up workgroup and 64 per down workgroup) is not yet timed on hardware;
+  staged x; gate/up 128 threads, 32 per row, 4 rows per workgroup; down 128 threads, 8 per row, 16 rows) was
+  picked by the sweep on the GB10: in-model moe_gu_q4 69.8 -> 60.7 µs, moe_dn_q4 43.0 -> 38.4 µs (~0.45 ms of
+  22.9 ms GPU per token); Chrome decode tok/s is within run-to-run noise of legacy;
   `moeKernel: "legacy"` gives the first coop build's bits exactly. Sweep with `tests/bench/moe_kernel_sweep.js`,
   select at runtime with `MOE_KERNEL=<preset|JSON>` (Deno tests) or a 3rd argument to `chrome_bench.mjs`.
   Index math is checked on the CPU for ~400 layouts by `tests/unit/moe_kernels_test.js`.

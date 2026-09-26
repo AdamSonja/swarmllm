@@ -35,10 +35,12 @@ export const MOE_LEGACY = Object.freeze({
   dn: Object.freeze({ WG: 64, TPR: 64, R: 4, U: 1, wide: false, xsh: false }),
 });
 export const MOE_DEFAULT = Object.freeze({
-  // gate/up (512 x 2048 per expert): 16 threads x 16 B per row, 2 rows per group, 16 rows per workgroup
-  gu: Object.freeze({ WG: 128, TPR: 16, R: 2, U: 2, wide: true, xsh: true }),
-  // down (2048 x 512 per expert, 16 blocks per row): 4 threads x 4 blocks per row, 64 rows per workgroup
-  dn: Object.freeze({ WG: 128, TPR: 4, R: 2, U: 4, wide: true, xsh: true }),
+  // Picked by tests/bench/moe_kernel_sweep.js on the GB10 (2026-09-26): in-model (prof_ts) moe_gu_q4 69.8 -> 60.7 µs,
+  // moe_dn_q4 43.0 -> 38.4 µs vs legacy. The first guess (gu 128/16/2/2, dn 128/4/2/4) was no faster than legacy.
+  // gate/up (512 x 2048 per expert): 32 threads x 16 B per row, 1 row per group, 4 rows per workgroup
+  gu: Object.freeze({ WG: 128, TPR: 32, R: 1, U: 1, wide: true, xsh: true }),
+  // down (2048 x 512 per expert, 16 blocks per row): 8 threads x 2 blocks per row, 16 rows per workgroup
+  dn: Object.freeze({ WG: 128, TPR: 8, R: 1, U: 1, wide: true, xsh: true }),
 });
 const WG_MEM = 16384;   // WebGPU default maxComputeWorkgroupStorageSize
 const pow2 = (n) => Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0;

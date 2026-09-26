@@ -110,7 +110,7 @@ Deno.test("moe kernels: layout sweep with tails (dim 256, expert width 96)", () 
 
 Deno.test("moe kernels: config resolution", () => {
   const c = moeKernelConfig(undefined, { dim: 2048, inter: 512 });
-  if (c.gu.rows !== 16 || c.dn.rows !== 64 || !c.gu.xsh || !c.dn.xsh) throw new Error("default rows / staging changed: " + JSON.stringify(c));
+  if (c.gu.rows !== 4 || c.dn.rows !== 16 || !c.gu.xsh || !c.dn.xsh) throw new Error("default rows / staging changed: " + JSON.stringify(c));
   const l = moeKernelConfig("legacy", { dim: 2048, inter: 512 });
   if (l.gu.rows !== 4 || l.dn.rows !== 4 || l.gu.wide || l.dn.xsh) throw new Error("legacy preset changed");
   const o = moeKernelConfig({ dn: { TPR: 8 } }, { dim: 2048, inter: 512 });
