@@ -1186,7 +1186,7 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead) {
       // ?moefuse=0: the unfused MoE FFN kernels (A/B). The fused path (the default) gives different
       // MoE bits, so every device of a room should run the same setting; ?moednrows=1|2|4 tunes it
       moeFuse: new URLSearchParams(location.search).get("moefuse") !== "0",
-      moeDnRows: parseInt(new URLSearchParams(location.search).get("moednrows"), 10) || 2,
+      moeDnRows: parseInt(new URLSearchParams(location.search).get("moednrows"), 10) || 1,
     });
   } else if (M.kind === "gguf") {
     aiStatus("reading model index\u2026");

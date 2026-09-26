@@ -13,7 +13,7 @@ const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer); const tok = makeT
 const arch = G.meta["general.architecture"], L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
 const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true });
 const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,
-  moeFuse: Deno.env.get("MOE_FUSE") !== "0", moeDnRows: +(Deno.env.get("MOE_DN_ROWS") || 2) });   // MOE_FUSE=0: unfused MoE kernels (A/B)
+  moeFuse: Deno.env.get("MOE_FUSE") !== "0", moeDnRows: +(Deno.env.get("MOE_DN_ROWS") || 1) });   // MOE_FUSE=0: unfused MoE kernels (A/B)
 const ids = tok.encode("The capital of France is"); for (const id of ids) await eng.forwardToken(id);
 // wall time, normal path
 let t0 = performance.now(); for (let i = 0; i < 20; i++) await eng.forwardToken(1); const wall = (performance.now() - t0) / 20;

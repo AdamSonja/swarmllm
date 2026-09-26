@@ -11,7 +11,7 @@ const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer); const tok = makeT
 const arch = G.meta["general.architecture"], L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
 const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true });
 const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,
-  moeFuse: Deno.env.get("MOE_FUSE") !== "0", moeDnRows: +(Deno.env.get("MOE_DN_ROWS") || 2) });   // MOE_FUSE=0: unfused MoE kernels (A/B)
+  moeFuse: Deno.env.get("MOE_FUSE") !== "0", moeDnRows: +(Deno.env.get("MOE_DN_ROWS") || 1) });   // MOE_FUSE=0: unfused MoE kernels (A/B)
 // count dispatches per pipeline for one token
 const count = {}; const wrap = (fn, nameOf) => function (...a) { const n = nameOf(a); count[n] = (count[n] || 0) + 1; return fn.apply(this, a); };
 const o3 = eng._d3, oxyz = eng._dxyz, od = eng._d;
