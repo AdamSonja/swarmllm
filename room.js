@@ -1317,16 +1317,17 @@ async function aiStart(modelArg) {
       log("swarm", `⚠ this model needs ~${needGB.toFixed(1)} GB but the room pledged ~${haveGB.toFixed(1)} GB — it may not fit`);
 
     ai.deferred = [];
-    // what every device already has cached, so each one can take its missing ranges from the room
+    // what every device already has cached, so each one can take its missing ranges from the room.
+    // The host itself is never a source: it is loading its own layers and serving the whole room,
+    // so a device missing a range goes to the model host instead of queueing behind it.
     const inv = M.gguf && conns.size ? await gatherInventory(M.gguf) : {};
-    const mine = M.gguf ? await cachedRanges(M.gguf) : [];
     ai.wsrc = M.gguf ? weightSources(M.gguf, inv) : null;
     ai.chain.forEach((id, i) => {
       const msg = {
         t: "ai-load", model: modelKey, range: ranges[i + 1],
         next: i + 1 < ai.chain.length ? ai.chain[i + 1] : "host",
         host: peer.id,
-        inv: { ...inv, [peer.id]: mine },
+        inv,
       };
       ai.plan.set(conns.get(id)?.name || id, { msg, small: false });
       sendTo(id, msg);
