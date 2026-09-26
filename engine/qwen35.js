@@ -971,10 +971,14 @@ export class Qwen35Engine {
     const [qkv, z] = fz ? segB([D.convDim, D.dInner]) : [mkB(D.convDim), mkB(D.dInner)];
     const [betaRaw, alpha] = fz ? segB([D.nVH, D.nVH]) : [mkB(D.nVH), mkB(D.nVH)];
     const [k, v] = fz ? segB([D.kvDim, D.kvDim]) : [mkB(D.kvDim), mkB(D.kvDim)];
+    // dn_gates_mc / dn_pre_mc index alpha, betaRaw, beta and decay with ONE column stride (s0), so
+    // beta and decay must share the merged [betaRaw | alpha] buffer's stride
+    const mkS = (n, stride) => ({ buf: dev.createBuffer({ size: NC * stride, usage: S }), stride, n });
+    const [beta, decay] = fz ? [mkS(D.nVH, alpha.stride), mkS(D.nVH, alpha.stride)] : [mkB(D.nVH), mkB(D.nVH)];
     const B = this.B = {
       x: mkB(D.dim), xn: mkB(D.dim), tmpDim: mkB(D.dim), g: mkB(D.inter), u: mkB(D.inter),
       qkv, convOut: mkB(D.convDim), z,
-      alpha, betaRaw, beta: mkB(D.nVH), decay: mkB(D.nVH),
+      alpha, betaRaw, beta, decay,
       dOut: mkB(D.dInner), gated: mkB(D.dInner),
       qFull: mkB(D.nH * D.hd * 2), q: mkB(D.qDim), gAttn: mkB(D.qDim),
       k, v, attnOut: mkB(D.qDim),

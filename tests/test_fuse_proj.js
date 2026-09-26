@@ -17,19 +17,23 @@ const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer, { skipTokenizer: t
 const L = +(Deno.env.get("LAYERS") || 8);
 const NC = +(Deno.env.get("BCOLS") || 16);
 const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true });
-const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, vocab: 248320, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 128, batchCols: NC, coopRowsB: NC === 16 ? 1 : 4 });
+const mk = (w, fuseProj) => Qwen35Engine.create({ device, meta: G.meta, weights: w, vocab: 248320, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 128, batchCols: NC, coopRowsB: NC === 16 ? 1 : 4, fuseProj });
+const eng = await mk(weights, true);
+// reference with the old separate buffers (fuseProj: false at create): catches layout bugs that the
+// runtime switch cannot (it runs over the merged buffers and their strides)
+const ref = await mk(await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true }), false);
 console.log("fuseStats", JSON.stringify(eng.fuseStats));
 let fail = eng.fuseStats.merged === 0 || eng.fuseStats.decodeOps === 0;
 if (fail) console.log("nothing was merged");
 const ids = [760, 6511, 315, 9109, 3139, 1234, 42, 7, 999, 31337, 2048, 4096, 11, 12, 13, 14, 15, 16, 17, 18];
 const bits = (a) => new Uint32Array(Float32Array.from(a).buffer);
 const same = (a, b) => { const x = bits(a), y = bits(b); if (x.length !== y.length) return false; for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false; return true; };
-const run = async (fuse, mode) => {
-  eng.fuseProj = fuse; eng.reset(); eng.pos = 0;
-  if (mode === "seq") { let last; for (const t of ids.slice(0, 12)) last = await eng.forwardToken(t); return last; }
+const run = async (fuse, mode, e = eng) => {
+  e.fuseProj = fuse; e.reset(); e.pos = 0;
+  if (mode === "seq") { let last; for (const t of ids.slice(0, 12)) last = await e.forwardToken(t); return last; }
   // mode = batch width list: consecutive batched passes of these widths (NC = the GEMM prefill)
   let pos = 0, out = [];
-  for (const w of mode) { const hs = await eng.embedRunBatch(ids.slice(pos, pos + w), pos); pos += w; out = hs; }
+  for (const w of mode) { const hs = await e.embedRunBatch(ids.slice(pos, pos + w), pos); pos += w; out = hs; }
   return out;
 };
 const count = async (fuse) => {
@@ -40,9 +44,9 @@ const count = async (fuse) => {
   return n;
 };
 for (const mode of ["seq", [NC, 4], [3, 1, 8], [2, 5]]) {
-  const a = await run(true, mode), b = await run(false, mode);
-  const ok = same(a, b);
-  console.log(`${JSON.stringify(mode).padEnd(10)} merged == separate: ${ok ? "yes" : "NO"}`);
+  const a = await run(true, mode), b = await run(false, mode), c = await run(false, mode, ref);
+  const ok = same(a, b) && same(a, c);
+  console.log(`${JSON.stringify(mode).padEnd(10)} merged == separate: ${same(a, b) ? "yes" : "NO"}  == unfused engine: ${same(a, c) ? "yes" : "NO"}`);
   if (!ok) fail = true;
 }
 console.log(`dispatches per decode token (${L} layers + head): merged ${await count(true)}, separate ${await count(false)}`);
