@@ -15,8 +15,14 @@ try {
   G.streamEntry = (info) => streamEntryToGPU(device, info, (i) => fetch(MODEL, { headers: { Range: `bytes=${i.byteOffset}-${i.byteOffset + i.byteLength - 1}` } }));
   let t0 = performance.now();
   const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true });
-  const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512 });
-  log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!!eng.mtp}, adapter ${ad.info?.vendor}`);
+  // draft-side A/B knobs (speed only, the output must not change): draftvocab=N (0 = full head),
+  // dvauto=0 (small head always, no language fallback), mtprefill=0 (one refill submit per row),
+  // predraft=0 (no pre-run of the next step's first draft), batchcols=N
+  const opt = (k, d) => (q.has(k) ? +q.get(k) : d);
+  const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,
+    draftVocab: opt("draftvocab", 0), draftVocabAuto: opt("dvauto", 1) !== 0, ...(q.has("batchcols") ? { batchCols: +q.get("batchcols"), coopRowsB: +q.get("batchcols") >= 16 ? 1 : 4 } : {}) });
+  eng.mtpBatchRefill = opt("mtprefill", 1) !== 0; eng.mtpPreDraft = opt("predraft", 1) !== 0;
+  log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!!eng.mtp}, adapter ${ad.info?.vendor}, draftVocab ${eng.draftVocab || "off"}, refill ${eng.mtpBatchRefill ? "batched" : "per-row"}, predraft ${eng.mtpPreDraft}`);
   const V = tok.vocab, chat = (s) => [V["<|im_start|>"], ...tok.encode("user\n" + s), V["<|im_end|>"], ...tok.encode("\n"), V["<|im_start|>"], ...tok.encode("assistant\n"), V["<think>"], ...tok.encode("\n\n"), V["</think>"], ...tok.encode("\n\n")];
   const out = [];
   for (const [i, prompt] of ["Write the Python code for two sum. Code only.", "Explain what a hash map is in two sentences."].entries()) {
@@ -28,7 +34,7 @@ try {
     let spec = null, same = null, acc = "";
     if (eng.mtp) { eng.reset(); eng.mtpFill = true; eng.mtp.stats = { drafts: 0, accepted: 0 }; await eng.prefillTokens(ids.slice(0, -1)); lg = await eng.forwardToken(ids.at(-1));
       next = argmax(lg); const sp = [next]; t0 = performance.now(); while (sp.length < N) { for (const x of await eng.specStep(next, argmax, K)) sp.push(x); next = sp.at(-1); }
-      spec = (sp.length - 1) / ((performance.now() - t0) / 1000); same = gen.every((x, j) => sp[j] === x); acc = `${eng.mtp.stats.accepted}/${eng.mtp.stats.drafts}`; }
+      spec = (sp.length - 1) / ((performance.now() - t0) / 1000); same = gen.every((x, j) => sp[j] === x); acc = `${eng.mtp.stats.accepted}/${eng.mtp.stats.drafts}${eng.draftVocab ? ` (small head ${eng._dvSmall ? "on" : "off"})` : ""}`; }
     const r = { prompt, plain: +plain.toFixed(2), spec: spec && +spec.toFixed(2), acceptance: acc, specIdentical: same, golden: g ? (n > 20 && text.slice(0, n) === g.slice(0, n)) : null, text: text.slice(0, 90) };
     out.push(r); log(JSON.stringify(r));
   }
