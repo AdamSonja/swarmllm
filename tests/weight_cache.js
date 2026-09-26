@@ -90,12 +90,12 @@ class WeightCache {
   }
   file(name) { return path.join(this.dir, name.replace(/[^A-Za-z0-9._-]/g, "_") + ".bin"); }
 
-  // Entry for this tensor from disk, or null (missing, corrupt, wrong size): caller converts fresh.
-  get(info) {
+  // Validate an entry's header and exact size against the tensor info, without reading the
+  // payload: { fd, kind, L, hash } (caller closes fd) or null. Bad entries are counted and warned.
+  _open(info) {
     const f = this.file(info.name);
     let fd;
     try { fd = fs.openSync(f, "r"); } catch { this.stats.miss++; return null; }
-    const t0 = performance.now();
     try {
       const size = fs.fstatSync(fd).size;
       if (size < HDR) throw new Error("short header");
@@ -106,18 +106,48 @@ class WeightCache {
       if (!kind || dv.getUint32(12, true) !== info.ggmlType || dv.getFloat64(16, true) !== info.nElems) throw new Error("wrong tensor");
       const L = layout(info, kind);
       if (dv.getFloat64(24, true) !== L.a || dv.getFloat64(32, true) !== L.b) throw new Error("wrong layout");
-      const body = L.a + L.pad + L.b;
-      if (size !== HDR + body) throw new Error(`size ${size} != ${HDR + body}`);
-      const u8 = new Uint8Array(body); readFull(fd, u8, HDR);
-      if (this.verify && payloadHash(u8) !== dv.getUint32(40, true)) throw new Error("checksum");
-      this.stats.hit++; this.stats.hitBytes += size; this.stats.readMs += performance.now() - t0;
+      if (size !== HDR + L.a + L.pad + L.b) throw new Error(`size ${size} != ${HDR + L.a + L.pad + L.b}`);
+      return { fd, kind, L, hash: dv.getUint32(40, true), size };
+    } catch (err) {
+      fs.closeSync(fd);
+      this._bad(f, err);
+      return null;
+    }
+  }
+  _bad(f, err) {
+    this.stats.bad++;
+    if (this.stats.bad <= 3) console.warn(`weight cache: ignoring ${path.basename(f)} (${err.message}), converting fresh`);
+  }
+
+  // Entry for this tensor from disk, or null (missing, corrupt, wrong size): caller converts fresh.
+  get(info) {
+    const t0 = performance.now();
+    const o = this._open(info);
+    if (!o) return null;
+    const { fd, kind, L } = o;
+    try {
+      const u8 = new Uint8Array(L.a + L.pad + L.b); readFull(fd, u8, HDR);
+      if (this.verify && payloadHash(u8) !== o.hash) throw new Error("checksum");
+      this.stats.hit++; this.stats.hitBytes += o.size; this.stats.readMs += performance.now() - t0;
       if (kind === "f32") return { kind, data: new Float32Array(u8.buffer, 0, info.nElems) };
       return { kind, qs: new Uint8Array(u8.buffer, 0, L.a), scales: new Uint32Array(u8.buffer, L.a + L.pad, L.b / 4), shape: info.shape };
     } catch (err) {
-      this.stats.bad++;
-      if (this.stats.bad <= 3) console.warn(`weight cache: ignoring ${path.basename(f)} (${err.message}), converting fresh`);
+      this._bad(this.file(info.name), err);
       return null;
     } finally { fs.closeSync(fd); }
+  }
+
+  // For serving an entry without reading it into memory (tests/bench/serve.mjs): a validated
+  // { file, offset, kind, a, pad, b } for the payload bytes, or null. Header and size are checked;
+  // the payload checksum only with verify on (then the payload is read once here).
+  locate(info) {
+    const o = this._open(info);
+    if (!o) return null;
+    try {
+      if (this.verify) { const u8 = new Uint8Array(o.L.a + o.L.pad + o.L.b); readFull(o.fd, u8, HDR); if (payloadHash(u8) !== o.hash) { this._bad(this.file(info.name), new Error("checksum")); return null; } }
+      this.stats.hit++; this.stats.hitBytes += o.size;
+      return { file: this.file(info.name), offset: HDR, kind: o.kind, a: o.L.a, pad: o.L.pad, b: o.L.b };
+    } finally { fs.closeSync(o.fd); }
   }
 
   // Store a freshly converted entry (atomic: temp file + rename).
@@ -165,7 +195,8 @@ export function openWeightCache(ggufPath, opts = {}) {
   if (!root) return null;
   let real, st;
   try { real = fs.realpathSync(ggufPath); st = fs.statSync(real); } catch { return null; }
-  const meta = { gguf: real, size: st.size, mtimeMs: st.mtimeMs, loader: LOADER_VERSION, variant: opts.variant || "" };
+  const meta = { gguf: real, size: st.size, mtimeMs: Math.floor(st.mtimeMs),   // Deno reports whole ms, Node fractional
+    loader: LOADER_VERSION, variant: opts.variant || "" };
   const key = crypto.createHash("sha256").update(JSON.stringify(meta)).digest("hex").slice(0, 16);
   const dir = path.join(root, `${path.basename(real, ".gguf")}-${key}`);
   const c = new WeightCache(dir, meta);

@@ -7,16 +7,56 @@ import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF, streamEntryToGPU } f
 const q = new URLSearchParams(location.search), MODEL = q.get("model"), N = +(q.get("tokens") || 40), K = +(q.get("k") || 3), GOLD = JSON.parse(q.get("gold") || "[]");
 const log = (s) => { document.getElementById("log").textContent += s + "\n"; console.log(s); };
 const readAt = async (off, len) => { const r = await fetch(MODEL, { headers: { Range: `bytes=${off}-${off + len - 1}` } }); return new Uint8Array(await r.arrayBuffer()); };
+async function wcacheEntry(device, info) {
+  const r = await fetch(`/__wcache?model=${encodeURIComponent(MODEL)}&name=${encodeURIComponent(info.name)}`);
+  if (!r.ok) throw new Error(`wcache ${info.name}: HTTP ${r.status} ${await r.text()}`);
+  const kind = r.headers.get("X-Kind"), A = +r.headers.get("X-A"), P = +r.headers.get("X-Pad"), B = +r.headers.get("X-B");
+  if (r.headers.get("X-Shape") !== JSON.stringify(info.shape)) throw new Error(`wcache ${info.name}: shape ${r.headers.get("X-Shape")} != ${JSON.stringify(info.shape)}`);
+  if (kind === "f32" || info.name === "token_embd.weight") {   // small tensors, and the embedding (row lookups on the CPU)
+    const buf = await r.arrayBuffer();
+    if (kind === "f32") return { kind, data: new Float32Array(buf, 0, A / 4) };
+    return { kind, qs: new Uint8Array(buf, 0, A), scales: new Uint32Array(buf, A + P, B / 4), shape: info.shape };
+  }
+  const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+  device.pushErrorScope("out-of-memory");
+  const qs = device.createBuffer({ size: Math.ceil(A / 4) * 4, usage }), sc = device.createBuffer({ size: Math.ceil(B / 4) * 4, usage });
+  if (await device.popErrorScope()) throw new Error(`GPU out of memory allocating ${info.name}`);
+  const regions = [[0, A, qs], [A + P, B, sc]], STAGE = 8 << 20, stage = new Uint8Array(STAGE);
+  let ri = 0, off = 0, st = 0, pos = 0, sinceSync = 0;
+  const reader = r.body.getReader();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    for (let i = 0; i < value.length && ri < regions.length;) {
+      const [start, len, gb] = regions[ri];
+      if (pos < start) { const k = Math.min(start - pos, value.length - i); i += k; pos += k; continue; }   // alignment pad
+      const k = Math.min(len - off - st, STAGE - st, value.length - i);
+      stage.set(value.subarray(i, i + k), st); st += k; i += k; pos += k;
+      if (st === STAGE || off + st === len) {   // chunks are 4-byte multiples: STAGE, or a region's (4-aligned) tail
+        device.queue.writeBuffer(gb, off, stage.buffer, 0, st);
+        off += st; sinceSync += st; st = 0;
+        if (off === len) { ri++; off = 0; }
+      }
+    }
+    if (sinceSync > 256 << 20) { sinceSync = 0; await device.queue.onSubmittedWorkDone(); }   // bound the GPU process's upload backlog
+  }
+  if (ri !== regions.length) throw new Error(`wcache ${info.name}: short body`);
+  return { kind, shape: info.shape, gpu: { kind, qs, sc } };
+}
 try {
   const ad = await navigator.gpu.requestAdapter(); const device = await ad.requestDevice({ requiredLimits: { maxBufferSize: ad.limits.maxBufferSize, maxStorageBufferBindingSize: ad.limits.maxStorageBufferBindingSize } });
   const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer); const tok = makeTokenizer(tokenizerFromGGUF(G.meta));
   const arch = G.meta["general.architecture"], L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
   // stream Q4_0/Q8_0 tensors straight into GPU buffers, as the room does (a 21 GB model does not fit in a tab's JS heap)
   G.streamEntry = (info) => streamEntryToGPU(device, info, (i) => fetch(MODEL, { headers: { Range: `bytes=${i.byteOffset}-${i.byteOffset + i.byteLength - 1}` } }));
+  // ?wcache=1: take each tensor already converted from serve.mjs's weight cache (the same bytes the
+  // repack below would produce) and write it straight into its GPU buffers; loading only, the
+  // engine and every kernel are unchanged
+  if (q.get("wcache") === "1") G.entryCache = { put() {}, get: (info) => wcacheEntry(device, info) };
   let t0 = performance.now();
   const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true });
   const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512 });
-  log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!!eng.mtp}, adapter ${ad.info?.vendor}`);
+  log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s${G.entryCache ? " (pre-converted tensors from serve.mjs)" : ""}, mtp ${!!eng.mtp}, adapter ${ad.info?.vendor}`);
   const V = tok.vocab, chat = (s) => [V["<|im_start|>"], ...tok.encode("user\n" + s), V["<|im_end|>"], ...tok.encode("\n"), V["<|im_start|>"], ...tok.encode("assistant\n"), V["<think>"], ...tok.encode("\n\n"), V["</think>"], ...tok.encode("\n\n")];
   const out = [];
   for (const [i, prompt] of ["Write the Python code for two sum. Code only.", "Explain what a hash map is in two sentences."].entries()) {
