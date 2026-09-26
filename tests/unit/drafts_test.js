@@ -105,3 +105,11 @@ Deno.test("draftVocabAuto: small head off above 5% ids >= draftVocab, back on be
   e.draftVocabAuto = false; e._dvSmall = false; eq(e._smallHead(), true, "auto off: always small");
   e.headOpDraft = null; eq(e._smallHead(), false, "no small head built");
 });
+
+Deno.test("draftVocabAuto: chat-template control tokens do not count as misses", () => {
+  const e = Object.create(Qwen35Engine.prototype);
+  const skip = new Uint8Array(500); skip[400] = 1; skip[401] = 1;   // ids 500, 501 are control tokens
+  Object.assign(e, { headOpDraft: {}, draftVocab: 100, draftVocabAuto: true, _dvMiss: 0, _dvSmall: true, _dvSkip: skip });
+  e._noteDV([500, 5, 501, 5, 5, 500, 5, 501, 5, 5]); eq(e._smallHead(), true, "control tokens ignored");
+  e._noteDV([300, 5, 5, 5, 300, 5, 5, 5]); eq(e._smallHead(), false, "normal rare ids still count");
+});

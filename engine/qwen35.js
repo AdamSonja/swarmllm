@@ -225,7 +225,9 @@ export class Qwen35Engine {
     // (prefill tolerance, not bit-identical). A 15-draft lookup run at NC=16 was such a pass, so
     // cap the run one short of that: every verify stays on the GEMV ladder and spec == plain holds
     // by construction. Drafts only: no kernel changes, a copy run just verifies 14 at a time.
-    if (this.gemmOn) this.maxDrafts = Math.min(this.maxDrafts, batchCols - 2);
+    // Only when the longest run is exactly one short of NC (NC = 8, 16): at NC = 4 the runs are
+    // up to 7 and a cap of 2 would gut lookup, so NC = 4 keeps its old limit.
+    if (this.gemmOn && this.maxDrafts === batchCols - 1) this.maxDrafts = batchCols - 2;
     this._gemmDIns = [...new Set([...this._gemmShapes.keys()].map((k) => +k.split("x")[1]))];
     this._gemmSplits = [...new Set(this._gemmShapes.values())];
     this._gemmPairs = [...new Set([...this._gemmShapes].map(([k, S]) => `${k.split("x")[1]}:${S}`))].map((x) => x.split(":").map(Number));
@@ -553,6 +555,15 @@ export class Qwen35Engine {
         // head while it is high. draftVocabAuto = false keeps the small head always on.
         this.draftVocabAuto = draftVocabAuto !== false;
         this._dvMiss = 0; this._dvSmall = true;
+        // Chat-template control tokens (<|im_start|>, <think>, ...) sit at the top of the vocab but
+        // say nothing about the language, and a short chat prompt is ~20% of them, which pushed
+        // every English chat onto the full head. Leave non-normal tokens (GGUF token_type 3/4/5:
+        // control, user-defined, unused) out of the average.
+        const tt = M["tokenizer.ggml.token_type"];
+        if (tt?.length > dv) {
+          this._dvSkip = new Uint8Array(tt.length - dv);
+          for (let i = dv; i < tt.length; i++) if (tt[i] >= 3 && tt[i] <= 5) this._dvSkip[i - dv] = 1;
+        }
       }
     }
 
@@ -1266,7 +1277,8 @@ export class Qwen35Engine {
     if (!this.headOpDraft || !this.draftVocabAuto) return;
     const dv = this.draftVocab;
     let m = this._dvMiss;
-    for (const t of ids) m += ((t >= dv ? 1 : 0) - m) / 32;
+    const skip = this._dvSkip;
+    for (const t of ids) { if (skip && t >= dv && skip[t - dv]) continue; m += ((t >= dv ? 1 : 0) - m) / 32; }
     this._dvMiss = m;
     if (this._dvSmall && m > 0.05) this._dvSmall = false;        // hysteresis: off above 5%,
     else if (!this._dvSmall && m < 0.025) this._dvSmall = true;  // back on below 2.5%
