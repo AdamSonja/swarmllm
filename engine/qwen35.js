@@ -8,7 +8,7 @@ import { WGSL } from "./wgsl/base.js";
 import { gemmWGSL, GEMM_S, GEMM_TILE } from "./wgsl/gemm.js";
 import { coopWGSL, probeUnpack } from "./wgsl/coop.js";
 import { WGSL2 } from "./wgsl/qwen35.js";
-import { moeWGSL } from "./wgsl/moe.js";
+import { moeWGSL, moeFusedWGSL } from "./wgsl/moe.js";
 import { f16ToF32 } from "./gguf.js";
 
 
@@ -121,7 +121,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = false, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = false, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, moeFuse = true, moeDnRows = 2 }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -145,6 +145,28 @@ export class Qwen35Engine {
       shInter: M["qwen35.expert_shared_feed_forward_length"] || 0, norm: M["qwen35.expert_weights_norm"] === false ? 0 : 1 } : null;
     if (this.moe && (nExp > 1024 || !(this.moe.K > 0) || this.moe.K > 16)) throw new Error(`unsupported MoE shape: ${nExp} experts, top-${this.moe.K}`);
     const inter = this.moe ? (this.moe.shInter || this.moe.inter) : M["qwen35.feed_forward_length"];
+    // Fused MoE FFN (engine/wgsl/moe.js moeFusedWGSL): router GEMV with the shared-expert gate as row
+    // nExp, moe_route, gate/up over K + 1 slots (the shared expert is slot K), down + combine + residual
+    // in one launch: 5 dispatches per MoE layer instead of 9. Needs a shared expert, an F32 router and
+    // shared gate, Q4_0 / Q8_0 shared weights we can repack, on every MoE layer; otherwise (or with
+    // moeFuse: false) the unfused kernels run. moeDnRows: output rows per moe_dnc workgroup (1, 2, 4).
+    this.moeFuse = false;
+    if (this.moe && moeFuse !== false) {
+      const { nExp: nE, inter: ei } = this.moe;
+      const q = (e) => !!e && (e.kind === "q4" || e.kind === "q8");
+      const COPY = GPUBufferUsage.COPY_SRC;
+      const packable = (e) => q(e) && (e.gpu ? !!(e.gpu.qs?.usage & COPY) && !!(e.gpu.sc?.usage & COPY) : !!(e.qs && e.scales));
+      const f32 = (e, n) => !!e && e.kind === "f32" && !!e.data && e.data.length === n;
+      const moeLs = [...weights.layers, ...(weights.mtp && hasHead ? [weights.mtp.layer] : [])].filter((L) => L.moe);
+      const ok = (L) => f32(L.router, nE * M["qwen35.embedding_length"]) && f32(L.shRouter, M["qwen35.embedding_length"])
+        && q(L.expGate) && q(L.expDown) && L.shGate && L.shUp && L.shGate.kind === L.shUp.kind && packable(L.shGate) && packable(L.shUp) && q(L.shDown);
+      if (moeLs.length && moeLs.every(ok) && inter % 32 === 0 && [1, 2, 4].includes(moeDnRows)) {
+        this.moeFuse = true;
+        this.moe.KS = this.moe.K + 1; this.moe.sDim = inter; this.moe.hs = Math.max(ei, inter); this.moe.R = moeDnRows;
+        this.moe.guPairs = [...new Set(moeLs.map((L) => L.expGate.kind + "_" + L.shGate.kind))];
+        this.moe.dnPairs = [...new Set(moeLs.map((L) => L.expDown.kind + "_" + L.shDown.kind))];
+      }
+    }
     const dState = M["qwen35.ssm.state_size"];
     const nKH = M["qwen35.ssm.group_count"];
     const nVH = M["qwen35.ssm.time_step_rank"];
@@ -226,6 +248,7 @@ export class Qwen35Engine {
     const unpack = await probeUnpack(device);
     const mod = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, coopRows, 64, batchCols, coopRowsB, unpack)
       + (this.moe ? moeWGSL() : "")
+      + (this.moeFuse ? moeFusedWGSL({ K: this.moe.K, R: this.moe.R, gu: this.moe.guPairs.map((p) => p.split("_")), dn: this.moe.dnPairs.map((p) => p.split("_")) }) : "")
       + (this.gemmOn ? gemmWGSL({ N: batchCols, pairs: this._gemmPairs, pairs8: this._gemm8Pairs, UNPACK: unpack }) : "") + WGSL2 });
     const C = GPUShaderStage.COMPUTE;
     const layout0 = device.createBindGroupLayout({
@@ -275,6 +298,11 @@ export class Qwen35Engine {
       moe_gu_q4: ["ro", "ro", "ro", "ro", "ro", "rw", "ro", "u"], moe_gu_q8: ["ro", "ro", "ro", "ro", "ro", "rw", "ro", "u"],
       moe_dn_q4: ["ro", "ro", "ro", "rw", "ro", "u"], moe_dn_q8: ["ro", "ro", "ro", "rw", "ro", "u"],
     });
+    if (this.moeFuse) {
+      G1.moe_route = ["ro", "rw", "rw", "u"];
+      for (const p of this.moe.guPairs) G1["moe_gus_" + p] = ["ro", "ro", "ro", "ro", "ro", "rw", "ro", "ro", "u"];
+      for (const p of this.moe.dnPairs) G1["moe_dnc_" + p] = ["ro", "ro", "ro", "rw", "ro", "ro", "ro", "ro", "u"];
+    }
     // narrower twins: a verify or tail pass with w live columns pays for w, not batchCols
     for (const W of [8, 4]) if (batchCols > W) Object.assign(G1, {
       [`matvec_coop_b${W}`]: G1.matvec_coop_b, [`matvec_q8_coop_b${W}`]: G1.matvec_q8_coop_b, [`matvec_q4_coop_b${W}`]: G1.matvec_q4_coop_b,
@@ -397,11 +425,29 @@ export class Qwen35Engine {
     this.layers = [];
     if (this.moe) {   // one token's routing and expert activations
       const { nExp, K, inter: ei } = this.moe;
-      this.moeB = { logits: device.createBuffer({ size: nExp * 4, usage: S }), sel: device.createBuffer({ size: 16 * 4, usage: S }),
-        selw: device.createBuffer({ size: 16 * 4, usage: S }), h: device.createBuffer({ size: K * ei * 4, usage: S }),
+      this.moeB = { logits: device.createBuffer({ size: (nExp + 1) * 4, usage: S }), sel: device.createBuffer({ size: 32 * 4, usage: S }),
+        selw: device.createBuffer({ size: 32 * 4, usage: S }), h: device.createBuffer({ size: K * ei * 4, usage: S }),
         y: device.createBuffer({ size: K * dim * 4, usage: S }), sh: device.createBuffer({ size: dim * 4, usage: S }),
         sg: device.createBuffer({ size: 16, usage: S }) };
+      if (this.moeFuse) this.moeB.hF = device.createBuffer({ size: this.moe.KS * this.moe.hs * 4, usage: S });
     }
+    // fused MoE: the shared expert's gate and up (qs and f16 scales) packed into one buffer, so the
+    // gate/up kernel stays within 8 storage bindings: [gate qs | up qs | gate scales | up scales]
+    const packGU = (g, u) => {
+      const parts = [g.gpu ? g.gpu.qs : g.qs, u.gpu ? u.gpu.qs : u.qs, g.gpu ? g.gpu.sc : g.scales, u.gpu ? u.gpu.sc : u.scales];
+      const sizes = parts.map((b) => b.byteLength !== undefined ? b.byteLength : b.size);
+      if (sizes.some((n) => n % 4)) throw new Error("packGU: unaligned shared-expert tensor");
+      const offs = [0]; for (const n of sizes) offs.push(offs[offs.length - 1] + n);
+      const buf = device.createBuffer({ size: offs[4], usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      let enc = null;
+      parts.forEach((b, i) => {
+        if (b.byteLength !== undefined) device.queue.writeBuffer(buf, offs[i], b.buffer, b.byteOffset, b.byteLength);
+        else (enc ||= device.createCommandEncoder()).copyBufferToBuffer(b, 0, buf, offs[i], sizes[i]);
+      });
+      if (enc) device.queue.submit([enc.finish()]);
+      g.qs = g.scales = u.qs = u.scales = null;   // release the CPU copies
+      return { buf, oUq: offs[1] / 4, oGs: offs[2] / 4, oUs: offs[3] / 4 };
+    };
     const moeKind = (e, what) => {
       if (e.kind !== "q4" && e.kind !== "q8") throw new Error(`MoE ${what} weights must be Q4_0 or Q8_0 (got ${e.kind})`);
       return e.kind;
@@ -411,7 +457,31 @@ export class Qwen35Engine {
       R.attnNorm = up(L.attnNorm); R.postNorm = up(L.postNorm);
       R.bgNorm1 = bgNorm(this.x, R.attnNorm, this.xn);
       R.bgNorm2 = bgNorm(this.x, R.postNorm, this.xn);
-      if (L.moe) {
+      if (L.moe && this.moeFuse) {
+        const { nExp, inter: ei, norm, sDim, hs } = this.moe, MB = this.moeB;
+        R.moe = true; R.fused = true; R.shared = true;
+        // router and shared-expert gate as one F32 [nExp + 1][dim] matrix: one GEMV, logit nExp is the shared gate
+        const rp = new Float32Array((nExp + 1) * dim);
+        rp.set(L.router.data); rp.set(L.shRouter.data, nExp * dim);
+        L.router.data = L.shRouter.data = null;
+        R.router = { kind: "f32", buf: this._buf(rp, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC) };
+        R.expGate = up(L.expGate); R.expUp = up(L.expUp); R.expDown = up(L.expDown);
+        const lim = device.limits.maxStorageBufferBindingSize;
+        for (const [w, n] of [[R.expGate, "ffn_gate_exps"], [R.expUp, "ffn_up_exps"], [R.expDown, "ffn_down_exps"]])
+          if (w.qs.size > lim) throw new Error(`${n} is ${(w.qs.size / 2 ** 20).toFixed(0)} MB, over this device's ${(lim / 2 ** 20).toFixed(0)} MB storage-binding limit (a Q4_0 file needs less)`);
+        if (R.expUp.kind !== R.expGate.kind) throw new Error("MoE gate and up experts must share a format");
+        R.shPack = packGU(L.shGate, L.shUp);
+        R.ffnDown = up(L.shDown);
+        R.gusPipe = `moe_gus_${R.expGate.kind}_${L.shGate.kind}`; R.dncPipe = `moe_dnc_${R.expDown.kind}_${R.ffnDown.kind}`;
+        R.moeU = (xs, dOut, dIn, ys, pk) => [dOut, dIn, sDim, nExp, xs, ys, norm, 1, pk ? pk.oUq : 0, pk ? pk.oGs : 0, pk ? pk.oUs : 0, 0];
+        const U = (a) => this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM);
+        R.mvRouter = mv(R.router, this.xn, MB.logits, nExp + 1, dim);
+        R.bgRoute = this._bg(this.pipes.moe_route, 1, [MB.logits, MB.sel, MB.selw, U(R.moeU(nExp + 1, 0, 0, 0))]);
+        R.bgGus = this._bg(this.pipes[R.gusPipe], 1, [R.expGate.qs, R.expGate.sc, R.expUp.qs, R.expUp.sc, this.xn, MB.hF, MB.sel, R.shPack.buf,
+          U(R.moeU(dim, ei, dim, hs, R.shPack))]);
+        R.bgDnc = this._bg(this.pipes[R.dncPipe], 1, [R.expDown.qs, R.expDown.sc, MB.hF, this.x, MB.sel, MB.selw, R.ffnDown.qs, R.ffnDown.sc,
+          U(R.moeU(dim, dim, ei, hs))]);
+      } else if (L.moe) {
         const { nExp, K, inter: ei, norm } = this.moe, MB = this.moeB;
         R.moe = true;
         R.router = up(L.router); R.expGate = up(L.expGate); R.expUp = up(L.expUp); R.expDown = up(L.expDown);
@@ -726,6 +796,15 @@ export class Qwen35Engine {
     const D = this.dims;
     const p = enc.beginComputePass();
     this._d(p, "rmsnorm", L.bgNorm2, 256, 256);
+    if (L.fused) {   // router (+ shared gate) GEMV, route, gate/up over K + 1 slots, down + combine
+      const { KS, hs, R } = this.moe;
+      this._dop(p, L.mvRouter);
+      this._dxyz(p, "moe_route", L.bgRoute, 1, 1, 1);
+      this._dxyz(p, L.gusPipe, L.bgGus, Math.ceil(hs / 4), KS, 1);
+      this._dxyz(p, L.dncPipe, L.bgDnc, Math.ceil(D.dim / R), 1, 1);
+      p.end();
+      return;
+    }
     if (L.moe) {
       const { K, inter: ei } = this.moe;
       this._dop(p, L.mvRouter);
@@ -885,7 +964,8 @@ export class Qwen35Engine {
       "rmsnorm_mc", "add_res_mc", "dn_gates_mc", "dn_conv_mc", "dn_l2_mc", "dn_pre_mc", "dn_delta_mc", "dn_gatenorm_mc",
       "qsplit_mc", "head_norm_mc", "rope_part_mc", "sigmoid_mul_mc", "attn_glue",
       "attn_scores_mc", "attn_softmax_wg_mc", "attn_out_mc", "kv_store", "attn_flash", "attn_combine", "kv_store_q8", "attn_flash_q8", "attn_flash_t2",
-      ...(this.moe ? ["moe_router", "moe_combine", "moe_gu_q4", "moe_gu_q8", "moe_dn_q4", "moe_dn_q8"] : [])];
+      ...(this.moe ? ["moe_router", "moe_combine", "moe_gu_q4", "moe_gu_q8", "moe_dn_q4", "moe_dn_q8"] : []),
+      ...(this.moeFuse ? ["moe_route", ...this.moe.guPairs.map((p) => "moe_gus_" + p), ...this.moe.dnPairs.map((p) => "moe_dnc_" + p)] : [])];
     this.bgCommonB = cix.map((c) => {
       const m = {};
       for (const name of colPipes)
@@ -929,9 +1009,10 @@ export class Qwen35Engine {
     this._mcU = this._mcU || {};
     if (this.moe && !B.mLogits) {   // routing + expert activations for every column
       const { nExp, K, inter: ei } = this.moe;
-      Object.assign(B, { mLogits: mkB(nExp), mSh: mkB(D.dim), mSg: mkB(1),
-        mSel: dev.createBuffer({ size: NC * K * 4, usage: S }), mSelw: dev.createBuffer({ size: NC * K * 4, usage: S }),
+      Object.assign(B, { mLogits: mkB(nExp + 1), mSh: mkB(D.dim), mSg: mkB(1),
+        mSel: dev.createBuffer({ size: NC * (K + 1) * 4, usage: S }), mSelw: dev.createBuffer({ size: NC * (K + 1) * 4, usage: S }),
         mH: dev.createBuffer({ size: NC * K * ei * 4, usage: S }), mY: dev.createBuffer({ size: NC * K * D.dim * 4, usage: S }) });
+      if (this.moeFuse) B.mHF = dev.createBuffer({ size: NC * this.moe.KS * this.moe.hs * 4, usage: S });
     }
     if (this.flash) this.faUB = this._buf(new Uint32Array([B.q.stride / 4, B.attnOut.stride / 4, this.faSplit, this.faSplits]), GPUBufferUsage.UNIFORM);
     const mcU = (n, s0 = 0, s1 = 0, s2 = 0) => {
@@ -999,7 +1080,7 @@ export class Qwen35Engine {
         gatenorm: this._bg2res(this.pipes.dn_gatenorm_mc, [whole(B.dOut), whole(B.z), { buffer: L.ssmNorm }, whole(B.gated),
           mcU(0, st(B.dOut), st(B.z), st(B.gated)), dn]),
       });
-      const dense = !L.moe || L.shared;   // the shared expert is an ordinary gated FFN
+      const dense = !L.moe || (L.shared && !L.fused);   // the (unfused) shared expert is an ordinary gated FFN
       const R = {
         mc,
         gateUp: dense ? [mvB(L.ffnGate, B.xn, B.g, D.inter, D.dim, false, this.gemmOn ? B.xnT : null), mvB(L.ffnUp, B.xn, B.u, D.inter, D.dim, false, this.gemmOn ? B.xnT : null)] : [],
@@ -1012,7 +1093,16 @@ export class Qwen35Engine {
           silu: this._bg2res(this.pipes.silu_mul, [slice(B.g, c), slice(B.u, c)]),
         })),
       };
-      if (L.moe) {
+      if (L.fused) {
+        const { nExp, inter: ei, hs } = this.moe;
+        const U = (a) => ({ buffer: this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM) });
+        R.router = mvB(L.router, B.xn, B.mLogits, nExp + 1, D.dim);
+        mc.route = this._bg2res(this.pipes.moe_route, [whole(B.mLogits), { buffer: B.mSel }, { buffer: B.mSelw }, U(L.moeU(st(B.mLogits), 0, 0, 0))]);
+        mc.gus = this._bg2res(this.pipes[L.gusPipe], [{ buffer: L.expGate.qs }, { buffer: L.expGate.sc }, { buffer: L.expUp.qs }, { buffer: L.expUp.sc },
+          whole(B.xn), { buffer: B.mHF }, { buffer: B.mSel }, { buffer: L.shPack.buf }, U(L.moeU(st(B.xn), ei, D.dim, hs, L.shPack))]);
+        mc.dnc = this._bg2res(this.pipes[L.dncPipe], [{ buffer: L.expDown.qs }, { buffer: L.expDown.sc }, { buffer: B.mHF }, whole(B.x),
+          { buffer: B.mSel }, { buffer: B.mSelw }, { buffer: L.ffnDown.qs }, { buffer: L.ffnDown.sc }, U(L.moeU(st(B.x), D.dim, ei, hs))]);
+      } else if (L.moe) {
         const { nExp, K, inter: ei, norm } = this.moe;
         const U = (a) => ({ buffer: this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM) });
         R.router = mvB(L.router, B.xn, B.mLogits, nExp, D.dim);
@@ -1141,6 +1231,15 @@ export class Qwen35Engine {
     {
       const p = enc.beginComputePass();
       this._dMC(p, "rmsnorm_mc", M.norm2, 256, 256, nCols);
+      if (L.fused) {   // same four launches as the one-token path, one workgroup row per column
+        const { KS, hs, R } = this.moe;
+        this._dop(p, LB.router, nCols);
+        this._dMC(p, "moe_route", M.route, nCols * 256, 256, 1);
+        this._dMC(p, L.gusPipe, M.gus, Math.ceil(hs / 4) * 64, 64, nCols * KS);
+        this._dMC(p, L.dncPipe, M.dnc, Math.ceil(D.dim / R) * 64, 64, nCols);
+        p.end();
+        return;
+      }
       if (L.moe) {
         const { K, inter: ei } = this.moe;
         this._dop(p, LB.router, nCols);

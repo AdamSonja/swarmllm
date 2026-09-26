@@ -29,6 +29,7 @@ async function pageMain() {
     maxSeq: 512, batchCols: 16, coopRowsB: 1, coopWG: 64,
     weights: await qwen35Weights(G, bytesOf, { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true }) });
   const { dim } = eng.dims, { nExp, K, inter: ei, shInter } = eng.moe;
+  check("fused MoE FFN in use (moeFuse, engine/wgsl/moe.js moeFusedWGSL)", eng.moeFuse === true);
   const eps = M["qwen35.attention.layer_norm_rms_epsilon"];
   let seed = 7; const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
   const mv = (w, rows, cols, x, r0 = 0) => { const y = new Float64Array(rows); for (let r = 0; r < rows; r++) { let s = 0; for (let c = 0; c < cols; c++) s += w[(r0 + r) * cols + c] * x[c]; y[r] = s; } return y; };
