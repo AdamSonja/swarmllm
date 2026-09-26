@@ -1,24 +1,20 @@
 // Qwen3.6-35B-A3B (MoE, 256 experts, top-8) on the engine: full model, greedy output vs llama.cpp, tok/s.
 // Goldens: llama.cpp b10840 CUDA, same Q4_0 file (bartowski), --temp 0.
 import { Qwen35Engine } from "../engine/qwen35.js";
-import { makeTokenizer, argmax } from "../engine/engine.js";
-import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
+import { argmax } from "../engine/engine.js";
+import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, MOE_PATH } from "./load_model.js";
 const N = +(Deno.env.get("TOKENS") || 40), K = +(Deno.env.get("K") || 3);
-const PATH = Deno.env.get("MOE") || "../models/q36moe/Qwen_Qwen3.6-35B-A3B-Q4_0.gguf";
-const openFile = async (path) => { const fh = await Deno.open(path);
-  return async (off, len) => { await fh.seek(off, Deno.SeekMode.Start); const out = new Uint8Array(len); let got = 0;
-    while (got < len) { const n = await fh.read(out.subarray(got)); if (n === null) break; got += n; } return out; }; };
-const adapter = await navigator.gpu.requestAdapter();
-const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
-device.addEventListener?.("uncapturederror", (e) => console.error("GPU ERROR:", e.error?.message));
-const readAt = await openFile(PATH);
-const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer);
-const arch = G.meta["general.architecture"], nBlk = G.meta[arch + ".block_count"], nextn = G.meta[arch + ".nextn_predict_layers"] || 0;
+const PATH = Deno.env.get("MOE") || MOE_PATH;
+const { device } = await gpuDevice();
+watchGpuErrors(device);
+const model = openGGUF(PATH);   // converted-weights cache: tests/weight_cache.js (WEIGHT_CACHE=0 disables)
+const G = model.G;
+const arch = G.meta["general.architecture"], nBlk = G.meta[arch + ".block_count"];
 const hasMtp = G.tensors ? Object.keys(G.tensors).some((k) => k.startsWith(`blk.${nBlk - 1}.`)) : false;
-const L = nBlk - nextn;
-const tok = makeTokenizer(tokenizerFromGGUF(G.meta));
+const L = trunkLayers(G);
+const tok = model.tokenizer();
 let t0 = performance.now();
-const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
+const weights = await model.weights({ lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
 const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512 });
 console.log(`${arch}: ${L} layers, mtp tensors ${hasMtp}, engine mtp ${!!eng.mtp}; loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s`);
 const V = tok.vocab;
