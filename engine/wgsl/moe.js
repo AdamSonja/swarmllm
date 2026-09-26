@@ -270,7 +270,7 @@ export function moeFusedWGSL({ K, R = 2, gu = [], dn = [] }) {
   if (!(K >= 1 && K <= 16) || ![1, 2, 4].includes(R)) throw new Error(`moeFusedWGSL: K ${K}, R ${R}`);
   return /* wgsl */ `
 // ---------------- fused mixture of experts (engine/wgsl/moe.js moeFusedWGSL) ----------------
-struct MOEF { dOut: u32, dIn: u32, sDim: u32, nExp: u32, xs: u32, ys: u32, norm: u32, shared: u32, oUq: u32, oGs: u32, oUs: u32, pad: u32 };
+struct MOEF { dOut: u32, dIn: u32, sDim: u32, nExp: u32, xs: u32, ys: u32, norm: u32, shOff: u32, oUq: u32, oGs: u32, oUs: u32, pad: u32 };
 ${routeKernel(K)}
 ${gu.map(([f, s]) => gusKernel(f, s, K)).join("\n")}
 ${dn.map(([f, s]) => dncKernel(f, s, K, R)).join("\n")}
