@@ -11,8 +11,8 @@ import { esc, md, mdChat } from "./room/markdown.js";
 import { pickSampler, SAMPLING } from "./room/sampling.js";
 import { chatRecipients } from "./room/visibility.js";
 import { PrefixIndex } from "./harness/prefix.js";
-import { MODELS, NEED_GB, MAX_SEQ, MAX_SEQ_LONG, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM } from "./room/models.js";
-// the context window of the loaded engine (8192 for the 27B family, 2048 otherwise)
+import { MODELS, NEED_GB, MAX_SEQ, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM, maxSeqFor, kvBytesPerLayerPos } from "./room/models.js";
+// the context window of the loaded engine (per model: room/models.js CTX; 2048 for the small ones)
 const ctxMax = () => ai.engine?.maxSeq || MAX_SEQ;
 // ?ckpt=N: keep the room's state after the last N answers on every device (GPU copies), so a
 // regenerate, an edited question or a branch resumes from the longest saved turn instead of
@@ -1057,7 +1057,7 @@ function setCtx(used, max) {
   el.classList.toggle("warn", used > max * 0.8);
 }
 
-async function aiLoadShard(modelKey, range, hasEmbed, hasHead) {
+async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(modelKey)) {
   const M = MODELS[modelKey];
   aiLoading(true, `loading layers ${range[0]}\u2013${range[1] - 1} of ${M.label.split("\u00b7")[0].trim()}`);
   aiStatus("requesting GPU\u2026");
@@ -1170,7 +1170,7 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead) {
     aiStatus("building GPU pipelines (compiling shaders)\u2026");
     ai.engine = await Qwen35Engine.create({
       device: ai.device, meta: G.meta, weights, vocab: G.tensors[GGML_EMBED]?.shape?.[0],
-      layerRange: range, hasEmbed, hasHead, maxSeq: MAX_SEQ_LONG,
+      layerRange: range, hasEmbed, hasHead, maxSeq: ctx,
       coopWG: ai.tune?.wg, coopRows: ai.tune?.rows,
       // 16 batch columns: prefill passes go through the row-stationary GEMM
       // (docs/research/prefill-gemm-v2.md). Speculative verifies are <= 8
@@ -1259,6 +1259,8 @@ async function aiStart(modelArg) {
     ai.teleBy = new Map();
     const modelKey = $("ai-model").value;
     const M = MODELS[modelKey];
+    // context for this room: the model's default, or ?ctx=N up to its cap (room/models.js CTX); every device builds its engine with it
+    const ROOM_CTX = maxSeqFor(modelKey, +new URLSearchParams(location.search).get("ctx") || 0);
     // devices without WebGPU join as ask-only guests: they get the chat, not layers
     ai.chain = [...conns.keys()].filter((id) => conns.get(id)?.meta?.webgpu).sort();
     ai.leftOut = new Set();
@@ -1271,7 +1273,8 @@ async function aiStart(modelArg) {
       ai.G = await fetchGGUFHeader(M.gguf);
       ai.GModel = modelKey;
       L = ai.G.meta["qwen35.block_count"] - (ai.G.meta["qwen35.nextn_predict_layers"] || 0);
-      layerBytes = qwen35ShardBytes(ai.G, { lo: 0, hi: 4, hasEmbed: false, hasHead: false }) / 4;
+      layerBytes = qwen35ShardBytes(ai.G, { lo: 0, hi: 4, hasEmbed: false, hasHead: false }) / 4
+        + ROOM_CTX * kvBytesPerLayerPos(ai.G.meta);   // the attention layers' KV cache at this room's context
       embedBytes = (ai.G.tensors[GGML_EMBED]?.byteLength || 0) + (ai.G.tensors[GGML_OUTPUT]?.byteLength || 0) + qwen35MtpBytes(ai.G);
     } else {
       cfg = await (await fetch(M.cfg)).json();
@@ -1324,7 +1327,7 @@ async function aiStart(modelArg) {
     ai.wsrc = M.gguf ? weightSources(M.gguf, inv) : null;
     ai.chain.forEach((id, i) => {
       const msg = {
-        t: "ai-load", model: modelKey, range: ranges[i + 1],
+        t: "ai-load", model: modelKey, range: ranges[i + 1], ctx: ROOM_CTX,
         next: i + 1 < ai.chain.length ? ai.chain[i + 1] : "host",
         host: peer.id,
         inv,
@@ -1338,7 +1341,7 @@ async function aiStart(modelArg) {
       `${conns.get(id)?.name || id} ${assigned[i + 1]}`)].join(" · ");
     log("swarm", `${M.label} — layer split ${$("ai-split").value === "speed" ? "for speed" : "by pledge"}: ${splitDesc}`);
     ai.loadingShard = true;
-    try { await aiLoadShard(modelKey, ranges[0], true, true); } finally { ai.loadingShard = false; }
+    try { await aiLoadShard(modelKey, ranges[0], true, true, ROOM_CTX); } finally { ai.loadingShard = false; }
     aiStatus(n === 1
       ? `solo: all ${L} layers local — ready`
       : `layers ${ranges[0][0]}–${ranges[0][1] - 1} ready · syncing with ${ai.chain.length} device${ai.chain.length > 1 ? "s" : ""}…`);
@@ -2204,7 +2207,7 @@ async function aiOnData(from, d) {
       ai.wsrc = MODELS[d.model]?.gguf && d.inv ? weightSources(MODELS[d.model].gguf, d.inv) : null;
       ensureLink(d.next);   // open the link to my chain neighbour while the weights download
       try {
-        await aiLoadShard(d.model || "smollm-135m", d.range, false, false);
+        await aiLoadShard(d.model || "smollm-135m", d.range, false, false, d.ctx || maxSeqFor(d.model));
         if (!(await ensureLink(d.next))) throw new Error("could not connect to the next device in the chain");
         aiStatus(`layers ${d.range[0]}–${d.range[1] - 1} ready · syncing with the room…`);
         aiLoading(true, `layers ${d.range[0]}–${d.range[1] - 1} ready`);

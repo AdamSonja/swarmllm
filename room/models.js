@@ -1,6 +1,6 @@
 // Model catalogue for the room: URLs, layer counts, memory needs, context length.
 
-export const NEED_GB = { "qwen3-0.6b": 0.8, "qwen3-1.7b": 2.0, "qwen3-4b": 4.6, "qwen3.8-27b": 16.5, "qwen3.6-35b-moe": 22.5, "smollm-135m": 0.6 };
+export const NEED_GB = { "qwen3-0.6b": 0.8, "qwen3-1.7b": 2.0, "qwen3-4b": 4.6, "qwen3.8-27b": 17.0, "qwen3.6-35b-moe": 22.5, "smollm-135m": 0.6 };
 
 export const MODELS = {
   "qwen3-0.6b": { label: "Qwen3 0.6B · Q8", kind: "gguf",
@@ -35,7 +35,27 @@ export const MAX_SEQ = 2048;
 // the whole model, spread over the devices that hold the layers. The host reads the engine's
 // maxSeq, so prompts, answer budgets and "context full" all follow it.
 export const MAX_SEQ_LONG = 8192;
-export const maxSeqFor = (model) => (MODELS[model]?.kind === "qwen35" ? MAX_SEQ_LONG : MAX_SEQ);
+// Context per model, in tokens: the default a room opens with and the most ?ctx=N may ask for.
+// These hybrids keep a KV cache only on their full-attention layers (1 in 4), and the DeltaNet
+// layers hold a fixed-size state, so context is cheap in memory: f16 K+V is 64 KB per position
+// for the 27B (16 attention layers, 4 KV heads x 256) and 20 KB for the 35B MoE (10 layers,
+// 2 KV heads x 256). 16k on the 27B = 1 GB, 32k on the MoE = 0.64 GB, spread over the devices
+// holding those layers. The caps keep one layer's K or V buffer at or under 64 MB (the WebGPU
+// default binding limit is 128 MB); the practical limit is prefill speed, not memory.
+export const CTX = {
+  "qwen3.8-27b": { def: 16384, max: 32768 },
+  "qwen3.6-35b-moe": { def: 32768, max: 65536 },
+};
+export const maxSeqFor = (model, ask = 0) => {
+  const c = CTX[model];
+  if (!c) return MODELS[model]?.kind === "qwen35" ? MAX_SEQ_LONG : MAX_SEQ;
+  return ask > 0 ? Math.min(c.max, Math.max(2048, Math.round(ask / 256) * 256)) : c.def;
+};
+// f16 K+V bytes per position, averaged over a model's layers (for dealing layers by memory)
+export const kvBytesPerLayerPos = (meta) => {
+  const kvDim = (meta["qwen35.attention.head_count_kv"] || 0) * (meta["qwen35.attention.key_length"] || 0);
+  return kvDim * 2 * 2 / (meta["qwen35.full_attention_interval"] || 1);
+};
 export const MAX_NEW = 400;    // longest answer, tokens
 export const MAX_NEW_THINKING = 1200;   // with thinking on, the think block comes out of the same budget
 export const MIN_ROOM = 32;    // a prompt must leave at least this many tokens for the answer
