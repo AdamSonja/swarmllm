@@ -771,7 +771,7 @@
   #compute-exit:hover:not(:disabled) { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.3); }
   /* logo, text and stats sit together in the middle of the screen: equal space above the logo and below the stats */
   .cs-stage { position: relative; flex: none; height: clamp(170px, 32vh, 300px); margin-top: auto; display: grid; place-items: center; }
-  #cs-flow { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #cs-flow, .cs-ring { display: none; }   /* no background animation behind the logo */
   /* each pass: a ring leaves the logo */
   .cs-ring { position: absolute; left: 50%; top: 50%; width: clamp(128px, 30vmin, 216px); aspect-ratio: 1; margin: 0; transform: translate(-50%, -50%) scale(.9); border-radius: 50%; border: 1.5px solid var(--blue-400); opacity: 0; pointer-events: none; }
   #compute-screen[data-phase="idle"] .cs-ring { display: none; }

@@ -81,24 +81,20 @@ export function computeScreen({ state, keepAwake = () => {} }) {
         { duration: 520, delay: delay + rc * 55, easing: "cubic-bezier(.2,.7,.2,1)" });
     }
   }
-  // the pass reaches this device: a ring leaves the logo and a light runs along its layers
+  // the pass reaches this device: a light runs along its layers
   let ringAt = 0;
   function arrive(delay) {
     const now = performance.now();
     if (now - ringAt < 420) return;
     ringAt = now;
-    $("cs-ring")?.animate([{ opacity: 0.55, transform: "translate(-50%,-50%) scale(.92)" }, { opacity: 0, transform: "translate(-50%,-50%) scale(1.55)" }],
-      { duration: 900, delay, easing: "cubic-bezier(.2,.7,.2,1)" });
     const strip = $("cs-strip");
     setTimeout(() => { strip.classList.remove("sweep"); void strip.offsetWidth; strip.classList.add("sweep"); }, delay);
   }
   function spawn(now) {
     const dur = Math.max(900, Math.min(1600, W * 1.3));
-    if (packets.length > 16) packets.shift();
-    packets.push({ t0: now, dur });
+    // no travelling packets behind the logo: the logo wave, the hop dot and the strip show the pass
     wave(dur * 0.36);
     arrive(dur * 0.4);
-    kick();
   }
 
   function renderStats() {
