@@ -353,9 +353,10 @@ try {
     await host.waitForTimeout(400);
     await host.evaluate(() => { document.getElementById("code-log").scrollTop = 1e6; });
     await host.screenshot({ path: path.join(SHOTS, "code-400.png") });
-    await host.evaluate(() => document.getElementById("code-out").scrollIntoView());
+    await host.click("#ctab-preview");   // a phone shows one view at a time: the tab bar at the bottom picks it
     await host.waitForTimeout(200);
     await host.screenshot({ path: path.join(SHOTS, "code-400-preview.png") });
+    await host.click("#ctab-agent");
     check("400px: no horizontal page scroll", await host.evaluate(() => document.documentElement.scrollWidth <= 400 && document.getElementById("chatpane").scrollWidth <= 400));
     await host.setViewportSize({ width: 1440, height: 900 });
     log(`screenshots in ${SHOTS}`);

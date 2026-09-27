@@ -171,7 +171,55 @@ export function codeUI({ onMode = () => {} } = {}) {
     const t = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
     e.preventDefault(); t.focus(); t.click();
   });
-  arrows($("mode-bar")); arrows($("code-out-tabs"));
+  arrows($("mode-bar")); arrows($("code-out-tabs")); arrows($("code-tabs"));
+  // ---------------- phones (640px and narrower): one view at a time, Agent / Preview / Files, from a
+  // tab bar at the bottom. The last tab is kept for the session; a dot on a tab says something
+  // happened there (a new revision, an approval waiting) or, on Agent, that the agent is working.
+  const phone = matchMedia("(max-width: 640px)");
+  const cp = $("code-pane"), TABS = ["agent", "preview", "files"];
+  let ptab = "agent";
+  try { const t = sessionStorage.getItem("pooled-code-tab"); if (TABS.includes(t)) ptab = t; } catch {}
+  const tabBtn = (t) => $("ctab-" + t);
+  function badge(t, on) { tabBtn(t)?.classList.toggle("badge", !!on); }
+  function setTab(t, { focus = false } = {}) {
+    if (!TABS.includes(t)) return;
+    ptab = t; cp.dataset.ptab = t;
+    try { sessionStorage.setItem("pooled-code-tab", t); } catch {}
+    for (const x of TABS) {
+      const b = tabBtn(x), on = x === t;
+      b.setAttribute("aria-selected", String(on)); b.tabIndex = on ? 0 : -1;
+    }
+    tabBtn("files").setAttribute("aria-controls", cp.classList.contains("ed-open") ? "code-out" : "code-files");
+    if (t !== "agent" || !waiting) badge(t, false);
+    if (t === "agent") { badge("agent", false); requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; jump.hidden = true; }); }
+    if (phone.matches) outTab(t === "files" ? "files" : "preview");
+    if (focus) tabBtn(t).focus();
+  }
+  // the editor, full screen inside Files (Back returns to the tree)
+  function edOpen(on) {
+    cp.classList.toggle("ed-open", !!on);
+    tabBtn("files").setAttribute("aria-controls", on ? "code-out" : "code-files");
+    if (on && phone.matches && ptab !== "files") setTab("files");
+  }
+  $("ed-back").onclick = () => { edOpen(false); $("code-tree").querySelector(".f.on")?.focus(); };
+  $("code-tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-ptab]"); if (b) setTab(b.dataset.ptab); });
+  function served() {
+    let first = true;
+    try { first = !sessionStorage.getItem("pooled-code-served"); sessionStorage.setItem("pooled-code-served", "1"); } catch {}
+    if (first && phone.matches && mode === "code") setTab("preview");
+    else if (ptab !== "preview") badge("preview", true);
+  }
+  function newRev() { if (ptab !== "preview") badge("preview", true); }
+  function busy(on) { tabBtn("agent").classList.toggle("busy", !!on); }
+  // the panes' roles follow the layout
+  const roles = () => {
+    for (const id of ["code-agent", "code-out", "code-files"]) { if (phone.matches) $(id).setAttribute("role", "tabpanel"); else $(id).removeAttribute("role"); }
+    for (const [id, t] of [["code-agent", "agent"], ["code-out", "preview"], ["code-files", "files"]]) { if (phone.matches) $(id).setAttribute("aria-labelledby", "ctab-" + t); else $(id).removeAttribute("aria-labelledby"); }
+    if (phone.matches) setTab(ptab);
+  };
+  phone.addEventListener("change", roles);
+  cp.dataset.ptab = ptab;
+
   const poke = () => { $("mode-bar").hidden = false; if (mode !== "code") $("mode-code").classList.add("fresh"); };
 
   // ---------------- timeline
@@ -219,6 +267,7 @@ export function codeUI({ onMode = () => {} } = {}) {
         add(u);
         runAt = performance.now();
         wait(true);
+        busy(true);
         break;
       }
       case "ai-code-tok": {
@@ -237,7 +286,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       case "ai-code-tool": toolCard(d); break;
       case "ai-code-note": wait(false); closeText(); add(h("div", "cm-note" + (d.err ? " err" : ""), words(d.text))); break;
       case "ai-code-done": {
-        runAt = 0; wait(false); editWin.close();
+        runAt = 0; wait(false); editWin.close(); busy(false);
         for (const l of log.querySelectorAll(".cm-live")) l.remove();
         closeText();
         const text = d.stats || `${plural(d.steps || 0, "step")} · ${d.reason || "done"}`;
@@ -397,18 +446,27 @@ export function codeUI({ onMode = () => {} } = {}) {
     waiting = Math.max(0, waiting + (on ? 1 : -1));
     if (waiting) { $("mode-code").classList.add("fresh"); document.title = "(needs approval) " + title0; }
     else { if (mode === "code") $("mode-code").classList.remove("fresh"); document.title = title0; }
+    badge("agent", waiting > 0 && ptab !== "agent");
   }
   function ask(mid, i, { risky = false } = {}) {
     const el = find(key("c", mid, i));
     if (!el) return Promise.resolve({ ok: false, reason: "approval card missing" });
     el.querySelector(".cm-approve")?.remove();
-    const ap = h("div", "cm-approve");
+    const ap = h("div", "cm-approve"); ap.dataset.k = key("c", mid, i);
     const yes = h("button", "ok", "Approve"), no = h("button", null, "Reject…"), all = h("button", null, "Allow edits for this task");
     yes.type = no.type = all.type = "button";
     ap.append(yes, no);
     if (!risky) ap.append(all);   // a risky file asks every time anyway
-    el.append(ap);
-    el.scrollIntoView({ block: "nearest" });
+    // a phone: the question waits above the prompt (the card may be far up the log), with what it is about
+    const docked = phone.matches, head = () => {
+      if (!docked) return;
+      const t = h("div", "cd-t", `${el.dataset.name === "edit_file" ? "Edit" : el.dataset.name === "write_file" ? "Write" : "Run"}? `);
+      t.append(h("span", null, el.querySelector(".br")?.textContent || ""));
+      ap.prepend(t);
+    };
+    head();
+    if (docked) { $("code-dock").append(ap); follow(true); }
+    else { el.append(ap); el.scrollIntoView({ block: "nearest" }); }
     if (mode === "code") yes.focus({ preventScroll: true });
     waitMark(true);
     let settled = false;
@@ -418,7 +476,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       yes.onclick = () => done(true);
       all.onclick = () => done("all");
       no.onclick = () => {
-        ap.replaceChildren();
+        ap.replaceChildren(); head();
         const why = h("input"); why.type = "text"; why.placeholder = "why? (optional, the agent reads it)"; why.maxLength = 300;
         const send = h("button", null, "Reject"); send.type = "button";
         const back = h("button", null, "Cancel"); back.type = "button";
@@ -434,7 +492,7 @@ export function codeUI({ onMode = () => {} } = {}) {
   }
 
   // the run was stopped while the card waited: take the buttons away
-  function cancelAsk(mid, i) { find(key("c", mid, i))?.querySelector(".cm-approve")?.cancel?.(); }
+  function cancelAsk(mid, i) { (find(key("c", mid, i))?.querySelector(".cm-approve") || [...$("code-dock").children].find((a) => a.dataset.k === key("c", mid, i)))?.cancel?.(); }
 
   // ---------------- files: the tree, and the editor (a highlighted layer under a transparent
   // textarea: native editing, undo and selection, with colours). The host edits and saves into the
@@ -465,7 +523,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       f.dataset.ext = (/\.(\w+)$/.exec(p)?.[1] || "").toLowerCase();
       if (p === edPath) f.classList.add("on");
       if (drafts.has(p)) f.classList.add("dirty");
-      f.onclick = () => { t.querySelectorAll(".f.on").forEach((x) => x.classList.remove("on")); f.classList.add("on"); outTab("files"); fileClick(p); };
+      f.onclick = () => { t.querySelectorAll(".f.on").forEach((x) => x.classList.remove("on")); f.classList.add("on"); outTab("files"); edOpen(true); fileClick(p); };
       t.append(f);
     }
     if (paths.length > 500) t.append(h("div", "none", `(+${paths.length - 500} more)`));
@@ -504,7 +562,7 @@ export function codeUI({ onMode = () => {} } = {}) {
   }
   function viewFile(text, label = null) {
     if (text == null) {
-      edPath = null; edBase = ""; ta.value = ""; edRO = true;
+      edPath = null; edBase = ""; ta.value = ""; edRO = true; cp.classList.remove("ed-open");
       edBox.hidden = true; $("ed-bar").hidden = true; $("ed-empty").hidden = false;
       return;
     }
@@ -557,7 +615,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     outTab("files");
     $("code-tree").querySelectorAll(".f.on").forEach((x) => x.classList.remove("on"));
     viewFile(text, `${path} · proposed, not written yet`);
-    $("files-panel").scrollIntoView({ block: "nearest" });
+    if (phone.matches) { edOpen(true); setTab("files"); } else $("files-panel").scrollIntoView({ block: "nearest" });
   }
   function outTab(name) {
     for (const b of $("code-out-tabs").querySelectorAll("button[data-tab]")) {
@@ -620,8 +678,8 @@ export function codeUI({ onMode = () => {} } = {}) {
     $("pv-empty").hidden = true;
     $("pv-console").hidden = false;
     grow();
-    // a phone stacks the columns: the app that just started is below the agent, so bring it up
-    if (closable && mode === "code" && innerWidth < 820) requestAnimationFrame(() => $("code-out").scrollIntoView({ behavior: "smooth", block: "start" }));
+    // a phone: the first app served this session opens Preview (the landing demo does the same); later ones badge it
+    served();
     return P;
   }
   function dropPort(port) {
@@ -652,6 +710,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       P.rows.forEach((r) => (r.old = true));
       P.rows.push({ sep: `rev ${s.rev}` + (P.rev ? " · reloaded" : "") });
     }
+    if (s.rev && P.rev && s.rev > P.rev) newRev();
     if (s.rev) P.rev = s.rev;
     P.path = s.path || P.path; P.state = s.state;
     if (s.state === "ready") editWin.reloaded(port, P.rev);
@@ -716,6 +775,7 @@ export function codeUI({ onMode = () => {} } = {}) {
   function driverNote(text) { const el = $("code-driver"); el.textContent = text || ""; el.hidden = !text; }
   setHost(false);
   viewFile(null);
+  roles();
 
   return {
     show, poke, apply, ask, cancelAsk, clear, placeholder, setHost, driverNote, tree, viewFile, openFile, fileChanged, outTab,
@@ -740,6 +800,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     },
     // while a run goes, Send queues the next request; Stop shows for whoever may stop it
     running(on, canStop = on) {
+      busy(on);
       $("code-send").textContent = on ? "Queue" : "Send";
       $("code-send").title = on ? "Runs after the current request" : "";
       $("code-stop").hidden = !(on && canStop);
