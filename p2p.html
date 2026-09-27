@@ -625,10 +625,14 @@
   .lc-note { margin-top: 5px; font-size: 13px; color: var(--muted); }
   #lc-sum { display: none; }
   #lc-rows { margin: 20px 0 16px; border-top: 1px solid var(--rule-2); }
-  .lc-row { display: grid; grid-template-columns: 8px minmax(0, 130px) minmax(0, 1fr) 92px; align-items: center; gap: 12px; height: 44px; border-bottom: 1px solid var(--rule-2); font-size: 14px; }
+  .lc-row { display: grid; grid-template-columns: 8px minmax(0, 170px) minmax(0, 1fr) 64px; align-items: center; gap: 12px; min-height: 52px; padding: 6px 0; border-bottom: 1px solid var(--rule-2); font-size: 14px; }
   .lc-row.out { opacity: .5; }
   .lc-row .sw { width: 8px; height: 8px; border-radius: 50%; background: var(--sw); }
-  .lc-row .n { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lc-row .n { display: flex; flex-direction: column; gap: 3px; min-width: 0; color: var(--text); }
+  .lc-row .n .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* which layers this device is downloading (then holds), under its name */
+  .lc-row .n .lr { font: 400 11.5px/1.2 var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; }
+  .lc-row.done .n .lr { color: var(--accent-text); }
   .lc-row .n small { color: var(--muted); font-size: 12px; }
   .lc-row .bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
   .lc-row .fill { height: 100%; width: 0%; background: var(--sw); border-radius: 3px; transition: width 0.6s var(--ease); }
@@ -1165,13 +1169,13 @@
     #chat-tools { padding: 8px 10px 0; }
     #chat-log { display: none; }
     #load-card { padding: 16px; }
-    .lc-row { grid-template-columns: 8px minmax(0, 132px) minmax(0, 1fr) 72px; gap: 8px; font-size: 13px; }
+    .lc-row { grid-template-columns: 8px minmax(0, 150px) minmax(0, 1fr) 52px; gap: 8px; font-size: 13px; }
+    .lc-row .lw { display: none; }   /* phones: "layers 21–40" under the name, without "downloading" */
     .lc-head { flex-wrap: wrap; gap: 12px 14px; }
     .lc-head .dl { width: 34px; height: 34px; }
     .lc-h { flex-basis: calc(100% - 50px); }
     .lc-t { font-size: 22px; }
     #lc-sum { order: 3; flex-basis: 100%; margin: 0; }
-    .lc-row .lw { display: none; }
     .ag-h, #code-driver, #code-log, #code-bar { padding-left: 12px; padding-right: 12px; }
     #code-row { margin-left: 10px; margin-right: 10px; }
     #code-pane :is(.cm-approve button, #pv-open) { min-height: 36px; font-size: 12px; }
