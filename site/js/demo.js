@@ -1,37 +1,47 @@
-/* The demo: one story in seven steps. Two browser tabs (a laptop starts a room, a desktop joins it
-   with the code) merge into one room; the room picks a model and loads it across both; chat; a
-   phone joins in the middle; Code mode writes a game, asks for approval, serves it; you play it.
-   A step bar under the window says where we are and jumps to any step.
+/* The demo: one window, two modes, seven steps.
+   Chat: a laptop starts a room, a desktop joins with the code; the model's 40 layers split across the
+   two; "what is Pooled?", and while the answer streams a hidden state travels through every layer,
+   laptop to desktop and back, once per word.
+   Code: the tab switches itself; "build me a tetris game"; the files appear on the left as the agent
+   writes them; it serves the game on :5173; then a change ("make the pieces blue and add a
+   next-piece preview"), an edit, a reload.
    The HTML holds the finished state (readable without JS). This script rewinds and replays it. */
 (() => {
   "use strict";
   document.documentElement.classList.add("js"); // also set early by boot.js
   const $ = id => document.getElementById(id);
   const RM = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const demo = $("demo");
+  if (!demo || !window.PooledTetris) return;
 
-  /* ---------- closer: the dots leave the three devices and become the logo ---------- */
-  const closer = $("closer");
-  if (closer && !RM && "IntersectionObserver" in window) {
-    closer.classList.add("arm");
-    const io = new IntersectionObserver(es => {
-      if (!es[0].isIntersecting) return;
-      closer.classList.add("go"); io.disconnect();
-    }, { threshold: .45 });
-    io.observe($("gather"));
-  }
-
-  const win = $("win");
-  if (!win || !window.PooledTetris) return;
   const restart = (el, cls) => { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); };
   const press = (el, t) => { restart(el, "press"); setTimeout(() => el.classList.remove("press"), t || 260); };
-  const scene = s => { win.dataset.scene = s; };
-  const flag = (cls, on) => win.classList.toggle(cls, on);
+  const scene = s => { demo.dataset.scene = s; };
+  const flag = (cls, on) => demo.classList.toggle(cls, on);
+  const clamp01 = x => x < 0 ? 0 : x > 1 ? 1 : x;
 
-  /* ---------- steps and the bar under the window ---------- */
-  const C = 26.0;                                   // Code mode starts
-  const STEPS = [0, 3.6, 8.0, 13.2, 20.4, C, C + 12.2];
-  const END = C + 15.0;
-  const dotBtns = [...win.querySelectorAll(".sb-dots button")];
+  /* ---------- Chat | Code ---------- */
+  const mChat = $("mChat"), mCode = $("mCode"), modes = mChat.parentNode, win = $("win");
+  const mode = m => {
+    if (demo.dataset.mode === m) return;
+    demo.dataset.mode = m;
+    [[mChat, "chat"], [mCode, "code"]].forEach(([b, k]) => { b.setAttribute("aria-selected", k === m); b.tabIndex = k === m ? 0 : -1; });
+    win.setAttribute("aria-labelledby", m === "code" ? "mCode" : "mChat");
+  };
+
+  /* ---------- the timeline's shape ---------- */
+  const ANSWER = $("a1").textContent;
+  const WORDS = ANSWER.split(" ");
+  const A0 = 13.9;                                            // the answer starts
+  const DUR = i => [2.1, 1.2, .75, .5][i] || .27;             // each word's trip; the first is slow enough to follow
+  const WT = [A0]; WORDS.forEach((_, i) => WT.push(WT[i] + DUR(i)));
+  const A1 = WT[WORDS.length];                                // the answer ends
+  const C = Math.ceil((A1 + 1.3) * 10) / 10;                  // Code starts
+  const STEPS = [0, 2.8, 6.0, 11.4, C, C + 2.9, C + 11.0];
+  const END = C + 19.0;
+
+  /* ---------- the caption bar ---------- */
+  const dotBtns = [...demo.querySelectorAll(".sb-dots button")];
   const CAPS = dotBtns.map(b => b.querySelector(".lbl").textContent);
   const sbN = $("sbN"), sbT = $("sbT");
   let shownStep = -1;
@@ -49,254 +59,290 @@
       });
     }
     const span = (STEPS[k + 1] ?? END) - STEPS[k];
-    const p = RM ? 100 : Math.max(0, Math.min(100, (t - STEPS[k]) / span * 100));
+    const p = RM ? 100 : clamp01((t - STEPS[k]) / span) * 100;
     dotBtns[k].style.setProperty("--p", p.toFixed(1) + "%");
   };
   dotBtns.forEach((b, i) => b.setAttribute("aria-label", `Step ${i + 1} of ${STEPS.length}: ${CAPS[i]}`));
 
-  /* ---------- 1, 2: the two tabs ---------- */
-  const tabA = $("tabA"), tabB = $("tabB"), aGo = $("aGo"), bBtn = $("bBtn");
-  const codeL = [...tabA.querySelectorAll(".mcode span")], slots = [...tabB.querySelectorAll(".slots i")];
+  /* ---------- 1, 2: the room forms ---------- */
   const CODE = "K7QX";
-  const setSlots = (n, cur) => slots.forEach((s, i) => { s.textContent = i < n ? CODE[i] : ""; s.classList.toggle("cur", i === cur); });
-
-  /* ---------- the room: devices, the pool, the layers ---------- */
+  const tabA = $("tabA"), tabB = $("tabB"), aGo = $("aGo"), bBtn = $("bBtn");
+  const aCode = [...$("aCode").children], hdCode = [...$("hdCode").children];
+  const slots = [...tabB.querySelectorAll(".slots i")];
+  const setSlots = (n, cur) => slots.forEach((s, i) => {
+    const ch = i < n ? CODE[i] : "";
+    if (s.textContent !== ch) { s.textContent = ch; if (ch) restart(s, "lit"); }
+    s.classList.toggle("cur", i === cur);
+  });
+  const letters = n => {
+    aCode.forEach((s, i) => s.classList.toggle("off", i >= n));
+    hdCode.forEach((s, i) => { s.textContent = i < n ? CODE[i] : "-"; s.classList.toggle("off", i >= n); });
+  };
   const chips = [...$("chips").children];
-  const GB = [12, 12, 2];
-  const gbSum = $("gbSum"), tbSum = gbSum.parentNode;
-  const setDevices = n => {
-    chips.forEach((c, i) => c.classList.toggle("out", i >= n));
-    gbSum.textContent = GB.slice(0, n).reduce((a, b) => a + b, 0) + " GB";
-  };
-  const pick = $("pick"), pkGo = $("pkGo"), pkStat = $("pkStat");
-  const lb = [$("lb0"), $("lb1")], lp = [$("lp0"), $("lp1")];
-  const strips = [...win.querySelectorAll(".strip")].map(s => [...s.children]);
-  const cells = strips.flat();
-  const owner = strips[0].map(c => +c.className.slice(1));   // c0 / c1: whose layers
-  const LAYERS = [0, 1].map(d => owner.filter(o => o === d).length);
-  // both devices download their own layers at the same time: k of 40 is overall progress
-  const START = [0, LAYERS[0]];
-  const hasLayer = (i, k) => { const d = owner[i]; return i - START[d] < Math.round(k / 40 * LAYERS[d]); };
-  let filled = -1;
-  const fill = k => {
-    if (k === filled) return;
-    strips.forEach(st => st.forEach((c, i) => {
-      const on = hasLayer(i, k), was = filled >= 0 && hasLayer(i, filled);
-      c.className = on ? "c" + owner[i] : "";
-      if (on && !was && filled >= 0) c.classList.add("f");
-    }));
-    filled = k;
-    pick.classList.toggle("loaded", k >= 40);
-    pkStat.textContent = k < 40 ? `${k} of 40 layers` : "40 layers, split 2 ways";
-    [0, 1].forEach(d => {
-      const n = Math.round(k / 40 * LAYERS[d]);
-      lb[d].style.width = (n / LAYERS[d] * 100) + "%";
-      lp[d].textContent = n === LAYERS[d] ? `${n} layers` : `${Math.round(n / LAYERS[d] * 100)}%`;
-    });
-  };
-  // a word travels the MacBook's layers, then the desktop's
-  let hot = -1;
-  const setHot = i => {
-    if (i === hot) return;
-    cells.forEach((c, j) => { const x = j % 40; c.classList.toggle("hot", i >= 0 && Math.abs(x - i) <= 1); });
-    chips.forEach((c, j) => c.classList.toggle("tok", i >= 0 && owner[i] === j));
-    hot = i;
+  const gbSum = $("gbSum"), hdSum = gbSum.parentNode;
+  const setDevices = (n, animate) => {
+    chips.forEach((c, i) => { c.classList.toggle("out", i >= n); if (animate && i === n - 1) restart(c, "in"); });
+    gbSum.textContent = 12 * n + " GB";
+    if (animate) restart(hdSum, "bump");
   };
 
-  /* ---------- tiny timeline engine ---------- */
-  const says = [...win.querySelectorAll(".say")].map(el => ({ el, text: el.textContent }));
-  const restore = s => { s.el.textContent = s.text; s.el.classList.remove("cursor"); };
-  const tl = { t: 0, fired: 0, streams: [], done: false, started: false };
-  const show = k => {
-    const el = win.querySelector(`[data-at="${k}"]`); if (!el) return null;
-    el.classList.remove("pending"); restart(el, "enter"); return el;
+  /* ---------- 3: the model splits and loads ---------- */
+  const model = $("model"), lane = $("lane"), mdS = $("mdS");
+  const cells = [...$("cells0").children, ...$("cells1").children];
+  const hg = [$("hg0"), $("hg1")];
+  let filled = -1;
+  const fill = k => {                          // k of 20: each device loads its own 20 layers at once
+    if (k === filled) return;
+    cells.forEach((c, i) => {
+      const on = (i % 20) < k, was = filled >= 0 && (i % 20) < filled;
+      if (on !== c.classList.contains("f")) { c.classList.toggle("f", on); if (on && !was && !RM) restart(c, "f"); }
+    });
+    filled = k;
+    const gb = (11.2 * k / 20).toFixed(1);
+    hg.forEach(h => { h.textContent = k >= 20 ? "11.2 GB, ready" : `${gb} of 11.2 GB`; h.classList.toggle("ok", k >= 20); });
+    mdS.textContent = k <= 0 ? "22.5 GB, 40 layers" : k < 20 ? `Downloading, ${(22.5 * k / 20).toFixed(1)} of 22.5 GB` : "Ready on 2 devices";
   };
-  const stream = (el, rate, onDone) => {
-    const s = says.find(x => x.el === el || el.contains(x.el)); if (!s) return null;
-    s.el.textContent = ""; s.el.classList.add("cursor");
-    const st = { s, words: s.text.split(" "), t0: tl.t, rate, onDone };
-    tl.streams.push(st); return st;
+
+  /* ---------- 4: a hidden state, through every layer, once per word ---------- */
+  const pkt = $("pkt"), retPath = $("retPath"), wire = lane.querySelector(".lk-w i"), a1 = $("a1");
+  let geo = null;
+  const measure = () => {
+    const L = lane.getBoundingClientRect();
+    const r = i => { const b = cells[i].getBoundingClientRect(); return { x: b.left - L.left + b.width / 2, y: b.top - L.top + b.height / 2, b: b.bottom - L.top, l: b.left - L.left, r: b.right - L.left }; };
+    const f0 = r(0), l0 = r(19), f1 = r(20), l1 = r(39);
+    const by = f0.b + 8, dip = 12;
+    geo = { f0, l0, f1, l1, by, dip };
+    retPath.setAttribute("d", `M${l1.x.toFixed(1)} ${by.toFixed(1)} Q${((f0.x + l1.x) / 2).toFixed(1)} ${(by + dip * 2).toFixed(1)} ${f0.x.toFixed(1)} ${by.toFixed(1)}`);
   };
+  let hotI = -1;
+  const setHot = i => {
+    if (i === hotI) return;
+    if (hotI >= 0) cells[hotI].classList.remove("hot");
+    if (i >= 0) cells[i].classList.add("hot");
+    hotI = i;
+  };
+  const tok = d => chips.forEach((c, j) => c.classList.toggle("tok", j === d));
+  const trip = u => {                          // u in [0,1): where the hidden state is on this word's trip
+    measure();
+    const { f0, l0, f1, l1, by, dip } = geo;
+    if (u < .4) { const k = u / .4, i = Math.min(19, Math.floor(k * 20)); return { x: f0.x + (l0.x - f0.x) * k, y: f0.y, i, d: 0 }; }
+    if (u < .5) { const k = (u - .4) / .1; return { x: l0.x + (f1.x - l0.x) * k, y: f0.y, i: -1, d: -1, hop: k }; }
+    if (u < .9) { const k = (u - .5) / .4, i = 20 + Math.min(19, Math.floor(k * 20)); return { x: f1.x + (l1.x - f1.x) * k, y: f0.y, i, d: 1 }; }
+    const k = (u - .9) / .1, cx = (f0.x + l1.x) / 2, cy = by + dip * 2;
+    const x = (1 - k) * (1 - k) * l1.x + 2 * (1 - k) * k * cx + k * k * f0.x, y = (1 - k) * (1 - k) * by + 2 * (1 - k) * k * cy + k * k * by;
+    return { x, y, i: -1, d: 0, back: true };
+  };
+  let words = -1, flowing = false;
+  const flow = t => {
+    if (t < A0 || t >= A1) {
+      if (flowing) { flowing = false; pkt.classList.remove("on", "back"); lane.classList.remove("hop"); wire.style.transform = ""; setHot(-1); tok(-1); a1.classList.remove("cursor"); }
+      const n = t < A0 ? 0 : WORDS.length;
+      if (n !== words) { words = n; a1.textContent = n ? ANSWER : ""; }
+      return;
+    }
+    flowing = true;
+    let w = 0; while (w < WORDS.length - 1 && t >= WT[w + 1]) w++;
+    if (w !== words) { words = w; a1.textContent = WORDS.slice(0, w).join(" "); a1.classList.add("cursor"); toBottom(); }
+    const p = trip((t - WT[w]) / DUR(w));
+    pkt.style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px)`;
+    pkt.classList.add("on"); pkt.classList.toggle("back", !!p.back);
+    lane.classList.toggle("hop", p.hop != null);
+    wire.style.transform = p.hop != null ? `scaleX(${p.hop.toFixed(3)})` : "";
+    setHot(p.i); tok(p.back ? -1 : p.d);
+  };
+
+  /* ---------- chat ---------- */
+  const msgs = $("msgs"), chatTyped = $("chatTyped"), chatComposer = $("chatComposer");
+  const Q1 = "what is Pooled?";
+  const toBottom = () => { msgs.scrollTop = msgs.scrollHeight; };
   const typeInto = (el, text, t0, t1, t) => {
     const n = Math.max(0, Math.min(text.length, Math.ceil((t - t0) / (t1 - t0) * text.length)));
     if (el.textContent.length !== n) el.textContent = text.slice(0, n);
   };
-
-  /* ---------- 4, 5: chat ---------- */
-  const msgs = $("msgs"), chatTyped = $("chatTyped"), chatComposer = $("chatComposer"), chatWho = $("chatWho");
-  const Q1 = "what is Pooled?", Q2 = "can it write code?";
-  const toBottom = () => { msgs.scrollTop = msgs.scrollHeight; };
-  const typer = icon => { chatWho.querySelector("use").setAttribute("href", icon); chatComposer.classList.add("hot"); };
-  const sent = () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); };
-  let pulse = null;
-  const answer = (k, rate) => {
-    const li = show(k); li.classList.add("live-share"); flag("pulsing", true);
-    pulse = stream(li, rate, () => { li.classList.remove("live-share"); pulse = null; setHot(-1); flag("pulsing", false); });
-    toBottom();
+  const show = k => {
+    const el = demo.querySelector(`[data-at="${k}"]`); if (!el) return null;
+    el.classList.remove("pending"); if (!RM) restart(el, "enter"); return el;
   };
 
-  /* ---------- 6, 7: Code mode, then the game it built ---------- */
-  const log = $("log"), segCode = win.querySelector(".sg-code");
-  const t0 = $("t0"), t1 = $("t1"), t2 = $("t2"), lv = $("lv"), lvPre = $("lvPre"), lvF = $("lvF"), lvN = $("lvN");
-  const LINES = [...$("dRows").children].map(r => r.textContent);
-  const INDEX = ['<!doctype html>', '<html lang="en">', '<head>', '  <meta charset="utf-8">', '  <title>Tetris</title>', '  <link rel="stylesheet" href="style.css">',
-    '</head>', '<body>', '  <canvas id="board" width="200" height="400"></canvas>', '  <p id="score">0</p>', '  <script src="game.js"></script>', '</body>'];
-  const pv = $("pv"), app = $("app"), brLoad = $("brLoad"), pvSt = $("pvSt"), game = $("game"), play = $("play"), paused = $("paused");
-  const overT = $("overT"), overScore = $("overScore");
-  const codeTyped = $("codeTyped"), codeComposer = $("codeComposer");
-  const PROMPT = "build me a tetris game";
-  const logBottom = () => { log.scrollTop = log.scrollHeight; };
-  const fmt = n => n.toLocaleString("en-US");
+  /* ---------- 5 to 7: Code ---------- */
+  const log = $("log"), codeTyped = $("codeTyped"), codeComposer = $("codeComposer");
+  const files = demo.querySelector(".files"), ftree = $("ftree");
+  const fItems = Object.fromEntries([...ftree.children].map(li => [li.dataset.f, li]));
+  const lv = $("lv"), lvPre = $("lvPre"), lvF = $("lvF"), lvN = $("lvN");
+  const pv = $("pv"), app = $("app"), brLoad = $("brLoad"), game = $("game");
+  const PROMPT = "build me a tetris game", PROMPT2 = "make the pieces blue and add a next-piece preview";
+  const WARM = ["#F08A6C", "#F2C14E", "#6CC5A1", "#B18CF0", "#5EB8E8", "#F28DB2", "#9BD16B"];
+  const BLUE = ["#3152FF", "#6E86FF", "#A5B4FC", "#C9D1F7", "#8EA2FF", "#4A5FD0", "#DCE2FF"];
+  const SRC = {
+    "index.html": ['<!doctype html>', '<html lang="en">', '<head>', '  <meta charset="utf-8">', '  <title>Tetris</title>', '  <link rel="stylesheet" href="style.css">',
+      '</head>', '<body>', '  <canvas id="board" width="200" height="400"></canvas>', '  <p id="score">0</p>', '  <script src="game.js"></script>', '</body>'],
+    "style.css": ['body {', '  margin: 0; display: grid; place-items: center;', '  min-height: 100vh; background: #0B0F1F;', '}', '#board { border-radius: 4px; }', '#score {',
+      '  font: 500 16px ui-monospace, monospace;', '  color: #EEF0F6;', '}'],
+    "game.js": ['const COLS = 10, ROWS = 20, SIZE = 20;', 'const COLORS = ["#F08A6C", "#F2C14E", "#6CC5A1", ...];', 'const ctx = board.getContext("2d");', 'let grid = empty(), queue = bag();',
+      'let piece = spawn(), score = 0, last = 0;', '', 'function empty() {', '  return Array.from({ length: ROWS }, () => Array(COLS).fill(0));', '}', '',
+      'function spawn() {', '  if (queue.length < 2) queue.push(...bag());', '  const k = queue.shift();', '  return { k, x: 3, y: -1, r: 0 };', '}', '',
+      'function fits(p) {', '  return cells(p).every(([x, y]) =>', '    x >= 0 && x < COLS && y < ROWS && !grid[y]?.[x]);', '}', '',
+      'function clearLines() {', '  for (let y = ROWS - 1; y >= 0; y--) {', '    if (!grid[y].every(Boolean)) continue;', '    grid.splice(y, 1); grid.unshift(Array(COLS).fill(0));',
+      '    score += 100; y++;', '  }', '}', '', 'function loop(t) {', '  if (t - last > speed()) { drop(); last = t; }', '  draw(grid, piece);', '  requestAnimationFrame(loop);', '}', '',
+      'addEventListener("keydown", e => move(e.key));', 'requestAnimationFrame(loop);'],
+    edit: ['const COLORS = ["#3152FF", "#6E86FF", "#A5B4FC", ...];', 'const next = document.getElementById("next");', 'function drawNext() {', '  paint(next, queue[0]);', '}']
+  };
+  const LINES_OUT = { "index.html": 12, "style.css": 9, "game.js": 38, edit: 41 };
   const tet = window.PooledTetris($("tetris"), {
-    seed: 11, tick: 60,
-    onScore: (s, l) => { $("score").textContent = fmt(s); $("lines").textContent = l; overScore.textContent = fmt(s); },
-    onState: st => {
-      app.classList.toggle("human", st === "play" || st === "paused");
-      paused.hidden = st !== "paused";
-      overT.hidden = st !== "over";
-      play.textContent = st === "over" ? "Play again" : "Play";
-    }
+    seed: 11, tick: 70, colors: WARM, next: $("nextc"),
+    onScore: (s, l) => { $("score").textContent = s.toLocaleString("en-US"); $("lines").textContent = l; }
   });
-  // the live card: the file as the model types it
-  let liveSrc = LINES, shown = -1, writing = null;
+  const logBottom = () => { log.scrollTop = log.scrollHeight; };
+  let liveSrc = [], liveShown = -1, writing = null;
   const liveTo = k => {
-    if (k === shown) return;
-    if (k < shown || shown < 0) { lvPre.textContent = ""; shown = 0; }
-    for (let i = shown; i < k; i++) { const sp = document.createElement("span"); sp.textContent = liveSrc[i] || " "; lvPre.append(sp); }
-    while (lvPre.children.length > 12) lvPre.firstChild.remove();
-    shown = k; lvN.textContent = `${k} line${k === 1 ? "" : "s"}`;
+    if (k === liveShown) return;
+    if (k < liveShown || liveShown < 0) { lvPre.textContent = ""; liveShown = 0; }
+    for (let i = liveShown; i < k; i++) { const sp = document.createElement("span"); sp.textContent = liveSrc[i] || " "; lvPre.append(sp); }
+    while (lvPre.children.length > 5) lvPre.firstChild.remove();
+    liveShown = k; lvN.textContent = `${k} line${k === 1 ? "" : "s"}`;
   };
-  const liveStart = (name, src) => { liveSrc = src; lvF.textContent = name; shown = -1; liveTo(0); lv.classList.remove("pending"); restart(lv, "new"); flag("pulsing", true); };
-  const liveEnd = () => { lv.classList.add("pending"); writing = null; setHot(-1); flag("pulsing", false); };
-  const chip = (card, state) => {
-    const c = card.querySelector(".chip");
-    c.className = "chip " + state;
-    c.textContent = state === "pending" ? "needs approval" : state;
-    card.classList.toggle("ask", state === "pending");
+  const fileState = (name, st, lines) => {
+    const li = fItems[name];
+    if (st === "hide") { li.classList.add("pending"); li.classList.remove("w", "mod"); return; }
+    if (li.classList.contains("pending")) { li.classList.remove("pending"); if (!RM) restart(li, "new"); }
+    li.classList.toggle("w", st === "w"); if (st === "mod") li.classList.add("mod");
+    if (lines != null) li.querySelector(".fm").textContent = lines;
+    files.classList.toggle("none", ftree.querySelectorAll("li:not(.pending)").length === 0);
   };
-  const toolShow = (card, state) => { card.classList.remove("pending", "shut"); chip(card, state); restart(card, "new"); logBottom(); };
-  const approve = (card, t) => { press(card.querySelector(".yes"), t); };
-  const openPreview = () => { pv.classList.remove("shut"); restart(brLoad, "go"); flag("app-on", true); };
-  const showApp = () => {
-    app.classList.remove("blank");
-    if (!tet.human) { tet.auto(11); tet.warm(14); }
-    if (!RM || tet.human) tet.start(); else tet.draw();
+  // write: [t0, t1, file, lines, the file row's final line count]
+  const liveStart = (name, key, t0, t1) => {
+    liveSrc = SRC[key]; lvF.textContent = name; liveShown = -1; liveTo(0);
+    lv.classList.remove("pending"); if (!RM) restart(lv, "enter");
+    writing = [t0, t1, liveSrc.length, name, key];
+    fileState(name, "w", key === "edit" ? null : 0);
+    lv.parentNode.append(lv); logBottom();
   };
-  const L0 = C + 3.0, L1 = C + 3.6;       // index.html streams
-  const G0 = C + 5.0, G1 = C + 8.4;       // game.js streams
+  const liveEnd = () => { const w = writing; lv.classList.add("pending"); writing = null; tok(-1); if (w) fileState(w[3], "done", LINES_OUT[w[4]]); };
+  const tool = k => { const el = show(k); if (el) { log.append(el); logBottom(); } return el; };
+  const saysText = new Map([...log.querySelectorAll("[data-at]")].map(el => [el, (el.querySelector(".say") || {}).textContent]));
+  let streams = [];
+  const reveal = (el, rate) => streams.push({ el: el.querySelector(".say"), text: saysText.get(el), t0: tl.t, rate });
+  const setRun = (k, run) => { const st = demo.querySelector(`[data-at="${k}"] .st`); st.textContent = run ? "running" : "done"; st.classList.toggle("run", run); };
+  const openPreview = () => { flag("served", true); flag("app-on", true); };
+  const reload = () => { if (!RM) restart(brLoad, "go"); };
+  const v1 = () => { app.classList.remove("v2"); tet.setColors(WARM); tet.showNext(false); };
+  const v2 = () => { app.classList.add("v2"); tet.setColors(BLUE); tet.showNext(true); };
+  const runGame = warmN => { if (!tet.human) { tet.auto(11); tet.warm(warmN); } if (!RM) tet.start(); else tet.draw(); };
 
+  const tl = { t: 0, fired: 0, done: false, started: false };
   const EVENTS = [
     // 1: the laptop starts a room
-    [.9, () => press(aGo, 300)],
-    [1.25, () => { tabA.classList.add("done"); }],
-    ...codeL.map((s, i) => [1.35 + i * .15, () => { s.classList.remove("off"); restart(s, "lit"); }]),
-    [2.2, () => tabA.classList.remove("linkless")],
-    // 2: the desktop types the code and joins; the tabs merge into one room
-    [STEPS[1] + .2, () => setSlots(0, 0)],
-    [4.1, () => setSlots(1, 1)], [4.4, () => setSlots(2, 2)], [4.7, () => setSlots(3, 3)],
-    [5.0, () => { setSlots(4, -1); bBtn.classList.add("ready"); }],
-    [5.5, () => press(bBtn, 300)],
-    [5.85, () => { tabB.classList.add("done"); tabA.classList.add("met"); }],
-    [6.9, () => { scene("pick"); setDevices(2); }],
-    // 3: pick a model, the layers load on both devices
-    [9.0, () => press(pkGo, 300)],
-    [9.35, () => { pick.classList.add("loading"); fill(0); }],
-    [12.4, () => flag("model-on", true)],
+    [.8, () => press(aGo, 300)],
+    [1.1, () => { tabA.classList.add("done"); setDevices(1, true); }],
+    ...[0, 1, 2, 3].map(i => [1.2 + i * .14, () => letters(i + 1)]),
+    // 2: the desktop types the code and joins; the two tabs fold into one room
+    [3.0, () => setSlots(0, 0)],
+    [3.25, () => setSlots(1, 1)], [3.5, () => setSlots(2, 2)], [3.75, () => setSlots(3, 3)],
+    [4.0, () => { setSlots(4, -1); bBtn.classList.add("ready"); }],
+    [4.4, () => press(bBtn, 300)],
+    [4.7, () => { tabB.classList.add("done"); tabA.classList.add("met"); setDevices(2, true); }],
+    [5.35, () => flag("merge", true)],
+    // 3: the model, and its split
+    [STEPS[2], () => { scene("split"); }],
+    [6.9, () => model.classList.add("split")],
     // 4: chat
-    [STEPS[3], () => { scene("chat"); show("rdy"); toBottom(); }],
-    [13.6, () => typer("#i-laptop")],
-    [14.7, () => { sent(); show("q1"); toBottom(); }],
-    [15.0, () => answer("a1", .13)],
-    // 5: a phone joins in the middle
-    [STEPS[4], () => { setDevices(3); restart(chips[2], "in"); restart(tbSum, "bump"); show("ph"); toBottom(); }],
-    [21.4, () => typer("#i-phone")],
-    [22.4, () => { sent(); show("q2"); toBottom(); }],
-    [22.7, () => answer("a2", .13)],
-    // 6: Code mode: the agent writes, you approve
-    [C, () => { press(segCode, 300); }],
-    [C + .25, () => { scene("code"); codeComposer.classList.add("hot"); }],
-    [C + 1.4, () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); show("c-q"); logBottom(); }],
-    [C + 1.7, () => { stream(show("c-s1"), .06); logBottom(); }],
-    [L0, () => { liveStart("index.html", INDEX); writing = [L0, L1, INDEX.length]; logBottom(); }],
-    [L1 + .15, () => { liveEnd(); toolShow(t0, "pending"); t0.classList.add("shut"); }],
-    [C + 4.35, () => approve(t0, 300)],
-    [C + 4.6, () => chip(t0, "done")],
-    [G0, () => { liveStart("game.js", LINES); writing = [G0, G1, LINES.length]; logBottom(); }],
-    [G1 + .2, () => { liveEnd(); toolShow(t1, "pending"); }],
-    [C + 9.7, () => approve(t1, 350)],
-    [C + 10.0, () => { chip(t1, "done"); t1.classList.add("shut"); logBottom(); }],
-    [C + 10.2, () => toolShow(t2, "running")],
-    [C + 10.8, () => { chip(t2, "done"); openPreview(); }],
-    [C + 11.1, showApp],
-    [C + 11.4, () => { stream(show("c-s2"), .06); logBottom(); }],
-    // 7: your turn
-    [STEPS[6], () => flag("turn", true)],
+    [STEPS[3], () => { scene("chat"); }],
+    [12.35, () => { measure(); chatComposer.classList.add("hot"); }],
+    [13.4, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); a1.textContent = ""; toBottom(); }],
+    // 5: Code: the tab switches itself
+    [C, () => { press(modes, 300); mode("code"); }],
+    [C + .3, () => scene("code")],
+    [C + .7, () => codeComposer.classList.add("hot")],
+    [C + 2.0, () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q"); }],
+    [C + 2.3, () => reveal(tool("c-s1"), .06)],
+    // 6: it writes three files and serves them
+    [C + 2.9, () => liveStart("index.html", "index.html", C + 2.9, C + 3.6)],
+    [C + 3.75, () => { liveEnd(); tool("c-t0"); }],
+    [C + 3.95, () => liveStart("style.css", "style.css", C + 3.95, C + 4.5)],
+    [C + 4.65, () => { liveEnd(); tool("c-t1"); }],
+    [C + 4.85, () => liveStart("game.js", "game.js", C + 4.85, C + 7.4)],
+    [C + 7.55, () => { liveEnd(); tool("c-t2"); }],
+    [C + 7.8, () => { setRun("c-t3", true); tool("c-t3"); }],
+    [C + 8.3, () => { setRun("c-t3", false); openPreview(); }],
+    [C + 8.6, reload],
+    [C + 8.8, () => { app.classList.remove("blank"); runGame(10); }],
+    [C + 9.2, () => reveal(tool("c-s2"), .06)],
+    // 7: a change, an edit, a reload
+    [C + 10.9, () => flag("app-on", false)],
+    [C + 11.1, () => codeComposer.classList.add("hot")],
+    [C + 12.8, () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q2"); }],
+    [C + 13.1, () => liveStart("game.js", "edit", C + 13.1, C + 13.8)],
+    [C + 13.95, () => { liveEnd(); fileState("game.js", "mod"); tool("c-t4"); }],
+    [C + 14.3, () => { flag("app-on", true); reload(); app.classList.add("blank"); }],
+    [C + 14.65, () => { v2(); app.classList.remove("blank"); }],
+    [C + 15.0, () => reveal(tool("c-s3"), .06)],
   ];
+  EVENTS.sort((a, b) => a[0] - b[0]);
 
   const frame = t => {
-    if (t > 9.4 && t < 12.2) fill(Math.min(40, Math.ceil((t - 9.4) / 2.6 * 40)));
-    if (t > 13.6 && t < 14.7) typeInto(chatTyped, Q1, 13.75, 14.5, t);
-    if (t > 21.4 && t < 22.4) typeInto(chatTyped, Q2, 21.55, 22.2, t);
-    if (t > C + .25 && t < C + 1.4) typeInto(codeTyped, PROMPT, C + .4, C + 1.2, t);
-    if (pulse) setHot(Math.floor(((t - pulse.t0) % pulse.rate) / pulse.rate * 40));
+    if (t > 6.0 && t < 7.8) fill(0);
+    if (t >= 7.8 && t <= 10.4) fill(Math.min(20, Math.ceil((t - 7.8) / 2.4 * 20)));
+    if (t > 12.45 && t < 13.4) typeInto(chatTyped, Q1, 12.5, 13.2, t);
+    if (t >= STEPS[3]) flow(t);
+    if (t > C + .7 && t < C + 2.0) typeInto(codeTyped, PROMPT, C + .85, C + 1.8, t);
+    if (t > C + 11.1 && t < C + 12.8) typeInto(codeTyped, PROMPT2, C + 11.25, C + 12.6, t);
     if (writing) {
       const [a, b, n] = writing;
-      if (t > a) { liveTo(Math.min(n, Math.ceil((t - a) / (b - a) * n))); logBottom(); }
-      setHot(Math.floor(((t - a) % .1) / .1 * 40));
+      liveTo(Math.max(0, Math.min(n, Math.ceil((t - a) / (b - a) * n))));
+      fileState(writing[3], "w", writing[4] === "edit" ? null : liveShown);
+      tok(Math.floor(t * 7) % 2);
+      logBottom();
     }
+    streams = streams.filter(s => {
+      const w = s.text.split(" "), n = Math.min(w.length, Math.floor((t - s.t0) / s.rate) + 1);
+      s.el.textContent = w.slice(0, n).join(" "); s.el.classList.toggle("cursor", n < w.length);
+      logBottom();
+      return n < w.length;
+    });
   };
 
-  const clearTools = () => [t0, t1, t2].forEach(c => { c.classList.add("pending"); c.classList.remove("ask", "shut"); });
   tl.reset = () => {
-    tl.t = 0; tl.fired = 0; tl.streams = []; tl.done = false; pulse = null; writing = null;
-    scene("tabs"); ["app-on", "turn", "pulsing", "model-on"].forEach(c => flag(c, false));
-    tabA.classList.add("linkless"); tabA.classList.remove("done", "met");
-    codeL.forEach(s => s.classList.add("off"));
-    tabB.classList.remove("done"); setSlots(0, -1); bBtn.classList.remove("ready", "press");
+    tl.t = 0; tl.fired = 0; tl.done = false; streams = []; writing = null;
+    scene("tabs"); mode("chat"); ["merge", "served", "app-on"].forEach(c => flag(c, false));
+    tabA.classList.remove("done", "met"); tabB.classList.remove("done"); letters(0);
+    setSlots(0, -1); bBtn.classList.remove("ready", "press"); aGo.classList.remove("press");
     setDevices(0); chips.forEach(c => c.classList.remove("in"));
-    pick.classList.remove("loading"); filled = -1; fill(0); setHot(-1);
-    win.querySelectorAll("[data-at]").forEach(el => el.classList.add("pending"));
-    win.querySelectorAll(".live-share").forEach(el => el.classList.remove("live-share"));
-    says.forEach(restore); sent(); msgs.scrollTop = 0;
+    model.classList.remove("split"); filled = -1; fill(0); geo = null;
+    words = -1; flowing = true; flow(0);
+    demo.querySelectorAll("[data-at]").forEach(el => el.classList.add("pending"));
+    chatTyped.textContent = ""; chatComposer.classList.remove("hot");
     codeTyped.textContent = ""; codeComposer.classList.remove("hot");
-    clearTools(); lv.classList.add("pending"); shown = -1; liveTo(0);
-    pv.classList.add("shut"); app.classList.add("blank"); brLoad.classList.remove("go");
-    if (!tet.human) { tet.stop(); tet.auto(11); }
-    log.scrollTop = 0;
+    Object.keys(fItems).forEach(n => fileState(n, "hide")); files.classList.add("none");
+    lv.classList.add("pending"); liveShown = -1; liveSrc = []; liveTo(0);
+    saysText.forEach((txt, el) => { const s = el.querySelector(".say"); if (s) { s.textContent = txt; s.classList.remove("cursor"); } });
+    ["c-q", "c-s1", "c-t0", "c-t1", "c-t2", "c-t3", "c-s2", "c-q2", "c-t4", "c-s3"].forEach(k => log.append(demo.querySelector(`[data-at="${k}"]`)));
+    app.classList.add("blank"); brLoad.classList.remove("go");
+    if (!tet.human) { tet.stop(); v1(); tet.auto(11); }
+    msgs.scrollTop = 0; log.scrollTop = 0;
     paintBar(0, true);
   };
   tl.final = () => {
-    tl.streams = []; tl.done = true; tl.started = true; tl.t = END; tl.fired = EVENTS.length; pulse = null; writing = null;
-    scene("code"); flag("app-on", true); flag("model-on", true); flag("turn", false); flag("pulsing", false);
-    tabA.classList.add("done", "met"); tabA.classList.remove("linkless"); codeL.forEach(s => s.classList.remove("off"));
-    tabB.classList.add("done"); setSlots(4, -1);
-    setDevices(3); pick.classList.add("loading"); fill(40); setHot(-1);
-    win.querySelectorAll("[data-at]").forEach(el => el.classList.remove("pending", "enter"));
-    win.querySelectorAll(".live-share").forEach(el => el.classList.remove("live-share"));
-    says.forEach(restore); sent(); codeTyped.textContent = ""; codeComposer.classList.remove("hot");
-    lv.classList.add("pending");
-    [t0, t1, t2].forEach(c => { chip(c, "done"); c.classList.add("shut"); });
-    pv.classList.remove("shut"); app.classList.remove("blank");
-    if (!tet.human) { tet.auto(11); tet.warm(18); }
-    if (!RM) tet.start(); else tet.draw();
+    streams = []; writing = null; tl.done = true; tl.started = true; tl.t = END; tl.fired = EVENTS.length;
+    scene("code"); mode("code"); flag("merge", true); flag("served", true); flag("app-on", true);
+    tabA.classList.add("done", "met"); tabB.classList.add("done"); letters(4); setSlots(4, -1);
+    setDevices(2); model.classList.add("split"); fill(20);
+    words = -1; flowing = true; flow(END);
+    demo.querySelectorAll("[data-at]").forEach(el => el.classList.remove("pending", "enter"));
+    saysText.forEach((txt, el) => { const s = el.querySelector(".say"); if (s) { s.textContent = txt; s.classList.remove("cursor"); } });
+    chatTyped.textContent = ""; codeTyped.textContent = ""; chatComposer.classList.remove("hot"); codeComposer.classList.remove("hot");
+    Object.keys(fItems).forEach(n => fileState(n, "done", LINES_OUT[n])); fileState("game.js", "mod", LINES_OUT.edit);
+    lv.classList.add("pending"); tok(-1);
+    app.classList.remove("blank"); v2(); runGame(18);
     toBottom(); logBottom();
     paintBar(END);
   };
   tl.advance = dt => {
     tl.t += dt;
     while (tl.fired < EVENTS.length && EVENTS[tl.fired][0] <= tl.t) { EVENTS[tl.fired][1](); tl.fired++; }
-    tl.streams = tl.streams.filter(st => {
-      const n = Math.min(st.words.length, Math.floor((tl.t - st.t0) / st.rate));
-      if (n >= st.words.length) { restore(st.s); st.onDone && st.onDone(); toBottom(); logBottom(); return false; }
-      const txt = st.words.slice(0, n).join(" ");
-      if (st.s.el.textContent !== txt) { st.s.el.textContent = txt; toBottom(); logBottom(); }
-      return true;
-    });
     frame(tl.t);
     paintBar(tl.t, true);
-    if (tl.t >= END && !tl.streams.length && tl.fired >= EVENTS.length) tl.done = true;
+    if (tl.t >= END && tl.fired >= EVENTS.length) tl.done = true;
   };
-  EVENTS.sort((a, b) => a[0] - b[0]);
 
   /* ---------- driver: one rAF, only while the window is on screen and the page is visible ---------- */
   let raf = 0, last = 0, visible = false, frozen = false;
@@ -310,7 +356,7 @@
   const halt = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } };
   const begin = () => { if (!tl.started) { tl.started = true; if (RM) tl.final(); else tl.reset(); } wake(); };
 
-  // jump to step k (0-based). With reduced motion: that step, finished, and no motion.
+  // jump to a moment; with reduced motion, to a step's finished state, frozen
   const seek = (s, freeze) => {
     halt(); tl.started = true; frozen = !!freeze;
     if (tet.human) tet.auto(11);
@@ -321,43 +367,33 @@
   const goStep = k => {
     if (RM) {
       if (k >= STEPS.length - 1) { tl.final(); return; }
-      seek(k === 1 ? 6.5 : STEPS[k + 1] - .35, true); tl.done = true; return;   // step 2 ends on the two joined tabs, before the merge
+      const ends = [2.4, 5.3, 11.0, A1 + .5, C + 2.6, C + 10.6];
+      seek(ends[k], true); tl.done = true; flow(A1 + 1); paintBar(STEPS[k]); return;
     }
     seek(STEPS[k]);
   };
   dotBtns.forEach((b, i) => b.addEventListener("click", () => goStep(i)));
   $("replay").addEventListener("click", () => goStep(0));
-
-  /* ---------- the game: keys are captured only while it has focus ---------- */
-  const KEYMAP = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "rot", ArrowDown: "down", " ": "drop", Spacebar: "drop", x: "rot", z: "rot" };
-  const takeOver = () => { flag("turn", false); tet.play(); };
-  play.addEventListener("click", e => { e.stopPropagation(); game.focus({ preventScroll: true }); takeOver(); });
-  game.addEventListener("click", () => {
-    if (!tet.human || tet.over) { game.focus({ preventScroll: true }); takeOver(); }
-    else if (tet.paused) tet.pause(false);
+  mChat.addEventListener("click", () => { if (demo.dataset.mode !== "chat" || tl.done) goStep(0); });
+  mCode.addEventListener("click", () => { if (demo.dataset.mode !== "code" || tl.done) goStep(4); });
+  modes.addEventListener("keydown", e => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const b = e.key === "ArrowLeft" ? mChat : mCode; b.focus(); b.click();
   });
+  addEventListener("resize", () => { if (demo.dataset.scene === "chat") measure(); });
+
+  /* ---------- the game: it plays itself; arrow keys take over while it has focus ---------- */
+  const KEYMAP = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "rot", ArrowDown: "down", " ": "drop", Spacebar: "drop", x: "rot", z: "rot" };
   game.addEventListener("keydown", e => {
     if (e.key === "Escape") { game.blur(); return; }
-    const a = KEYMAP[e.key];
-    if (!a) { if (e.key === "Enter" && (!tet.human || tet.over)) { e.preventDefault(); takeOver(); } return; }
+    const a = KEYMAP[e.key]; if (!a) return;
     e.preventDefault();
-    if (!tet.human || tet.over) { takeOver(); return; }
-    if (tet.paused) tet.pause(false);
+    if (!tet.human || tet.over) tet.play();
     tet.act(a);
   });
-  game.addEventListener("focus", () => { if (tet.human && tet.paused) tet.pause(false); });
-  game.addEventListener("blur", e => { if (tet.human && !tet.over && !(e.relatedTarget && $("pad").contains(e.relatedTarget))) tet.pause(true); });
-  $("pad").querySelectorAll("button").forEach(b => {
-    const k = b.dataset.k; let rep = 0, hold = 0;
-    const fire = () => { if (document.activeElement !== game) game.focus({ preventScroll: true }); if (!tet.human || tet.over) { takeOver(); return; } if (tet.paused) tet.pause(false); tet.act(k); };
-    const stopRep = () => { clearTimeout(hold); clearInterval(rep); };
-    b.addEventListener("pointerdown", e => {
-      e.preventDefault(); fire();
-      if (k === "left" || k === "right" || k === "down") hold = setTimeout(() => { rep = setInterval(() => tet.act(k), 90); }, 230);
-    });
-    ["pointerup", "pointerleave", "pointercancel"].forEach(ev => b.addEventListener(ev, stopRep));
-    b.addEventListener("click", e => { if (e.detail === 0) fire(); });
-  });
+  game.addEventListener("pointerdown", () => game.focus({ preventScroll: true }));
+  game.addEventListener("blur", () => { if (tet.human) { tet.auto(11); tet.warm(10); if (!RM) tet.start(); } });
 
   /* ---------- start when 30% visible ---------- */
   new IntersectionObserver(es => {
@@ -373,6 +409,6 @@
   window.__demo = {
     seek(s, freeze) { seek(s, freeze); },
     step: goStep,
-    set frozen(v) { frozen = v; wake(); }, get t() { return tl.t; }, STEPS, END, tet
+    set frozen(v) { frozen = v; wake(); }, get t() { return tl.t; }, STEPS, END, C, A1, tet
   };
 })();
