@@ -345,16 +345,17 @@
   };
   let words = -1, flowing = false;
   const aLi = a1.parentNode;
-  // the answer streams into a bubble that already has its final size: the words still to come sit there
-  // unseen, so the bubble never re-wraps or grows word by word (the cursor takes no room either)
+  // the answer streams into the bubble word by word (the cursor takes no room)
   a1.textContent = ""; a1.innerHTML = '<span class="vis"></span><i class="cur" aria-hidden="true"></i><span class="ghost"></span>';
   const aVis = a1.firstChild, aGhost = a1.lastChild;
-  const sayTo = n => { aVis.textContent = WORDS.slice(0, n).join(" "); aGhost.textContent = n >= WORDS.length ? "" : (n ? " " : "") + WORDS.slice(n).join(" "); };
+  // the bubble grows a line at a time as words are added (words are only appended, so earlier lines never
+  // re-wrap); the chat follows the line being written. (Reserving the final size left an empty, clipped box.)
+  const sayTo = n => { aVis.textContent = WORDS.slice(0, n).join(" "); aGhost.textContent = ""; };
   const flow = t => {
     aLi.classList.toggle("streaming", t >= A0 && t < A1);
     if ((t >= A1) !== aLi.classList.contains("done")) { aLi.classList.toggle("done", t >= A1); toBottom(); }
     const wait = t < WT[1];   // from the moment the answer's place shows until its first word: the working line
-    if (wait !== aLi.classList.contains("wait")) { aLi.classList.toggle("wait", wait); toBottom(); }
+    if (wait !== aLi.classList.contains("wait")) { aLi.classList.toggle("wait", wait); follow(); }
     if (t < A0 || t >= A1) {
       if (flowing) { flowing = false; band.classList.remove("writing"); bdLive.textContent = "Ready"; sweep(null); a1.classList.remove("cursor"); }
       const n = t < A0 ? 0 : WORDS.length;
@@ -363,7 +364,7 @@
     }
     if (!flowing) { flowing = true; band.classList.add("writing"); bdLive.textContent = "Writing"; }
     let w = 0; while (w < WORDS.length - 1 && t >= WT[w + 1]) w++;
-    if (w !== words) { words = w; sayTo(w); a1.classList.add("cursor"); bdTok.textContent = w + 1; }
+    if (w !== words) { words = w; sayTo(w); a1.classList.add("cursor"); bdTok.textContent = w + 1; follow(); }
     // the room's sweep: one per word while words are slow, then one per lap that the faster words ride along with
     let s0 = SWEEPS[0]; for (const x of SWEEPS) { if (x <= t) s0 = x; else break; }
     sweep(t - s0);
@@ -385,6 +386,16 @@
   const Q1 = "what is Pooled?";
   // the chat follows its last line, gliding (a jump when seeking, or with reduced motion)
   const toBottom = () => { const top = msgs.scrollHeight - msgs.clientHeight; if (Math.abs(top - msgs.scrollTop) < 1) return; if (RM || frozen) msgs.scrollTop = top; else msgs.scrollTo({ top, behavior: "smooth" }); };
+  // while the answer streams: follow the line being written (the bubble already has its final size, so going
+  // to the bottom would scroll ahead of the words and hide the question); only ever downward
+  const follow = () => {
+    const c = a1.querySelector(".cur"), ref = c && c.getClientRects().length ? c : aVis;
+    if (!ref) return;
+    const need = ref.getBoundingClientRect().bottom + 18 - msgs.getBoundingClientRect().bottom;
+    if (need < 1) return;
+    const top = Math.min(msgs.scrollHeight - msgs.clientHeight, msgs.scrollTop + need);
+    if (RM || frozen) msgs.scrollTop = top; else msgs.scrollTo({ top, behavior: "smooth" });
+  };
   const typeInto = (el, text, t0, t1, t) => {
     const n = Math.max(0, Math.min(text.length, Math.ceil((t - t0) / (t1 - t0) * text.length)));
     if (el.textContent.length !== n) el.textContent = text.slice(0, n);
@@ -503,7 +514,7 @@
     // 5: chat
     [CH, () => scene("chat")],
     [CH + .3, () => { geo = null; chatComposer.classList.add("hot"); }],
-    [CH + .95, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); sayTo(0); toBottom(); measure(); }],
+    [CH + .95, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); sayTo(0); follow(); measure(); }],
     // the answer ends on "It can chat, or write code.": a second later the Code tab is pressed, as if clicked, and the story goes on there
     [C - .3, () => press(mCode, 300)],
     // 6: Code

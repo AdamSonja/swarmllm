@@ -55,7 +55,10 @@
     + "[data-twinkle][aria-selected=\"true\"]>.pooled-tw{opacity:1}"
     + ".pooled-tw svg{position:absolute;animation:pooledtw 1.9s ease-in-out infinite}"
     + "@keyframes pooledtw{0%,100%{opacity:0;transform:scale(.3) rotate(0)}50%{opacity:1;transform:scale(1) rotate(45deg)}}"
-    // hovering the tab before it is chosen: the stars show in blue on the light tab, as an invitation
+    // hovering the tab before it is chosen: it lights up in place (a soft blue fills in, the word turns blue,
+    // the stars twinkle), no sliding band
+    + "[data-twinkle]{transition:background-color .3s ease,color .3s ease,box-shadow .3s ease}"
+    + ":is(#mode-bar,.modes) [data-twinkle]:not([aria-selected=\"true\"]):hover,[data-twinkle]:not([aria-selected=\"true\"]):hover{background:linear-gradient(135deg,rgba(110,134,255,.16),rgba(42,69,224,.10));color:#2A45E0;box-shadow:inset 0 0 0 1px rgba(110,134,255,.35),0 0 14px -4px rgba(42,69,224,.45)}"
     + "[data-twinkle]:not([aria-selected=\"true\"]):hover>.pooled-tw{opacity:1}"
     + "[data-twinkle]:not([aria-selected=\"true\"]) .pooled-tw path{fill:#6E86FF}"
     + "@media (prefers-reduced-motion:reduce){.pooled-tw svg{animation:none;opacity:.8}}";
@@ -68,12 +71,6 @@
       box.insertAdjacentHTML("beforeend", `<svg viewBox="0 0 16 16" style="left:calc(${x}% - ${s / 2}px);top:calc(${y}% - ${s / 2}px);width:${s}px;height:${s}px;animation-delay:${(i * .27).toFixed(2)}s"><path d="${STAR}" fill="${i % 3 ? "#FFFFFF" : "#A5B4FC"}"/></svg>`);
     });
     el.appendChild(box);
-    // and a shine across it when the pointer arrives, while it is not chosen yet
-    let at = 0;
-    el.addEventListener("pointerenter", (e) => {
-      if (e.pointerType === "touch" || el.getAttribute("aria-selected") === "true" || performance.now() - at < 900) return;
-      at = performance.now(); shine(el);
-    });
   }
   const init = () => { document.head.appendChild(css); document.querySelectorAll("[data-twinkle]").forEach(twinkles); };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
