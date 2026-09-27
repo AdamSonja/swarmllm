@@ -124,7 +124,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true, headRows = 0 }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -360,6 +360,17 @@ export class Qwen35Engine {
       });
     }));
 
+    // LM head GEMVs (full and draft) with their own rows per workgroup (off by default: no gain on the
+    // 27B head, 5.78 vs 5.79 ms on the GB10): rows per workgroup never enter
+    // a row's arithmetic, so the logits are bit-identical to the coopRows kernel (tests/bench_wide.js)
+    this.headRows = hasHead && matvecVariant === "coop" && headRows > 0 && headRows !== coopRows ? headRows : 0;
+    if (this.headRows) {
+      const modH = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, this.headRows, 64, batchCols, coopRowsB, unpack) });
+      for (const name of ["matvec_q8_coop", "matvec_q4_coop", "matvec_coop"]) {
+        const layout1 = device.createBindGroupLayout({ entries: G1[name].map((t, i) => ({ binding: i, visibility: C, buffer: { type: bufType[t] } })) });
+        this.pipes[name + "_h"] = await device.createComputePipelineAsync({ layout: device.createPipelineLayout({ bindGroupLayouts: [layout0, layout1] }), compute: { module: modH, entryPoint: name } });
+      }
+    }
     // ---- uniforms ----
     const cfgData = new ArrayBuffer(48);
     const cu = new Uint32Array(cfgData), cf = new Float32Array(cfgData);
@@ -686,7 +697,13 @@ export class Qwen35Engine {
       this.stageArg = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       this.bgArgmax = this._bg(this.pipes.argmax, 1, [this.logits, this.argBuf, this._buf(new Uint32Array([vocab, 0, 0, 0]), GPUBufferUsage.UNIFORM)]);
       this.bgFinalNorm = bgNorm(this.x, this.finalNorm, this.xn);
-      this.headOp = mv(this.headEntry, this.xn, this.logits, vocab, dim);
+      const headMv = (n) => {
+        const op = mv(this.headEntry, this.xn, this.logits, n, dim);
+        if (!this.headRows) return op;
+        const bufs = this.headEntry.kind === "f32" ? [this.headEntry.buf, this.xn, this.logits, this._shape(n, dim)] : [this.headEntry.qs, this.headEntry.sc, this.xn, this.logits, this._shape(n, dim)];
+        return { pipe: op.pipe + "_h", acc: false, wgs: Math.ceil(n / this.headRows), bg: this._bg(this.pipes[op.pipe + "_h"], 1, bufs) };
+      };
+      this.headOp = headMv(vocab);
       // Draft head over the first `draftVocab` rows only (BPE ids roughly follow frequency, so the
       // prefix holds the common tokens): the head is the biggest matrix a draft reads (0.7 GB on
       // the 27B), and drafts only need to be good guesses. The verify pass still uses the full
@@ -694,7 +711,7 @@ export class Qwen35Engine {
       const dv = draftVocab > 0 && draftVocab < vocab ? Math.ceil(draftVocab / 64) * 64 : 0;
       if (dv && dv < vocab) {
         this.draftVocab = dv;
-        this.headOpDraft = mv(this.headEntry, this.xn, this.logits, dv, dim);
+        this.headOpDraft = headMv(dv);
         this.bgArgmaxDraft = this._bg(this.pipes.argmax, 1, [this.logits, this.argBuf, this._buf(new Uint32Array([dv, 0, 0, 0]), GPUBufferUsage.UNIFORM)]);
         // The small head can only draft ids < dv. On English prose and code 1-2.5% of tokens lie
         // at or above 65536 (benchmarks/draftvocab_coverage.js), but on Chinese it is ~84% and on
