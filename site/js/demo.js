@@ -548,18 +548,21 @@
   }
   const wake = () => { if (needs() && !raf) { last = 0; raf = requestAnimationFrame(loop); } };
   const halt = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } };
-  // first load: the finished app is already playing for a moment (the hook), then the story starts from the top.
-  // Clicking into the game keeps it; the story starts once the visitor leaves it.
-  const HOOK_MS = 2200;
+  // first load: under half a second of the agent's edit, right before the changed app is served (the diff
+  // on screen, the reload next), then the story starts from the top
+  const HOOK_MS = 400;
   let hookT = 0, hookWait = false;
-  const endHook = () => { hookT = 0; if (playing) { hookWait = true; return; } hookWait = false; tl.reset(); tl.started = true; wake(); };
+  const endHook = () => { hookT = 0; frozen = false; if (playing) { hookWait = true; return; } hookWait = false; tl.reset(); tl.started = true; wake(); };
   const begin = () => {
     if (tl.started) { wake(); return; }
     tl.started = true;
     if (RM) { tl.final(); return; }
-    tl.final(); hookT = setTimeout(endHook, HOOK_MS);
+    frozen = true; tl.reset();
+    const at = c(RELOAD) - .1;
+    while (tl.t < at - 1e-6) tl.advance(Math.min(1 / 30, at - tl.t));
+    hookT = setTimeout(endHook, HOOK_MS);
   };
-  const cancelHook = () => { if (hookT) { clearTimeout(hookT); hookT = 0; } hookWait = false; };
+  const cancelHook = () => { if (hookT) { clearTimeout(hookT); hookT = 0; frozen = false; } hookWait = false; };
 
   // jump to a moment; with reduced motion, to a step's finished state, frozen
   const seek = (s, freeze) => {
