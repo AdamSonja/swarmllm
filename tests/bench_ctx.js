@@ -43,7 +43,9 @@ console.log(`loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!
 const need = Math.max(...FILLS) + 16;
 let ids = [];
 for (const f of ["../engine/qwen35.js", "../room.js", "../engine/gguf.js", "../engine/wgsl/base.js", "../engine/wgsl/moe.js", "../harness/agent.js", "../room/plan.js"]) {
-  try { ids.push(...tok.encode(`\n// file: ${f}\n` + await Deno.readTextFile(new URL(f, import.meta.url)))); } catch {}
+  // CTX_SRC=<repo dir>: read these files from another checkout, so A/B runs across branches prefill the same tokens
+  const u = env("CTX_SRC", "") ? new URL(f.replace(/^\.\.\//, ""), "file://" + env("CTX_SRC", "").replace(/\/?$/, "/")) : new URL(f, import.meta.url);
+  try { ids.push(...tok.encode(`\n// file: ${f}\n` + await Deno.readTextFile(u))); } catch {}
   if (ids.length >= need) break;
 }
 while (ids.length < need) ids = ids.concat(ids);

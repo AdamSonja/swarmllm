@@ -1965,7 +1965,30 @@ export class Qwen35Engine {
         }
         p.end();
       }
-      if (L.moe) for (let j = 0; j < J; j++) {   // experts: the batched MoE kernels, sub-batch by sub-batch
+      if (L.moe && this._wideGrp(L, w)) {
+        // experts expert-grouped over the whole chunk (moeGroupPrefill on too): route each sub-batch, then one
+        // sort + grouped gate/up + grouped down + combine over all w tokens, as _prefillGrouped does per ubatch
+        const gB = this.gB, ss = NC * this.moe.KS * 4, tx = this._wTwin.get(B.x.buf), txn = this._wTwin.get(B.xn.buf);
+        for (let j = 0; j < J; j++) {
+          this._wCopy(enc, B.xn, j, false);
+          this._mcCommon = this.bgCommonW[j];
+          const p = enc.beginComputePass();
+          this._encMoeFfn(p, L, LB, M, NC, G, true);
+          p.end();
+          this._mcCommon = null;
+          enc.copyBufferToBuffer(B.mSel, 0, gB.sel, j * ss, ss);
+          enc.copyBufferToBuffer(B.mSelw, 0, gB.selw, j * ss, ss);
+        }
+        enc.copyBufferToBuffer(tx, 0, gB.XW, 0, w * B.x.stride);
+        enc.copyBufferToBuffer(txn, 0, gB.XNW, 0, w * B.xn.stride);
+        const p = enc.beginComputePass();
+        this._dxyz(p, "moe_gsort", gB.bgSort, 1, 1, 1);
+        this._dInd(p, L.gusgPipe, M.gusG, gB.ind, 0);
+        this._dInd(p, L.dngPipe, M.dngG, gB.ind, 12);
+        this._dxyz(p, "moe_combw", gB.bgComb, Math.ceil(D.dim / 64), w, 1);
+        p.end();
+        enc.copyBufferToBuffer(gB.XW, 0, tx, 0, w * B.x.stride);
+      } else if (L.moe) for (let j = 0; j < J; j++) {   // experts: the batched MoE kernels, sub-batch by sub-batch
         this._wCopy(enc, B.xn, j, false); this._wCopy(enc, B.x, j, false);
         this._mcCommon = this.bgCommonW[j];
         const p = enc.beginComputePass();
@@ -1978,6 +2001,11 @@ export class Qwen35Engine {
   }
   // Wide chunk: ids[i .. i + w) at this.pos. Leaves this.x = the last column's hidden, fills the
   // draft cache sub-batch by sub-batch exactly like the NC loop in prefillTokens.
+  // wide chunk of w tokens whose fused MoE layer can take the expert-grouped kernels (moeGroupPrefill also on)
+  _wideGrp(L, w) {
+    return !!(L.fused && this.gB && this.moeGroup !== false && w <= this.gB.U && w % this.NC === 0 && w >= 2 * this.NC
+      && this._wTwin.get(this.B.x.buf) && this._wTwin.get(this.B.xn.buf));
+  }
   // Returns false (and switches wide prefill off, freeing what it built) when its buffers cannot be set
   // up on this device, so prefillTokens falls back to the batchCols-wide passes instead of failing.
   async _prefillWide(ids, i, w) {
@@ -1993,6 +2021,10 @@ export class Qwen35Engine {
     const q = this.device.queue, NC = this.NC, basePos = this.pos, Wx = this.Wt.x;
     for (let j = 0; j < w / NC; j++) q.writeBuffer(this.frameW[j], 0, new Uint32Array([basePos + j * NC, basePos + j * NC + 1, NC, 0]));
     for (let c = 0; c < w; c++) q.writeBuffer(Wx.buf, c * Wx.stride, this._embedRowF32(ids[i + c]));
+    const gB = this.gB;
+    if (gB && this.layers.some((L) => this._wideGrp(L, w)) && gB.sortW !== w) {   // the grouped sort's pair count
+      q.writeBuffer(gB.sortU, 0, new Uint32Array([w * this.moe.KS, ...gB.sortArgs])); gB.sortW = w;
+    }
     const enc = this.device.createCommandEncoder();
     for (let l = 0; l < this.layers.length; l++) this._encodeLayerWide(enc, l, basePos, w);
     enc.copyBufferToBuffer(Wx.buf, (w - 1) * Wx.stride, this.x, 0, this.dims.dim * 4);
@@ -2586,15 +2618,6 @@ export class Qwen35Engine {
     this._snapNow = null;   // not a verify: nothing to keep for replay
     let i = 0, sinceSync = 0;
     const NC = this.NC;
-    // expert-grouped ubatches first (MoE, opt-in): full ones of U tokens, then one of the remaining whole passes
-    // (at least two); the rest (under 2 * NC tokens) goes through the passes below
-    if (this.gB && this.moeGroup !== false) {
-      while (ids.length - i >= 2 * NC) {
-        const W = Math.min(this.gB.U, Math.floor((ids.length - i) / NC) * NC);
-        await this._prefillGrouped(ids, i, W); i += W;
-      }
-      this._grpDone = null;
-    }
     // wide prefill (opt-in): chunks of up to ubatch tokens, multiples of the GEMM tile width
     if (this.ubatch && this.prefillWide !== false) {
       const BN = this.wideCfg.BN;
@@ -2603,6 +2626,15 @@ export class Qwen35Engine {
         if (await this._prefillWide(ids, i, w) === false) break;
         i += w;
       }
+    }
+    // expert-grouped ubatches (MoE, opt-in; inside the wide chunks too when both are on): full ones of U tokens,
+    // then one of the remaining whole passes (at least two); the rest (under 2 * NC tokens) goes through the passes below
+    if (this.gB && this.moeGroup !== false) {
+      while (ids.length - i >= 2 * NC) {
+        const W = Math.min(this.gB.U, Math.floor((ids.length - i) / NC) * NC);
+        await this._prefillGrouped(ids, i, W); i += W;
+      }
+      this._grpDone = null;
     }
     while (ids.length - i >= NC) {
       const basePos = this.pos;
