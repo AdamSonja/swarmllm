@@ -15,7 +15,7 @@ export class DenseEngine {
     return e;
   }
 
-  async _init({ device, cfg, tensors, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, matvecVariant = "coop", coopWG = 256, coopRows = 4, attnFast = true, fuse = true, fuseGlue = false, glue3 = true }) {
+  async _init({ device, cfg, tensors, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, matvecVariant = "coop", coopWG = 256, coopRows = 4, attnFast = true, fuse = true, fuseGlue = false, glue3 = true, mergeQKV = true }) {
     this.device = device;
     this.cfg = cfg;
     this.maxSeq = maxSeq;
@@ -114,9 +114,25 @@ export class DenseEngine {
     const S = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
     this.x = device.createBuffer({ size: dim * 4, usage: S });
     this.xn = device.createBuffer({ size: dim * 4, usage: S });
-    this.q = device.createBuffer({ size: qDim * 4, usage: S });
-    this.k = device.createBuffer({ size: kvDim * 4, usage: S });
-    this.v = device.createBuffer({ size: kvDim * 4, usage: S });
+    // mergeQKV: q, k and v come out of ONE GEMV over the row-concatenated [wq | wk | wv] (each row keeps
+    // its kernel and its arithmetic, so the bits are the same; rows per workgroup never enter a row's
+    // sums). q / k / v are then 256-byte aligned views of one output buffer. Needs Q8/Q4 q/k/v of one
+    // kind and 256-byte aligned segment sizes (true for every Qwen3 size).
+    this.mergeQKV = mergeQKV !== false && matvecVariant === "coop" && (qDim * 4) % 256 === 0 && (kvDim * 4) % 256 === 0;
+    if (this.mergeQKV) {
+      const kinds = new Set(W.layers.map((l) => [l.q, l.k, l.v].map((e) => e && e.kind).join()));
+      if (kinds.size !== 1 || ![...kinds][0].split(",").every((k) => k === "q8" || k === "q4") || new Set([...kinds][0].split(",")).size !== 1) this.mergeQKV = false;
+    }
+    if (this.mergeQKV) {
+      this.qkvBuf = device.createBuffer({ size: (qDim + 2 * kvDim) * 4, usage: S });
+      this.q = DenseEngine._view(this.qkvBuf, 0, qDim * 4);
+      this.k = DenseEngine._view(this.qkvBuf, qDim * 4, kvDim * 4);
+      this.v = DenseEngine._view(this.qkvBuf, (qDim + kvDim) * 4, kvDim * 4);
+    } else {
+      this.q = device.createBuffer({ size: qDim * 4, usage: S });
+      this.k = device.createBuffer({ size: kvDim * 4, usage: S });
+      this.v = device.createBuffer({ size: kvDim * 4, usage: S });
+    }
     this.attnOut = device.createBuffer({ size: qDim * 4, usage: S });
     this.tmpDim = device.createBuffer({ size: dim * 4, usage: S });
     this.g = device.createBuffer({ size: inter * 4, usage: S });
@@ -131,7 +147,7 @@ export class DenseEngine {
       if (!e) return null;
       if (e.gpu) return e.gpu;            // already streamed onto the GPU during download
       let r;
-      if (e.kind === "q8" || e.kind === "q4") r = { kind: e.kind, qs: this._buf(e.qs, GPUBufferUsage.STORAGE), sc: this._buf(e.scales, GPUBufferUsage.STORAGE) };
+      if (e.kind === "q8" || e.kind === "q4") r = { kind: e.kind, qs: this._buf(e.qs, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC), sc: this._buf(e.scales, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC) };
       else r = { kind: "f32", buf: this._buf(e.data, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC) };
       if (e !== this.cpuEmbed) e.qs = e.scales = e.data = null; // release CPU copy (embed rows stay for lookups)
       return r;
@@ -144,6 +160,23 @@ export class DenseEngine {
       kCache: device.createBuffer({ size: maxSeq * kvDim * 4, usage: S }),
       vCache: device.createBuffer({ size: maxSeq * kvDim * 4, usage: S }),
     }));
+
+    if (this.mergeQKV) {   // row-concatenate [wq | wk | wv] on the GPU, free the parts
+      const kind = this.layers[0].wq.kind, rb = kind === "q4" ? [dim / 2, dim / 16] : [dim, dim / 16];   // bytes per row: qs, f16 scales
+      const rows = [qDim, kvDim, kvDim], U = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+      const enc = device.createCommandEncoder();
+      for (const L2 of this.layers) {
+        const dst = rb.map((x) => device.createBuffer({ size: Math.ceil((qDim + 2 * kvDim) * x / 4) * 4, usage: U }));
+        let r0 = 0;
+        [L2.wq, L2.wk, L2.wv].forEach((w, i) => {
+          [w.qs, w.sc].forEach((b, j) => enc.copyBufferToBuffer(b, 0, dst[j], r0 * rb[j], rows[i] * rb[j]));
+          r0 += rows[i];
+        });
+        L2.wqkv = { kind, qs: dst[0], sc: dst[1], _free: [L2.wq, L2.wk, L2.wv] };
+      }
+      device.queue.submit([enc.finish()]);
+      for (const L2 of this.layers) { for (const w of L2.wqkv._free) { w.qs.destroy(); w.sc.destroy(); } L2.wqkv._free = null; L2.wq = L2.wk = L2.wv = null; }
+    }
 
     if (hasEmbed || hasHead) {
       if (W.embed.kind === "f32") {
@@ -198,9 +231,9 @@ export class DenseEngine {
       oAcc: this.fuseOn ? mv(L2.wo, this.attnOut, this.x, dim, qDim, true) : null,
       downAcc: this.fuseOn ? mv(L2.wdown, this.g, this.x, dim, inter, true) : null,
       norm1: bgNorm(this.x, L2.inNorm, this.xn),
-      q: mv(L2.wq, this.xn, this.q, qDim, dim),
-      k: mv(L2.wk, this.xn, this.k, kvDim, dim),
-      v: mv(L2.wv, this.xn, this.v, kvDim, dim),
+      q: this.mergeQKV ? mv(L2.wqkv, this.xn, this.qkvBuf, qDim + 2 * kvDim, dim) : mv(L2.wq, this.xn, this.q, qDim, dim),
+      k: this.mergeQKV ? null : mv(L2.wk, this.xn, this.k, kvDim, dim),
+      v: this.mergeQKV ? null : mv(L2.wv, this.xn, this.v, kvDim, dim),
       qNorm: L2.qNorm ? this._bg(this.pipes.head_norm, 1, [this.q, L2.qNorm.buf, this.nHBuf]) : null,
       kNorm: L2.kNorm ? this._bg(this.pipes.head_norm, 1, [this.k, L2.kNorm.buf, this.nKVBuf]) : null,
       scores: this._bg(this.pipes.attn_scores, 1, [this.q, L2.kCache, this.scores]),
@@ -253,9 +286,13 @@ export class DenseEngine {
   _bg(pipe, group, buffers) {
     return this.device.createBindGroup({
       layout: pipe.getBindGroupLayout(group),
-      entries: buffers.map((b, i) => ({ binding: i, resource: { buffer: b } })),
+      entries: buffers.map((b, i) => ({ binding: i, resource: DenseEngine._res(b) })),
     });
   }
+  // a view is a 256-byte aligned range of a buffer that binds like a buffer of its own
+  static _view(buffer, offset, size) { return { __view: true, buffer, offset, size }; }
+  static _res(b) { return b && b.__view ? { buffer: b.buffer, offset: b.offset, size: b.size } : { buffer: b }; }
+  static _raw(b) { return b && b.__view ? [b.buffer, b.offset] : [b, 0]; }
 
   _dispatch(pass, pipeName, bg, threads, wgSize = 64) {
     pass.setPipeline(this.pipes[pipeName]);
@@ -283,8 +320,8 @@ export class DenseEngine {
       let pass = enc.beginComputePass();
       this._dispatch(pass, "rmsnorm", BG.norm1, 256, 256);
       this._dispatchOp(pass, BG.q);
-      this._dispatchOp(pass, BG.k);
-      this._dispatchOp(pass, BG.v);
+      if (BG.k) this._dispatchOp(pass, BG.k);
+      if (BG.v) this._dispatchOp(pass, BG.v);
       if (this.glue3 !== false && BG.rope3) {   // three exact multi-head kernels, no copies, one pass
         const g3 = (name, bg, x) => { pass.setPipeline(this.pipes[name]); pass.setBindGroup(0, this.bgCommonFor[name]); pass.setBindGroup(1, bg); pass.dispatchWorkgroups(x, 1); };
         if (BG.hn3) g3("head_norm_dmc", BG.hn3, Math.ceil((nH + nKV) / 32));
@@ -303,8 +340,8 @@ export class DenseEngine {
         this._dispatch(pass, "rope", this.bgRopeQ, nH * headDim / 2);
         this._dispatch(pass, "rope", this.bgRopeK, nKV * headDim / 2);
         pass.end();
-        enc.copyBufferToBuffer(this.k, 0, L.kCache, this.pos * kvDim * 4, kvDim * 4);
-        enc.copyBufferToBuffer(this.v, 0, L.vCache, this.pos * kvDim * 4, kvDim * 4);
+        enc.copyBufferToBuffer(...DenseEngine._raw(this.k), L.kCache, this.pos * kvDim * 4, kvDim * 4);
+        enc.copyBufferToBuffer(...DenseEngine._raw(this.v), L.vCache, this.pos * kvDim * 4, kvDim * 4);
         pass = enc.beginComputePass();
       }
       this._encodeAttn(pass, BG, seqLen);
@@ -326,16 +363,16 @@ export class DenseEngine {
       const pass = enc.beginComputePass();
       this._dispatch(pass, "rmsnorm", BG.norm1, 256, 256);
       this._dispatchOp(pass, BG.q);
-      this._dispatchOp(pass, BG.k);
-      this._dispatchOp(pass, BG.v);
+      if (BG.k) this._dispatchOp(pass, BG.k);
+      if (BG.v) this._dispatchOp(pass, BG.v);
       if (BG.qNorm) this._dispatch(pass, "head_norm", BG.qNorm, nH, 32);
       if (BG.kNorm) this._dispatch(pass, "head_norm", BG.kNorm, nKV, 32);
       this._dispatch(pass, "rope", this.bgRopeQ, nH * headDim / 2);
       this._dispatch(pass, "rope", this.bgRopeK, nKV * headDim / 2);
       pass.end();
     }
-    enc.copyBufferToBuffer(this.k, 0, L.kCache, this.pos * kvDim * 4, kvDim * 4);
-    enc.copyBufferToBuffer(this.v, 0, L.vCache, this.pos * kvDim * 4, kvDim * 4);
+    enc.copyBufferToBuffer(...DenseEngine._raw(this.k), L.kCache, this.pos * kvDim * 4, kvDim * 4);
+    enc.copyBufferToBuffer(...DenseEngine._raw(this.v), L.vCache, this.pos * kvDim * 4, kvDim * 4);
     {
       const pass = enc.beginComputePass();
       this._encodeAttn(pass, BG, seqLen);
@@ -486,12 +523,16 @@ export class DenseEngine {
     const S = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
     const al = (n) => Math.ceil(n * 4 / 256) * 256;         // 256-aligned slice stride, bytes
     const mkB = (n) => ({ buf: dev.createBuffer({ size: 4 * al(n), usage: S }), stride: al(n), n });
+    // mergeQKV: q | k | v of a column are one row block of the merged GEMV's output; B.q/k/v are views
+    // (column stride = the merged block's), so every kernel indexes them exactly as before
+    const qkvB = this.mergeQKV ? mkB(qDim + 2 * kvDim) : null;
+    const viewB = (off, n) => ({ buf: DenseEngine._view(qkvB.buf, off, qkvB.buf.size - off), stride: qkvB.stride, n, off });
     const B = this.B = {
-      x: mkB(dim), xn: mkB(dim), q: mkB(qDim), k: mkB(kvDim), v: mkB(kvDim),
+      x: mkB(dim), xn: mkB(dim), ...(qkvB ? { qkv: qkvB, q: viewB(0, qDim), k: viewB(qDim * 4, kvDim), v: viewB((qDim + kvDim) * 4, kvDim) } : { q: mkB(qDim), k: mkB(kvDim), v: mkB(kvDim) }),
       attnOut: mkB(qDim), tmpDim: mkB(dim), g: mkB(inter), u: mkB(inter),
     };
     this.stageXB = dev.createBuffer({ size: 4 * dim * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    const slice = (b, c) => ({ buffer: b.buf, offset: c * b.stride, size: b.n * 4 });
+    const slice = (b, c) => { const [buf, o] = DenseEngine._raw(b.buf); return { buffer: buf, offset: o + c * b.stride, size: b.n * 4 }; };
     this._bslice = slice;
     // per-column frame uniforms + per-column group0 for the per-token kernels
     this.frameBufsB = [0, 1, 2, 3].map(() => dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
@@ -533,7 +574,7 @@ export class DenseEngine {
         norm2MC: this.fuseOn ? this._bg(this.pipes.rmsnorm_dmc, 1, [B.x.buf, L.postNorm.buf, B.xn.buf, uNormB]) : null,
         oAcc: this.fuseOn ? mvB(L.wo, B.attnOut, B.x, dim, qDim, true) : null,
         downAcc: this.fuseOn ? mvB(L.wdown, B.g, B.x, dim, inter, true) : null,
-        qkv: [mvB(L.wq, B.xn, B.q, qDim, dim), mvB(L.wk, B.xn, B.k, kvDim, dim), mvB(L.wv, B.xn, B.v, kvDim, dim)],
+        qkv: this.mergeQKV ? [mvB(L.wqkv, B.xn, B.qkv, qDim + 2 * kvDim, dim)] : [mvB(L.wq, B.xn, B.q, qDim, dim), mvB(L.wk, B.xn, B.k, kvDim, dim), mvB(L.wv, B.xn, B.v, kvDim, dim)],
         o: mvB(L.wo, B.attnOut, B.tmpDim, dim, qDim),
         gateUp: [mvB(L.wgate, B.xn, B.g, inter, dim), mvB(L.wup, B.xn, B.u, inter, dim)],
         gu: this._guOp(L.wgate, L.wup, B.xn.buf, B.g.buf, inter, dim, B.xn, B.g),
@@ -600,8 +641,8 @@ export class DenseEngine {
         }
         pass.end();
         for (let c = 0; c < 4; c++) {
-          enc.copyBufferToBuffer(B.k.buf, c * B.k.stride, L.kCache, (basePos + c) * kvDim * 4, kvDim * 4);
-          enc.copyBufferToBuffer(B.v.buf, c * B.v.stride, L.vCache, (basePos + c) * kvDim * 4, kvDim * 4);
+          enc.copyBufferToBuffer(DenseEngine._raw(B.k.buf)[0], DenseEngine._raw(B.k.buf)[1] + c * B.k.stride, L.kCache, (basePos + c) * kvDim * 4, kvDim * 4);
+          enc.copyBufferToBuffer(DenseEngine._raw(B.v.buf)[0], DenseEngine._raw(B.v.buf)[1] + c * B.v.stride, L.vCache, (basePos + c) * kvDim * 4, kvDim * 4);
         }
         pass = enc.beginComputePass();
       } else {
@@ -640,8 +681,8 @@ export class DenseEngine {
       pass.end();
     }
     for (let c = 0; c < 4; c++) {
-      enc.copyBufferToBuffer(B.k.buf, c * B.k.stride, L.kCache, (basePos + c) * kvDim * 4, kvDim * 4);
-      enc.copyBufferToBuffer(B.v.buf, c * B.v.stride, L.vCache, (basePos + c) * kvDim * 4, kvDim * 4);
+      enc.copyBufferToBuffer(DenseEngine._raw(B.k.buf)[0], DenseEngine._raw(B.k.buf)[1] + c * B.k.stride, L.kCache, (basePos + c) * kvDim * 4, kvDim * 4);
+      enc.copyBufferToBuffer(DenseEngine._raw(B.v.buf)[0], DenseEngine._raw(B.v.buf)[1] + c * B.v.stride, L.vCache, (basePos + c) * kvDim * 4, kvDim * 4);
     }
     {
       const pass = enc.beginComputePass();
