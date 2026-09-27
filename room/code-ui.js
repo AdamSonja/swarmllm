@@ -145,7 +145,10 @@ const DOTS = '<svg class="dl" viewBox="0 0 24 24" aria-hidden="true">' + [[3.4, 
 
 export function codeUI({ onMode = () => {} } = {}) {
   const pane = $("chatpane"), log = $("code-log");
-  let host = false, mode = "chat", empty = null, waiting = 0;
+  // host: this tab runs the agent (the model host). drive: this screen can send requests, stop
+  // its own run and answer its own approvals (the host, and any member when the room shares Code)
+  let host = false, drive = false, mode = "chat", empty = null, waiting = 0;
+  let waitText = () => "waiting for approval";
   const title0 = document.title;
   // short announcements for screen readers (the streamed log itself is not live)
   const say = (text) => { const s = $("code-status"); if (s) s.textContent = text; };
@@ -371,9 +374,9 @@ export function codeUI({ onMode = () => {} } = {}) {
       pre.textContent = d.result;
     }
     if (d.diff && !el.querySelector(".cm-diff")) el.append(diffBlock(d.diff, host ? viewFull : null));
-    // peers (and the host's own record) see the pending state; the host adds buttons with ask()
+    // everyone sees the pending state; whoever may answer it (the asker, the host) gets buttons from ask()
     let ap = el.querySelector(".cm-approve");
-    if (d.state === "pending" && !host && !ap) { ap = h("div", "cm-approve"); ap.append(h("span", "wait", "waiting for the host's approval")); el.append(ap); }
+    if (d.state === "pending" && !host && !ap) { ap = h("div", "cm-approve"); ap.append(h("span", "wait", waitText(d.mid))); el.append(ap); }
     if (d.state !== "pending") ap?.remove();
     if (d.state === "error") det.open = true;
     // declined: the diff is struck through, and the reason, if one was given, says why
@@ -388,8 +391,8 @@ export function codeUI({ onMode = () => {} } = {}) {
     return el;
   }
 
-  // host only: Approve / Reject… / Allow edits for this task, on the card of call i. While it
-  // waits, the Code tab carries a dot and the page title says so (the host may be in Chat).
+  // Approve / Reject… / Allow edits for this task, on the card of call i, for the host and for the
+  // member who asked. While it waits, the Code tab carries a dot and the page title says so.
   function waitMark(on) {
     waiting = Math.max(0, waiting + (on ? 1 : -1));
     if (waiting) { $("mode-code").classList.add("fresh"); document.title = "(needs approval) " + title0; }
@@ -677,7 +680,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       if (warns) c.append(h("b", "w", plural(warns, "warning")), " · ");
       c.append(plural(logs, "log"));
       c.dataset.errors = String(errs);
-      $("pv-to-agent").hidden = !host || !errs;   // only when there is something to fix
+      $("pv-to-agent").hidden = !drive || !errs;   // only when there is something to fix
       for (const r of P?.rows || []) {
         if (r.sep) { rows.append(h("div", "pv-row rev", r.sep)); continue; }
         const row = h("div", `pv-row ${r.level}${r.old ? " old" : ""}`);
@@ -698,25 +701,29 @@ export function codeUI({ onMode = () => {} } = {}) {
   $("pv-reload").onclick = () => { if (active != null) onReload(active); };
   $("pv-open").onclick = () => { if (active != null) onOpen(active, ports.get(active)?.path || null); };
 
-  // ---------------- host vs peer chrome
-  function setHost(v) {
-    host = !!v;
-    $("code-project").hidden = !host;
-    $("code-row").hidden = !host;
-    $("code-bar").hidden = !host;
-    $("code-driver").hidden = host;
-    $("pv-to-agent").hidden = !host || !(+$("pv-counts").dataset.errors > 0);
+  // ---------------- host vs peer chrome. Anyone who can drive gets the project bar, the prompt
+  // and the bar under the log; only the host opens a folder on disk or saves in the editor.
+  function setHost(v, { canDrive = v } = {}) {
+    host = !!v; drive = !!canDrive;
+    $("code-project").hidden = !drive;
+    $("code-open").hidden = !host || $("code-open").dataset.can !== "1";
+    $("code-row").hidden = !drive;
+    $("code-bar").hidden = !drive;
+    $("pv-to-agent").hidden = !drive || !(+$("pv-counts").dataset.errors > 0);
     if (edPath != null) { edRO = !host || !saveFile; ta.readOnly = edRO; edState(); }
   }
+  // a line above the log about where the agent runs (empty: hidden)
+  function driverNote(text) { const el = $("code-driver"); el.textContent = text || ""; el.hidden = !text; }
   setHost(false);
   viewFile(null);
 
   return {
-    show, poke, apply, ask, cancelAsk, clear, placeholder, setHost, tree, viewFile, openFile, fileChanged, outTab,
+    show, poke, apply, ask, cancelAsk, clear, placeholder, setHost, driverNote, tree, viewFile, openFile, fileChanged, outTab,
     get mode() { return mode; },
     get activePort() { return active; },
     get openPath() { return edPath; },
     onFile(fn) { fileClick = fn; },
+    onWaitText(fn) { waitText = fn; },
     onSave(fn) { saveFile = fn; },
     onClosePort(fn) { onClose = fn; },
     onReload(fn) { onReload = fn; },
@@ -731,6 +738,14 @@ export function codeUI({ onMode = () => {} } = {}) {
       el.title = `${used.toLocaleString("en-US")} of ${max.toLocaleString("en-US")} tokens`;
       el.classList.toggle("warn", used > max * 0.8);
     },
-    running(on) { $("code-send").hidden = !!on; $("code-stop").hidden = !on; },
+    // while a run goes, Send queues the next request; Stop shows for whoever may stop it
+    running(on, canStop = on) {
+      $("code-send").textContent = on ? "Queue" : "Send";
+      $("code-send").title = on ? "Runs after the current request" : "";
+      $("code-stop").hidden = !(on && canStop);
+      const pr = $("code-prompt");
+      pr.dataset.ph ||= pr.placeholder;
+      pr.placeholder = on ? "Queue another request" : pr.dataset.ph;
+    },
   };
 }
