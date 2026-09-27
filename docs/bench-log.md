@@ -152,3 +152,72 @@ matvec_coop 1.11 (70), rmsnorm 1.08 (81). Deno wall is sync-bound (~35 ms/token 
 fuseProj + moeFuse together Deno shows a one-time 1.4–1.8 s stall a dozen tokens into decode (a V8 scavenge of
 ~1.5 s under external-memory pressure, `--trace-gc`), so prof_ts's 20-token wall average reads 92–128 ms. Neither
 branch alone shows it; the cause is open.
+
+## 2026-09-27: Emulated latency, 1 to 3 devices (branch bench/latency), GB10
+
+What a room feels like when the devices are not on the same machine. Harness: `tests/e2e/room_latency.mjs`.
+Each device is its own headless Chromium 131 (own profile, own GPU process, weight cache on disk), real PeerJS
+signaling and real WebRTC over loopback, `?wire=stripe4`, all devices on the one GB10 GPU. Latency is added in
+the page, not by netem (that needs root, which this machine does not give us): every activation frame a device
+sends is held for the one-way delay before it goes on the wire, the same thing `?netlag=ms` does. The harness
+serves room.js with two dev-only changes (the delay is read live so one loaded room can sweep, and a switch for
+plain decoding); room.js itself is unchanged. Split is even by pledge (MoE 20+20 and 14+13+13 layers, 27B
+32+32 and 22+21+21; the host also holds embed and head). `japan` prompt (172 tokens with the template), exact
+(greedy) sampling, new chat before every answer so every answer prefills the whole prompt, 128-token answers,
+two answers per cell, mean shown (the two were within 0.4 tok/s except one MoE 2-device spec pair, 34.6 / 30.7).
+
+Decode tok/s, plain / speculative, and time to first token:
+
+| Model | Devices | 0 ms | 5 ms | 20 ms | 50 ms | Time to first token |
+|---|---|---|---|---|---|---|
+| 35B MoE | 1 | 32.5 / 44.2 | | | | 1.04 s |
+| 35B MoE | 2 | 27.9 / 32.7 | 21.1 / 27.9 | 12.9 / 20.6 | 7.2 / 13.5 | 1.10 s at 0 ms, 1.13 s at 50 ms |
+| 35B MoE | 3 | 24.8 / 33.3 | 17.7 / 26.9 | 9.9 / 17.5 | 5.2 / 10.8 | 1.14 s at 0 ms, 1.14 s at 50 ms |
+| 27B | 1 | 9.2 / 14.6 | | | | 2.57 s |
+| 27B | 2 | 8.6 / 11.9 | 7.8 / 10.9 | 6.3 / 9.3 | 4.6 / 7.6 | 2.52 s at 0 ms, 2.53 s at 50 ms |
+| 27B | 3 | 8.4 / 11.0 | 7.3 / 10.2 | 5.5 / 8.6 | 3.7 / 6.6 | 2.53 s at 0 ms, 2.55 s at 50 ms |
+
+Latency is one way, per hop. A token goes host → worker(s) → host, so a room of N devices pays N hops per lap.
+
+Draft acceptance: MoE 59 % on one device, 38–44 % on 2, 44–51 % on 3; 27B 47–48 % on one device, 35–38 % on
+2 and 3. The room picks the draft depth by lap time (K=3 alone, deeper on a chain), so a chain drafts more and
+accepts a smaller share of it; the tokens per lap still go up.
+
+Reading:
+- Plain decode is exactly compute plus hops times latency. MoE on 2 devices: 36 ms per token at 0 ms, 139 ms at
+  50 ms (+103 = 2 × 50); on 3 devices 40 → 194 ms (+154 = 3 × 50). 27B on 2 devices 116 → 220 ms, on 3 119 →
+  270 ms. Nothing else in the pipeline grows with latency.
+- Speculative decoding is what keeps a room usable on a real network: at 20 ms it is 1.6x plain for the MoE on
+  2 devices and 1.8x on 3; at 50 ms 1.9x and 2.1x. On 0 ms it only buys 1.2–1.4x, because every device here
+  shares one GPU and a verify block costs real GPU time.
+- The MoE on 2 devices at 5 ms (a good home Wi-Fi) is 21 plain / 28 speculative, and still 13 / 21 at 20 ms
+  (same city). The 27B at 20 ms is 6.3 / 9.3, close to what it does alone on this machine plain.
+- Time to first token hardly moves with latency (+0.03 s at 50 ms): prefill sends the prompt in 16-token frames
+  with several in flight, so the network is paid about once per prompt, not once per frame. It is dominated by
+  the prefill compute itself (172 tokens in ~1.0 s on the MoE, ~2.5 s on the 27B).
+- Splitting costs a little even at 0 ms (MoE 32.5 → 27.9 → 24.8 plain): per hop the hidden state is read back,
+  packed, sent, unpacked and uploaded, about 3.5–4 ms per hop here.
+
+References on the same machine:
+- Chrome, one device, `tests/bench/chrome_bench.mjs` (2026-09-26, combined build, 40 tokens, K=3, coding
+  prompts): MoE 40–46 plain / 65–84 speculative, 27B 10.1–10.8 / 20–27. The room numbers above are lower on one
+  device mainly because the `japan` itinerary drafts worse than the coding prompts (acceptance 47–59 % against
+  70–85 %) and because a room answer includes the room's own per-token work (sampling, chat, telemetry).
+- llama.cpp CUDA, same GGUFs: MoE 85.5 tok/s decode and 2520 tok/s pp512 (b10840), so about 0.07 s to prefill
+  this prompt; 27B 13.8 decode (b10840), 377 tok/s pp86 (749f688), about 0.5 s for this prompt. One device,
+  no network.
+
+Caveats: loopback with an added delay is not a real link. No bandwidth limit, no loss, no jitter, and none of
+the congestion-window round trips that big frames pay on a fresh link (see "Hidden-state transport" above; with
+`stripe4` a single token and a K≤7 verify block fit the first window, so decode should be close, but prefill
+frames of 164 KB would pay more on a real link than here). Control messages are not delayed. All devices share
+one GPU, so compute on different devices does not overlap the way it would on separate machines, which makes the
+0 ms rows pessimistic for a real room and the high-latency rows about right. Delay is applied with setTimeout in
+the sending tab, so it is at least the stated value (timer slack of about 1 ms).
+
+Notes from getting it to run: with every device as a tab of one Playwright context (the default
+`browser.newContext()`), the context is off-the-record, the Cache API weight store lives in RAM, and loading the
+35B MoE grew one browser process past 13 GB until Chromium aborted (SIGTRAP) about 6 GB in. One browser per
+device with an on-disk profile fixed it. With the weight store disabled instead, the MoE load stalled at about
+460 MB per device in this harness (cause not found). `tests/e2e/room.mjs` uses the one-context setup and would
+likely hit the same crash on the MoE (it has no MoE entry in its local-weights map today).
