@@ -6,7 +6,7 @@
   "use strict";
   const TAU = Math.PI * 2;
   const BG = "#0B0F1F", PANEL = "#121834", CELL = "#18204A", DOT = "rgba(147,166,255,.09)";
-  const INK = "#EEF0F6", MUTED = "#A9B0C4", ACC = "#E08A2A";   // ACC: the one warm accent next to the blue ramp
+  const INK = "#EEF0F6", MUTED = "#A9B0C4", ACC = "#A5B4FC";   // ACC: the light accent on the blue ramp (bombs, the ball, its trail)
   const WARM = ["#F08A6C", "#F2C14E", "#6CC5A1", "#B18CF0", "#5EB8E8", "#F28DB2", "#9BD16B"];
   const BLUE = ["#2A45E0", "#6E86FF", "#A5B4FC", "#C9D1F7", "#8EA2FF", "#4A5FD0", "#DCE2FF"];
   const MONO = '"Geist Mono",ui-monospace,Menlo,monospace';
@@ -209,7 +209,7 @@
 
   /* ---------------- Space shooter ---------------- */
   const INV = [["..X..X..", "...XX...", "..XXXX..", ".XX..XX.", "XXXXXXXX", "X.X..X.X"], ["...XX...", "..XXXX..", ".XXXXXX.", "XX.XX.XX", "XXXXXXXX", ".X.XX.X."], ["X......X", ".X.XX.X.", ".XXXXXX.", "XX.XX.XX", "XXXXXXXX", "X.X..X.X"]];
-  const ROWC = ["#B9C6FF", "#7C8FFF", "#2A45E0", "#7C8FFF", "#B9C6FF"];   // the blue ramp; the one warm accent is ACC
+  const ROWC = ["#B9C6FF", "#7C8FFF", "#2A45E0", "#7C8FFF", "#B9C6FF"];   // the blue ramp; the bombs are the light accent ACC
   const shooter = {
     init(r) {
       const S = { r, t: 0, ship: .5, vx: 0, shots: [], bombs: [], fx: [], score: 0, lives: 3, wave: 0, cool: 0, hit: 0, stars: [] };
@@ -362,7 +362,7 @@
   };
 
   /* ---------------- Breakout ---------------- */
-  const BRC = ["#B9C6FF", "#7C8FFF", "#2A45E0", "#1C33B8", "#2A45E0", "#7C8FFF"];   // the blue ramp; the ball is the warm accent
+  const BRC = ["#B9C6FF", "#7C8FFF", "#2A45E0", "#1C33B8", "#2A45E0", "#7C8FFF"];   // the blue ramp; the ball is the light accent ACC
   const breakout = {
     init(r) { const S = { r, px: .5, pv: 0, score: 0, lives: 3, level: 1, fx: [], trail: [], t: 0, aim: 0 }; this.bricks(S); this.serve(S); return S; },
     bricks(S) { S.br = []; for (let y = 0; y < 6; y++) for (let x = 0; x < 9; x++) S.br.push({ x, y, alive: true }); },

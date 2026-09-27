@@ -4,11 +4,11 @@
    its share, and a friend's phone joins and adds a little, which is what lets the biggest model fit. The
    room picks that model, the layers are dealt by memory and each device fetches only its own (one from its
    cache). "what is Pooled?", and while the answer streams a hidden state travels through every layer on
-   every device, once per word.
-   Code: the tab switches itself; the visitor asks for an app (a different one each loop: Tetris, 2048,
-   a space shooter, Snake, Breakout); the files appear as the agent writes them; it serves the app on
-   :5173; then a change request, an edit, a reload, and the app plays for a moment (with an offer to take
-   it over) before the story starts again from the room.
+   every device, once per word. The answer ends "It can write code too." and the Code tab is pressed.
+   Code: the visitor asks for an app (a different one each loop: Tetris, 2048, a space shooter, Snake,
+   Breakout); the files appear as the agent writes them; it serves the app on :5173 and the preview opens
+   on it, running; then a change request, an edit, a reload, and the changed app plays for a moment (with
+   an offer to take it over) before the story starts again from the room.
    The parts worth following (the joining, the lending, the layer split, the first answer) run slower than
    the rest.
    The HTML holds the finished state (readable without JS). This script rewinds and replays it. */
@@ -37,7 +37,7 @@
     const b = ANI.slice().sort(() => Math.random() - .5);
     NAMES = [0, 1, 2].map(i => b[i]);
     demo.querySelectorAll("[data-name]").forEach(el => { el.textContent = NAMES[+el.dataset.name]; });
-    ANSWER = `Pooled splits one open model across this room. ${NAMES[0]} runs layers 1 to 17, ${NAMES[1]} 18 to 37, ${NAMES[2]} 38 to 40. Every word passes through all three.`;
+    ANSWER = `Pooled splits one open model across this room. ${NAMES[0]} runs layers 1 to 17, ${NAMES[1]} 18 to 37, ${NAMES[2]} 38 to 40. Every word passes through all three. It can write code too.`;
     WORDS = ANSWER.split(" "); timeWords();
   };
 
@@ -124,28 +124,28 @@
   const SEG_GB = [9.6, 11.2, 1.7];               // 40 layers of 22.5 GB, dealt 17 / 20 / 3 by memory
 
   /* ---------- the timeline's shape (timeline seconds; played at SPEED, or SPEED / SLOW where it matters) ---------- */
-  const S1 = 3.4, S2 = S1 + 3.4;                                   // 1: a room, 2: the desktop joins
-  const LEND0 = S2 + .8, CALM = S2 + 2.55, JOIN3 = S2 + 3.55, LEND3 = S2 + 4.6;   // 3: lending; the phone joins
-  const S3 = S2 + 5.7;                                             // 4: pick a model; the layers are dealt
-  const HOV1 = S3 + .35, HOV2 = S3 + .65, SEL = S3 + .95, STH = S3 + 1.35, STP = S3 + 1.65;
-  const DL = S3 + 1.95, DEAL = DL + .35, FILL0 = DL + 1.3, CACHE1 = FILL0 + .7, FILL1 = FILL0 + 2.4, ETA0 = FILL0 + .65;
-  const CH = FILL1 + .75, A0 = CH + 1.25;                          // 5: chat
+  const S1 = 2.5, S2 = S1 + 2.7;                                   // 1: a room, 2: the desktop joins
+  const LEND0 = S2 + .6, LENDI = .09, CALM = S2 + 1.9, JOIN3 = S2 + 2.6, LEND3 = S2 + 3.3;   // 3: lending; the phone joins
+  const S3 = S2 + 4.2;                                             // 4: pick a model; the layers are dealt
+  const HOV1 = S3 + .3, HOV2 = S3 + .55, SEL = S3 + .8, STH = S3 + 1.1, STP = S3 + 1.35;
+  const DL = S3 + 1.6, DEAL = DL + .3, FILL0 = DL + 1, CACHE1 = FILL0 + .6, FILL1 = FILL0 + 2, ETA0 = FILL0 + .5;
+  const CH = FILL1 + .6, A0 = CH + 1;                              // 5: chat
   let ANSWER = $("a1").textContent, WORDS = ANSWER.split(" ");
-  const DUR = i => [1.5, .75, .45, .3][i] || .08;    // each word's trip; the first slow enough to follow
+  const DUR = i => [1.2, .6, .38, .26][i] || .08;    // each word's trip; the first slow enough to follow
   let WT = [], A1 = 0, C = 0, STEPS = [], END = 0, GAME = 0, SLOWS = [];
-  const K = 1.65;                                      // step 6 (the ask) runs this much longer than steps 7, 8 assume
+  // 6 to 8, from C (the switch to Code): the ask, the files, :5173 serving the app; the change, the reload
+  const ASK = 2.05, FILES = 2.8, SERVED = 5.45, CHANGE = 6.8, RELOAD = 8.85, SHOWN = 9.1;
   function timeWords() {
     WT = [A0]; WORDS.forEach((_, i) => WT.push(WT[i] + DUR(i)));
     A1 = WT[WORDS.length];
-    C = Math.ceil((A1 + .6) * 10) / 10;
-    GAME = C + K + 8.75;                               // the app, changed, on screen
-    STEPS = [0, S1, S2, S3, CH, C, C + K + 1.75, C + K + 6.4];
+    C = Math.ceil((A1 + .8) * 10) / 10;                // time to read "It can write code too.", then the tab switches
+    GAME = C + SHOWN;                                  // the app, changed, on screen
+    STEPS = [0, S1, S2, S3, CH, C, C + FILES, C + CHANGE];
     END = GAME + 2 * SPEED;                            // about two seconds of it, then the story starts again
-    SLOWS = [[0, S1 + 2.6], [S2, S3], [DL, FILL1 + .3], [A0, A1]];
+    SLOWS = [[0, S1 + 2.1], [S2, S3], [DL, FILL1 + .3], [A0, A1]];
   }
   timeWords();
-  const c = x => C + x;                               // step 6
-  const d = x => C + K + x;                           // steps 7, 8
+  const c = x => C + x;                               // steps 6 to 8
   const rate = t => SLOWS.some(([a, b]) => t >= a && t < b) ? SPEED / SLOW : SPEED;
 
   /* ---------- the caption bar ---------- */
@@ -397,24 +397,24 @@
   const tl = { t: 0, fired: 0, done: false, started: false };
   const EVENTS = () => [
     // 1: the laptop has a name already; it starts a room, and is the room's first device
-    [.3, () => nmA.classList.add("fresh")],
-    [1.3, () => nmA.classList.remove("fresh")],
-    [1.55, () => press(aGo, 260)],
-    [1.8, () => { tabA.classList.add("done"); setDevices(1, true); }],
-    ...[0, 1, 2, 3].map(i => [1.9 + i * .12, () => letters(i + 1)]),
+    [.2, () => nmA.classList.add("fresh")],
+    [.9, () => nmA.classList.remove("fresh")],
+    [1.1, () => press(aGo, 260)],
+    [1.3, () => { tabA.classList.add("done"); setDevices(1, true); }],
+    ...[0, 1, 2, 3].map(i => [1.4 + i * .1, () => letters(i + 1)]),
     // 2: the desktop (named too) wakes, types the code and joins; the two tabs fold into one room
     [S1, () => tabB.classList.remove("idle")],
-    [S1 + .15, () => nmB.classList.add("fresh")],
-    [S1 + .75, () => nmB.classList.remove("fresh")],
-    [S1 + .8, () => setSlots(0, 0)],
-    [S1 + .98, () => setSlots(1, 1)], [S1 + 1.16, () => setSlots(2, 2)], [S1 + 1.34, () => setSlots(3, 3)],
-    [S1 + 1.52, () => { setSlots(4, -1); bBtn.classList.add("ready"); }],
-    [S1 + 1.8, () => press(bBtn, 260)],
-    [S1 + 2.05, () => { tabB.classList.add("done"); tabA.classList.add("met"); setDevices(2, true); }],
-    [S1 + 2.6, () => flag("merge", true)],
+    [S1 + .1, () => nmB.classList.add("fresh")],
+    [S1 + .55, () => nmB.classList.remove("fresh")],
+    [S1 + .6, () => setSlots(0, 0)],
+    [S1 + .75, () => setSlots(1, 1)], [S1 + .9, () => setSlots(2, 2)], [S1 + 1.05, () => setSlots(3, 3)],
+    [S1 + 1.2, () => { setSlots(4, -1); bBtn.classList.add("ready"); }],
+    [S1 + 1.45, () => press(bBtn, 260)],
+    [S1 + 1.65, () => { tabB.classList.add("done"); tabA.classList.add("met"); setDevices(2, true); }],
+    [S1 + 2.1, () => flag("merge", true)],
     // 3: now they are in, each lends memory: this laptop turns its amount up, the desktop sends its share
     [S2, () => { scene("pool"); card.dataset.face = "pool"; }],
-    ...Array.from({ length: LEND[0] }, (_, i) => [LEND0 + i * .12, () => { press(lendPlus, 100); lend(0, i + 1, i === LEND[0] - 1); }]),
+    ...Array.from({ length: LEND[0] }, (_, i) => [LEND0 + i * LENDI, () => { press(lendPlus, 100); lend(0, i + 1, i === LEND[0] - 1); }]),
     [CALM, () => lend(1, LEND[1], true)],
     // a friend's phone joins (its chip, its row), then adds its share: now the 35B model fits
     [JOIN3, () => { joining = 2; setDevices(3, true); paintPool(false); }],
@@ -429,30 +429,33 @@
     [DEAL, () => rowsEl.classList.add("dealt")],
     // 5: chat
     [CH, () => scene("chat")],
-    [CH + .45, () => { geo = null; chatComposer.classList.add("hot"); }],
-    [CH + 1.2, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); a1.textContent = ""; toBottom(); measure(); }],
-    // 6: Code: the tab switches itself
-    [C, () => { press(modes, 300); mode("code"); }],
+    [CH + .3, () => { geo = null; chatComposer.classList.add("hot"); }],
+    [CH + .95, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); a1.textContent = ""; toBottom(); measure(); }],
+    // the answer ends on "It can write code too.": the Code tab is pressed, as if clicked, and the story goes on there
+    [C - .3, () => press(mCode, 300)],
+    // 6: Code
+    [C, () => mode("code")],
     [c(.2), () => scene("code")],
-    [c(.6), () => codeComposer.classList.add("hot")],
-    [c(2.6), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q"); }],
-    [c(2.85), () => reveal(tool("c-s1"), .035)],
-    // 7: it writes three files and serves them
-    [d(1.75), () => liveStart("index.html", "index.html", d(1.75), d(2.2))],
-    [d(2.3), () => { liveEnd(); tool("c-t0"); }],
-    [d(2.4), () => liveStart("style.css", "style.css", d(2.4), d(2.75))],
-    [d(2.85), () => { liveEnd(); tool("c-t1"); }],
-    [d(2.95), () => liveStart("game.js", "game.js", d(2.95), d(4.5))],
-    [d(4.6), () => { liveEnd(); tool("c-t2"); }],
-    [d(4.75), () => { setRun("c-t3", true); tool("c-t3"); }],
-    [d(5.1), () => setRun("c-t3", false)],
-    [d(5.35), () => reveal(tool("c-s2"), .035)],
-    // 8: a change, an edit, a reload: the app, with the change, for a moment, and an offer to play it
-    [d(6.4), () => codeComposer.classList.add("hot")],
-    [d(7.6), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q2"); }],
-    [d(7.8), () => liveStart("game.js", "edit", d(7.8), d(8.25))],
-    [d(8.35), () => { liveEnd(); fileState("game.js", "mod"); tool("c-t4"); }],
-    [d(8.45), () => { app.classList.add("blank"); openPreview(); reload(); }],
+    [c(.55), () => codeComposer.classList.add("hot")],
+    [c(ASK), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q"); }],
+    [c(ASK + .2), () => reveal(tool("c-s1"), .035)],
+    // 7: it writes three files and serves them; the preview opens on the running app
+    [c(FILES), () => liveStart("index.html", "index.html", c(FILES), c(FILES + .35))],
+    [c(FILES + .4), () => { liveEnd(); tool("c-t0"); }],
+    [c(FILES + .5), () => liveStart("style.css", "style.css", c(FILES + .5), c(FILES + .8))],
+    [c(FILES + .85), () => { liveEnd(); tool("c-t1"); }],
+    [c(FILES + .95), () => liveStart("game.js", "game.js", c(FILES + .95), c(FILES + 2.2))],
+    [c(FILES + 2.3), () => { liveEnd(); tool("c-t2"); }],
+    [c(FILES + 2.4), () => { setRun("c-t3", true); tool("c-t3"); }],
+    [c(SERVED), () => { setRun("c-t3", false); app.classList.remove("blank"); openPreview(); reload(); runGame(.6, false); }],
+    [c(SERVED + .15), () => reveal(tool("c-s2"), .035)],
+    // 8: a change, an edit, a reload: the app, with the change, for a moment, and an offer to play it.
+    //    (on a phone the preview covers the agent, so it steps aside while the change is asked for and made)
+    [c(CHANGE), () => { flag("app-on", false); codeComposer.classList.add("hot"); }],
+    [c(CHANGE + 1.25), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q2"); }],
+    [c(CHANGE + 1.4), () => liveStart("game.js", "edit", c(CHANGE + 1.4), c(CHANGE + 1.8))],
+    [c(CHANGE + 1.9), () => { liveEnd(); fileState("game.js", "mod"); tool("c-t4"); }],
+    [c(RELOAD), () => { app.classList.add("blank"); openPreview(); reload(); }],
     [GAME, () => { app.classList.remove("blank"); runGame(.6, true); ask(true); }],
     [GAME + .25, () => reveal(tool("c-s3"), .035)],
     [GAME + 1.5 * SPEED, () => ask(false)],
@@ -461,10 +464,10 @@
 
   const frame = t => {
     if (t >= DL) loadAt(t);
-    if (t > CH + .5 && t < CH + 1.2) typeInto(chatTyped, Q1, CH + .55, CH + 1.05, t);
+    if (t > CH + .3 && t < CH + .95) typeInto(chatTyped, Q1, CH + .35, CH + .8, t);
     if (t >= CH) flow(t);
-    if (t > c(.6) && t < c(2.6)) typeInto(codeTyped, A.prompt, c(.8), c(2.3), t);
-    if (t > d(6.4) && t < d(7.6)) typeInto(codeTyped, A.prompt2, d(6.5), d(7.4), t);
+    if (t > c(.55) && t < c(ASK)) typeInto(codeTyped, A.prompt, c(.65), c(1.85), t);
+    if (t > c(CHANGE) && t < c(CHANGE + 1.25)) typeInto(codeTyped, A.prompt2, c(CHANGE + .1), c(CHANGE + 1.1), t);
     if (writing) {
       const [a, b, n] = writing;
       liveTo(Math.max(0, Math.min(n, Math.ceil((t - a) / (b - a) * n))));
@@ -562,7 +565,7 @@
   const goStep = k => {
     if (RM) {
       if (k >= STEPS.length - 1) { stopPlay(true); tl.final(); return; }
-      const ends = [S1 - .3, S2 - .3, S3 - .3, CH - .3, A1 + .5, c(3.2), d(6.2)];
+      const ends = [S1 - .3, S2 - .3, S3 - .3, CH - .3, A1 + .5, c(FILES - .1), c(CHANGE - .1)];
       seek(ends[k], true); tl.done = true; flow(A1 + 1); paintBar(STEPS[k]); return;
     }
     seek(STEPS[k]);
@@ -661,6 +664,8 @@
     play: () => startPlay(), stop: () => stopPlay(),
     set frozen(v) { frozen = v; wake(); }, get t() { return tl.t; }, get app() { return APP; }, get playing() { return playing; },
     get STEPS() { return STEPS; }, get END() { return END; }, get C() { return C; }, get A1() { return A1; }, get GAME() { return GAME; },
-    T: { S1, S2, LEND0, CALM, JOIN3, LEND3, S3, SEL, DL, DEAL, FILL0, FILL1, CH, A0 }, APPS: Object.keys(APPS)
+    T: { S1, S2, LEND0, CALM, JOIN3, LEND3, S3, SEL, DL, DEAL, FILL0, FILL1, CH, A0, ASK, FILES, SERVED, CHANGE, RELOAD, SHOWN }, APPS: Object.keys(APPS),
+    // real seconds between two moments of the timeline, at the speeds it plays at
+    real(a, b) { let s = 0; for (let t = a; t < b; t += .01) s += Math.min(.01, b - t) / rate(t); return s; }
   };
 })();
