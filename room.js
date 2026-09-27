@@ -740,7 +740,7 @@ async function keepAwake() {
     }
     await awakeVideo.play();
     if (!wakeLock) awakeStatus("screen stays awake (video) \u2713");
-  } catch (e) { if (!wakeLock) awakeStatus("\u26a0 can\u2019t keep the screen awake: set Auto-Lock to Never"); }
+  } catch (e) { if (!wakeLock) awakeStatus("This screen can\u2019t stay awake on its own: set Auto-Lock to Never"); }
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "pooled \u00b7 room"; } });
 document.addEventListener("touchstart", keepAwake, { passive: true });
@@ -777,8 +777,18 @@ $("create-btn").addEventListener("click", () => { keepAwake(); start(true); });
 // (auto-rejoin removed: the user prefers to see what happened)
 $("join-btn").addEventListener("click", () => { keepAwake(); start(false); });
 $("code-input").addEventListener("keydown", (e) => { if (e.key === "Enter") start(false); });
-const codeReady = () => $("join-btn").classList.toggle("ready", /^[A-Z0-9]{4,6}$/i.test($("code-input").value.trim()));
-$("code-input").addEventListener("input", codeReady);
+const codeReady = () => {
+  $("join-btn").classList.toggle("ready", /^[A-Z0-9]{4,6}$/i.test($("code-input").value.trim()));
+  $("code-input").parentElement.classList.toggle("full", $("code-input").value.length >= 4);
+};
+// four boxes, four characters: letters and digits only; the fourth one hands off to Join (on a
+// phone that also closes the keyboard), so no box waits for a fifth
+$("code-input").addEventListener("input", (e) => {
+  const el = e.target, v = el.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+  if (el.value !== v) el.value = v;
+  codeReady();
+  if (v.length === 4 && e.isTrusted && document.activeElement === el) $("join-btn").focus();
+});
 // Virtual devices: the host can add devices that are iframes of this page on this same computer.
 // Each joins the room like any other device (its own WebGPU device, its own WebRTC link, its own
 // layers), which shows what a room does before friends arrive; the GPU is shared, so it is a
