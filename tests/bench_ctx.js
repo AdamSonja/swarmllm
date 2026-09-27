@@ -33,7 +33,7 @@ const tok = makeTokenizer(tokenizerFromGGUF(m));
 let t0 = performance.now();
 const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
 const eng = await Qwen35Engine.create({ device, meta: m, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: MAXSEQ, batchCols: 16, coopRowsB: 1 });
-console.log(`loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!!eng.mtp}`);
+console.log(`loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!!eng.mtp}, attnPrefillTile ${eng.attnPrefillTile}${eng.attnPTCfg ? ` (TK ${eng.attnPTCfg.TK}, ${eng.attnPTCfg.CW} columns per workgroup)` : ""}`);
 
 // a long, realistic coding context: this repo's own source, tokenized until there is enough
 const need = Math.max(...FILLS) + 16;
