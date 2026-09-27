@@ -3,6 +3,7 @@ import { weightsFromSafetensors } from "./safetensors.js";
 import { WGSL } from "./wgsl/base.js";
 import { probeUnpack, coopWGSL } from "./wgsl/coop.js";
 import { f16ToF32 } from "./gguf.js";
+import { denseAttnWGSL } from "./wgsl/dense.js";
 
 export class DenseEngine {
   // opts: { device, cfg, tensors?|weights?, layerRange, hasEmbed, hasHead, maxSeq }
@@ -14,7 +15,7 @@ export class DenseEngine {
     return e;
   }
 
-  async _init({ device, cfg, tensors, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, matvecVariant = "coop", coopWG = 256, coopRows = 4 }) {
+  async _init({ device, cfg, tensors, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, matvecVariant = "coop", coopWG = 256, coopRows = 4, attnFast = true }) {
     this.device = device;
     this.cfg = cfg;
     this.maxSeq = maxSeq;
@@ -37,7 +38,13 @@ export class DenseEngine {
     const W = weights || weightsFromSafetensors(tensors, { lo, hi, hasEmbed, hasHead });
 
     this.rowsB = 4;   // rows per workgroup of the 4-column batched kernels (ROWSB below), NOT coopRows
-    const mod = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, coopRows, 64, 4, this.rowsB, await probeUnpack(device)) });
+    // attention kernels that are not latency-bound at long context (engine/wgsl/dense.js), bit-identical
+    // to attn_scores / attn_softmax / attn_out; engine.attnFast = false switches back at runtime (A/B)
+    const G = nH / nKV;
+    this.attnFastOn = attnFast !== false && Number.isInteger(G) && headDim % 32 === 0 && G * 64 <= 256 && G * headDim <= 1024;
+    this.attnFast = this.attnFastOn;
+    const mod = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, coopRows, 64, 4, this.rowsB, await probeUnpack(device))
+      + (this.attnFastOn ? denseAttnWGSL({ G, hd: headDim }) : "") });
     const C = GPUShaderStage.COMPUTE;
     const layout0 = device.createBindGroupLayout({
       entries: [
@@ -61,6 +68,7 @@ export class DenseEngine {
       rope: ["rw", "u"], attn_scores: ["ro", "ro", "rw"], attn_softmax: ["rw"],
       attn_out: ["ro", "ro", "rw"], silu_mul: ["rw", "ro"], add_res: ["rw", "ro"],
     };
+    if (this.attnFastOn) Object.assign(G1, { attn_scores_d: ["ro", "ro", "rw", "u"], attn_softmax_d: ["rw"], attn_out_d: ["ro", "ro", "rw", "u"] });
     const bufType = { u: "uniform", ro: "read-only-storage", rw: "storage" };
     this.pipes = {};
     // compile every pipeline in parallel (async): overlaps shader compilation
@@ -98,7 +106,9 @@ export class DenseEngine {
     this.tmpDim = device.createBuffer({ size: dim * 4, usage: S });
     this.g = device.createBuffer({ size: inter * 4, usage: S });
     this.u = device.createBuffer({ size: inter * 4, usage: S });
-    this.scores = device.createBuffer({ size: nH * maxSeq * 4, usage: S });
+    // 4 column slots: the batched attention kernels keep one [nH][maxSeq] score block per column
+    this.scores = device.createBuffer({ size: (this.attnFastOn ? 4 : 1) * nH * maxSeq * 4, usage: S });
+    this.uDMC0 = this._buf(new Uint32Array([0, 0, 0, 0]), GPUBufferUsage.UNIFORM);
     this.stageX = device.createBuffer({ size: dim * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
 
     // weight upload
@@ -171,6 +181,9 @@ export class DenseEngine {
       scores: this._bg(this.pipes.attn_scores, 1, [this.q, L2.kCache, this.scores]),
       softmax: this._bg(this.pipes.attn_softmax, 1, [this.scores]),
       attnOut: this._bg(this.pipes.attn_out, 1, [this.scores, L2.vCache, this.attnOut]),
+      scoresD: this.attnFastOn ? this._bg(this.pipes.attn_scores_d, 1, [this.q, L2.kCache, this.scores, this.uDMC0]) : null,
+      softmaxD: this.attnFastOn ? this._bg(this.pipes.attn_softmax_d, 1, [this.scores]) : null,
+      outD: this.attnFastOn ? this._bg(this.pipes.attn_out_d, 1, [this.scores, L2.vCache, this.attnOut, this.uDMC0]) : null,
       o: mv(L2.wo, this.attnOut, this.tmpDim, dim, qDim),
       norm2: bgNorm(this.x, L2.postNorm, this.xn),
       gate: mv(L2.wgate, this.xn, this.g, inter, dim),
@@ -257,9 +270,12 @@ export class DenseEngine {
     enc.copyBufferToBuffer(this.v, 0, L.vCache, this.pos * kvDim * 4, kvDim * 4);
     {
       const pass = enc.beginComputePass();
-      this._dispatch(pass, "attn_scores", BG.scores, nH * seqLen);
-      this._dispatch(pass, "attn_softmax", BG.softmax, nH, 1);
-      this._dispatch(pass, "attn_out", BG.attnOut, qDim);
+      if (this.attnFast && BG.scoresD) this._encodeAttnD(pass, BG.scoresD, BG.softmaxD, BG.outD, seqLen, 1, this.bgCommonFor);
+      else {
+        this._dispatch(pass, "attn_scores", BG.scores, nH * seqLen);
+        this._dispatch(pass, "attn_softmax", BG.softmax, nH, 1);
+        this._dispatch(pass, "attn_out", BG.attnOut, qDim);
+      }
       this._dispatchOp(pass, BG.o);
       this._dispatch(pass, "add_res", this.bgAddTmp, dim);
       this._dispatch(pass, "rmsnorm", BG.norm2, 256, 256);
@@ -273,6 +289,16 @@ export class DenseEngine {
       this._dispatch(pass, "add_res", this.bgAddTmp, dim);
       pass.end();
     }
+  }
+
+  // exact fast attention (engine/wgsl/dense.js) for nCols columns at once; `common` is the group-0
+  // bind group set whose frame is column 0's (seqLen = column 0's length, column c adds c)
+  _encodeAttnD(pass, bgS, bgM, bgO, seqLen0, nCols, common) {
+    const { nH, nKV, headDim } = this.dims;
+    const go = (name, bg, x, y, z) => { pass.setPipeline(this.pipes[name]); pass.setBindGroup(0, common[name]); pass.setBindGroup(1, bg); pass.dispatchWorkgroups(x, y, z); };
+    go("attn_scores_d", bgS, Math.ceil((seqLen0 + nCols - 1) / 64), nKV, nCols);
+    go("attn_softmax_d", bgM, nH, nCols, 1);
+    go("attn_out_d", bgO, nKV * headDim / 32, nCols, 1);
   }
 
   _embedRowF32(id) {
@@ -374,13 +400,18 @@ export class DenseEngine {
     this._bslice = slice;
     // per-column frame uniforms + per-column group0 for the per-token kernels
     this.frameBufsB = [0, 1, 2, 3].map(() => dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
-    const colPipes = ["rmsnorm", "head_norm", "rope", "attn_scores", "attn_softmax", "attn_out", "silu_mul", "add_res"];
+    const colPipes = ["rmsnorm", "head_norm", "rope", "attn_scores", "attn_softmax", "attn_out", "silu_mul", "add_res",
+      ...(this.attnFastOn ? ["attn_scores_d", "attn_softmax_d", "attn_out_d"] : [])];
     this.bgCommonB = [0, 1, 2, 3].map((c) => {
       const m = {};
       for (const name of colPipes)
         m[name] = this._bg2g0(this.pipes[name], [{ buffer: this.cfgBuf }, { buffer: this.frameBufsB[c] }]);
       return m;
     });
+    if (this.attnFastOn) {   // column strides (f32s) of the q input and the attention output
+      this.uDMCq = this._buf(new Uint32Array([B.q.stride / 4, 0, 0, 0]), GPUBufferUsage.UNIFORM);
+      this.uDMCo = this._buf(new Uint32Array([B.attnOut.stride / 4, 0, 0, 0]), GPUBufferUsage.UNIFORM);
+    }
     // batched matvec op builder: whole B-buffers bound, strides in the uniform
     const mvB = (w, xB, yB, dOut, dIn) => {
       const base = w.kind === "q8" ? "matvec_q8" : w.kind === "q4" ? "matvec_q4" : "matvec";
@@ -412,6 +443,9 @@ export class DenseEngine {
           addTmp: this._bg2res(this.pipes.add_res, [slice(B.x, c), slice(B.tmpDim, c)]),
           silu: this._bg2res(this.pipes.silu_mul, [slice(B.g, c), slice(B.u, c)]),
         })),
+        scoresD: this.attnFastOn ? this._bg(this.pipes.attn_scores_d, 1, [B.q.buf, L.kCache, this.scores, this.uDMCq]) : null,
+        softmaxD: this.attnFastOn ? this._bg(this.pipes.attn_softmax_d, 1, [this.scores]) : null,
+        outD: this.attnFastOn ? this._bg(this.pipes.attn_out_d, 1, [this.scores, L.vCache, B.attnOut.buf, this.uDMCo]) : null,
       };
     });
   }
@@ -457,7 +491,8 @@ export class DenseEngine {
     }
     {
       const pass = enc.beginComputePass();
-      for (let c = 0; c < 4; c++) {
+      if (this.attnFast && LB.scoresD) this._encodeAttnD(pass, LB.scoresD, LB.softmaxD, LB.outD, basePos + 1, 4, this.bgCommonB[0]);
+      else for (let c = 0; c < 4; c++) {
         const C = LB.cols[c];
         this._dCol(pass, "attn_scores", c, C.scores, nH * (basePos + c + 1));
         this._dCol(pass, "attn_softmax", c, C.softmax, nH, 1);
