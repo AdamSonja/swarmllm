@@ -130,7 +130,8 @@ export async function initCode(api, { mock = null } = {}) {
       if (liveRaw != null) { flushLive(); emit({ t: "ai-code-live", mid, step: liveStep, n: liveN, end: true }); }
       liveRaw = null; liveSent = 0; return;
     }
-    if (liveRaw == null || raw.length < liveSent || step !== liveStep) { liveN++; liveSent = 0; }
+    // a new call: the text typed before it goes out first, so it stays above the call's card
+    if (liveRaw == null || raw.length < liveSent || step !== liveStep) { flushTok(); liveN++; liveSent = 0; }
     liveRaw = raw; liveStep = step;
     liveTimer ||= setTimeout(flushLive, TOK_MS);
   }
@@ -201,19 +202,42 @@ export async function initCode(api, { mock = null } = {}) {
     else P?.mount.reload();
   });
   ui.onOpen((port, path) => { openPreviewTab(isHost() ? server : sub, port, path); });
+  // the Files view: the host opens a file to edit it (a very long one read-only); a peer sees the
+  // files of a served preview, read-only
+  const EDIT_MAX = 300000;
   ui.onFile(async (path) => {
     if (isHost() && project) {
-      try { ui.viewFile(cap(await project.ws.read(path), 200000)); } catch (e) { ui.viewFile(`(${e.message})`); }
+      try {
+        const text = await project.ws.read(path);
+        if (text.length > EDIT_MAX) ui.openFile(path, cap(text, EDIT_MAX), { readOnly: true, label: `${path} · too long to edit here` });
+        else ui.openFile(path, text, { readOnly: false });
+      } catch (e) { ui.viewFile(`(${e.message})`, path); }
       return;
     }
-    // a peer has the content of served files only
     for (const s of (sub?.ports() || []).map((p) => sub.snapshot(p.port))) {
       const rel = s.dir ? (path.startsWith(s.dir + "/") ? path.slice(s.dir.length + 1) : null) : path;
       const f = rel != null && s.files.get(rel);
-      if (f) { ui.viewFile(cap(new TextDecoder().decode(f.bytes), 200000)); return; }
+      if (f) { ui.openFile(path, cap(new TextDecoder().decode(f.bytes), 200000), { readOnly: true }); return; }
     }
-    ui.viewFile("(the file stays on the host; files of a served preview show here)");
+    ui.viewFile("(the file stays on the host; files of a served preview show here)", path);
   });
+  // Save in the editor: into the project (a served preview reloads by itself), a line in the
+  // timeline for everyone, and the agent hears about it with the next request
+  const handEdits = new Set();
+  ui.onSave(async (path, text) => {
+    if (!isHost() || !project) throw new Error("only the host can save");
+    await project.ws.write(path, text);
+    handEdits.add(path);
+    note(`${api.name?.() || "the host"} edited ${path} by hand` + (server?.servedPorts(path).length ? " · the preview reloaded" : ""));
+    save();
+    sendFiles();
+  });
+  // the agent wrote a file that is open in the editor: show the new text
+  async function refreshOpen() {
+    const p = ui.openPath;
+    if (!p || !project) return;
+    try { ui.fileChanged(p, await project.ws.read(p)); } catch {}
+  }
 
   $("code-proj-select").addEventListener("change", async (e) => {
     const id = e.target.value;
@@ -258,11 +282,11 @@ export async function initCode(api, { mock = null } = {}) {
     saveSession(project.id, { v: 1, agent: agent ? agent.toJSON() : sessionJson, hist: hist.slice(-4 * HIST) }).catch((e) => console.warn("code session not saved", e));
   }
   function ctxMeter() {
-    if (!agent || !model?.count) { ui.ctx(""); return; }   // a scripted model has no token count to show
+    if (!agent || !model?.count) { ui.ctx(0); return; }   // a scripted model has no token count to show
     const max = api.maxSeq(), last = model?.stats?.last;
     let used;
     try { used = last ? last.prompt + last.generated : agent._size(); } catch { used = 0; }
-    ui.ctx(used ? `context ${used} / ${max}` : "", used > max * 0.8);
+    ui.ctx(used, max);
   }
 
   // ---- the agent
@@ -319,7 +343,7 @@ export async function initCode(api, { mock = null } = {}) {
         const wire = project?.kind === "folder" && READS.has(e.call.name) && state === "done"
           ? `(${r.split("\n").length} lines · a folder on disk: the output stays on the host)` : cap(r, 600);
         tool(i, { state, result: cap(r, 4000), ms: e.ms }, { result: wire });
-        if (state === "done" && ["write_file", "edit_file"].includes(e.call.name)) sendFiles();
+        if (state === "done" && ["write_file", "edit_file"].includes(e.call.name)) { sendFiles(); refreshOpen(); }
         ctxMeter();
         break;
       }
@@ -360,7 +384,10 @@ export async function initCode(api, { mock = null } = {}) {
       emit({ t: "ai-code-start", sid, mid, name: api.name?.() || "host", text: str(text, 4000) });
       const t0 = Date.now(), gen0 = model?.stats?.generated || 0;
       let r;
-      try { r = await agent.run(text, { signal: ctrl.signal }); }
+      // files the user edited by hand since the agent's last turn: it is told, so it reads them first
+      const told = handEdits.size ? `\n\n(I edited ${[...handEdits].join(", ")} by hand since your last turn: read ${handEdits.size === 1 ? "it" : "them"} before changing ${handEdits.size === 1 ? "it" : "them"}.)` : "";
+      handEdits.clear();
+      try { r = await agent.run(text + told, { signal: ctrl.signal }); }
       catch (err) { console.error(err); r = { steps: 0, calls: 0, reason: "error" }; note("error: " + err.message, true); }
       finally { flushTok(); api.unlock(); }
       if (r.reason === "stopped") note("stopped");
@@ -496,7 +523,7 @@ export async function initCode(api, { mock = null } = {}) {
       refreshProjects();
       if (!project && !hist.length) {
         ui.placeholder(api.ready()
-          ? "<b>Code mode</b>: the room's model writes a web app, serves it on a port and fixes its own errors.<br>Try “build a tetris game”."
+          ? "<b>Code mode</b>: the room's model writes a web app, serves it on a port and fixes its own errors.<br>Ask for something to build, like “a tetris game”."
           : "<b>Code mode</b> runs on the room's model.<br>Pick a model in Chat and press Start, then ask for something to build.");
       }
       setTimeout(() => $("code-prompt").focus(), 0);
@@ -510,5 +537,5 @@ export async function initCode(api, { mock = null } = {}) {
     else if (running && !api.ready() && !ctrl?.signal.aborted) { note("a device left: stopped · re-deal the layers, then send again", true); ctrl?.abort(); }
   });
   ui.setHost(isHost());
-  return { show: (m) => ui.show(m) };
+  return { show: (m) => ui.show(m), ctx: (used, max) => ui.ctx(used, max) };
 }
