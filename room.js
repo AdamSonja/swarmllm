@@ -1378,7 +1378,7 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
     ai.engine = await DenseEngine.create({
       coopWG: ai.tune?.wg, coopRows: ai.tune?.rows,
       device: ai.device, cfg: ai.cfg, weights,
-      layerRange: range, hasEmbed, hasHead, maxSeq: MAX_SEQ,
+      layerRange: range, hasEmbed, hasHead, maxSeq: ctx,
     });
   } else {
     const names = shardTensorNames(ai.cfg, range, hasEmbed, hasHead);

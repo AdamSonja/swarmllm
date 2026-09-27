@@ -1,6 +1,6 @@
 // Model catalogue for the room: URLs, layer counts, memory needs, context length.
 
-export const NEED_GB = { "qwen3-0.6b": 0.8, "qwen3-1.7b": 2.0, "qwen3-4b": 4.6, "qwen3.8-27b": 17.0, "qwen3.6-35b-moe": 22.5, "smollm-135m": 0.6 };
+export const NEED_GB = { "qwen3-0.6b": 0.8, "qwen3-1.7b": 4.0, "qwen3-4b": 4.6, "qwen3.8-27b": 17.0, "qwen3.6-35b-moe": 22.5, "smollm-135m": 0.6 };
 
 // The models the room's picker offers. The others stay for tests and ?dev=1.
 export const PICKER = ["qwen3-1.7b", "qwen3.8-27b", "qwen3.6-35b-moe"];
@@ -48,6 +48,9 @@ export const MAX_SEQ_LONG = 8192;
 export const CTX = {
   "qwen3.8-27b": { def: 16384, max: 32768 },
   "qwen3.6-35b-moe": { def: 32768, max: 65536 },
+  // the dense engine keeps an f32 KV cache (~224 KB per position on the 1.7B, 1.8 GB at 8k); 2k was
+  // too small for Code mode, whose prompt alone is ~620 tokens (checked exact at 8k: tests pass)
+  "qwen3-1.7b": { def: 8192, max: 16384 },
 };
 export const maxSeqFor = (model, ask = 0) => {
   const c = CTX[model];

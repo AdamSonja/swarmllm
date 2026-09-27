@@ -271,7 +271,7 @@ export async function initCode(api, { mock = null } = {}) {
     const style = mock?.model ? "xml" : detectStyle(api.chatTemplate());
     const src = mock?.model || "room";
     if (agent && agentSrc === src && agentStyle === style) return;
-    model = mock?.model ? (typeof mock.model === "function" ? { generate: mock.model } : mock.model) : roomModel(api, { tools, style, maxNew: 8192 });
+    model = mock?.model ? (typeof mock.model === "function" ? { generate: mock.model } : mock.model) : roomModel(api, { tools, style, maxNew: 8192, sampling: style === "json" ? "exact" : "focused" });
     const json = agent ? agent.toJSON() : sessionJson;
     agent = Agent.from(json, {
       generate: model.generate, tools, style, system: CODE_SYSTEM, maxSteps: 30, approve, onEvent,
@@ -391,7 +391,7 @@ export async function initCode(api, { mock = null } = {}) {
       localNote(`eval: ${tasks.length} task${tasks.length === 1 ? "" : "s"} on ${api.peers().length + 1} device(s)`);
       const recs = await S.runSuite(tasks, {
         model: "room", signal: ctrl.signal, root: document.body,
-        makeModel: ({ tools }) => ({ ...roomModel(api, { tools, style, maxNew: 8192 }), style }),
+        makeModel: ({ tools }) => ({ ...roomModel(api, { tools, style, maxNew: 8192, sampling: style === "json" ? "exact" : "focused" }), style }),
         onResult: ({ rec, trajectory }) => {
           lines.push(JSON.stringify(rec), JSON.stringify({ trajectory }));
           localNote(`${rec.ok ? "PASS" : "FAIL"} ${rec.id} · ${rec.reason} · ${rec.steps} steps · ${rec.generated} tok · ${(rec.ms / 1000).toFixed(0)} s`, !rec.ok);
