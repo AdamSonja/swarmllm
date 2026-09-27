@@ -12,10 +12,13 @@
 // Tool: { name, description, parameters, mutates, run(args, { signal, step }) -> string,
 //         preview?(args) -> { path, before, after } }   (shown to approve() for mutating tools)
 // Events (onEvent): step, delta (raw streamed text), text (visible text), tool-start, tool,
-// usage, compacted, trimmed, stopped, done, limit.
+// usage, compacted, trimmed, stopped, done, limit, card (a recovery note was added, harness/cards.js).
 import { toolsSystemPrompt, toolResponses, ToolCallParser, parseCallBody } from "./tools.js";
+import { pickCard, hint, PRIORITY, MAX_PER } from "./cards.js";
 
 const STOPPED = "(stopped by the user)";
+const EMPTY = "(empty answer: call a tool or say you are done)";
+const LIVE = new Set(["preview_logs"]);   // results that change with time: a repeat is not a loop
 export const CONTEXT_FULL = "context full: start a new task (the files are kept)";
 
 // head and tail of a long tool result (errors are usually at the end, headers at the start)
@@ -57,9 +60,10 @@ export class Agent {
   // Run one user request to the end. -> { text, steps, calls, reason: "done"|"stopped"|"limit"|"context" }
   async run(userText, { signal } = {}) {
     const req = ++this.req;
-    const R = this.reqs[req] = { calls: [], done: false, answer: "" };
+    const R = this.reqs[req] = { calls: [], done: false, answer: "", cards: {} };
     this.turns.push({ role: "user", text: userText, req });
-    let calls = 0, shown = "", failRun = 0, lastFail = "";
+    let calls = 0, shown = "", failRun = 0, lastFail = "", empty = 0, mut = 0;
+    let prevStep = new Map();   // the last step's calls: name+args -> { step, result, mut }
     // never leave two user turns in a row: an untouched request is taken back, anything else gets
     // a closing assistant turn
     const close = () => {
@@ -129,11 +133,11 @@ export class Agent {
           // is cut at the same place again)
           const part = salvageWrite(c.raw, (n) => this.byName.get(n)?.parameters);
           if (part) { e.calls[i] = part; continue; }
-          if (u && (u.reason === "max" || u.reason === "ctx")) c.error = `your answer was cut at ${u.generated} tokens before the call was complete; write long files in parts (write_file with append: true)`;
+          if (u && (u.reason === "max" || u.reason === "ctx")) c.error = `your answer was cut at ${u.generated} tokens before the call was complete`;
           else {
             // ended mid-call for another reason (end of turn, a stop, a device hiccup): say which, so it can be traced
             const tail = String(c.raw || "").slice(-160).replace(/\s+/g, " ").trim();
-            c.error = `your answer ended in the middle of a tool call${u ? ` (${u.reason || "stop"} after ${u.generated} tokens)` : ""}. Close every call with </parameter>, </function> and </tool_call>; write long files in parts with append: true.${tail ? ` The call ended with: "${tail}"` : ""}`;
+            c.error = `your answer ended in the middle of a tool call${u ? ` (${u.reason || "stop"} after ${u.generated} tokens)` : ""}.${tail ? ` The call ended with: "${tail}"` : ""}`;
             try { console.warn("[code] call ended early", u, JSON.stringify(String(c.raw || "").slice(-300))); } catch {}
           }
         }
@@ -142,24 +146,47 @@ export class Agent {
       if (e.text) this.onEvent({ type: "text", text: e.text, step });
       this.turns.push({ role: "assistant", text: raw, req });
       if (u) this.onEvent({ type: "usage", step, prompt: u.prompt, reused: u.reused, generated: u.generated, tps: u.tps });
+      if (!found.length && !shown.trim() && !empty++ && step < this.maxSteps) {
+        // an empty answer: one nudge, then a second empty answer ends the request
+        this.turns.push({ role: "user", text: EMPTY, req });
+        continue;
+      }
       if (!found.length) {
         R.done = true; R.answer = shown.trim();
         this.onEvent({ type: "done", step });
         return { text: shown.trim(), steps: step, calls, reason: "done" };
       }
-      const results = [], briefs = [];
+      const results = [], briefs = [], reps = [], cur = new Map();
       for (const c of found) {
         calls++;
         R.calls.push({ name: c.name, arguments: c.arguments });
         briefs.push(briefCall(c));
-        results.push(signal?.aborted ? STOPPED : await this._runCall(c, step, signal));
+        // the same call as last step with nothing changed since: answer from memory, do not run it
+        const key = c.error || LIVE.has(c.name) ? null : c.name + "\u0000" + JSON.stringify(c.arguments || {});
+        const prev = key && prevStep.get(key), rep = !!prev && prev.mut === mut && !signal?.aborted;
+        let r;
+        if (signal?.aborted) r = STOPPED;
+        else if (rep) {
+          r = `${prev.result.split("\n")[0]} (same call as step ${prev.step}; nothing changed)`;
+          this.onEvent({ type: "tool-start", call: c, step });
+          this.onEvent({ type: "tool", call: c, result: r, step, ms: 0 });
+        } else {
+          r = await this._runCall(c, step, signal);
+          if (this.byName.get(c.name)?.mutates && !/^(error|declined)/.test(r)) mut++;
+        }
+        reps.push(rep);
+        if (key) cur.set(key, rep ? prev : { step, result: r, mut });
+        results.push(r);
       }
+      prevStep = cur;
+      const plain = results.slice();   // the stuck check below compares results without their cards
+      this._card(R, found, results, reps, step);
       this.turns.push({ role: "user", text: toolResponses(results), req, calls: briefs });
       if (signal?.aborted) return stopped(step);
       // the same failure three steps in a row: the model (or the room) is stuck, so stop and say so
       // instead of burning the context on retries
-      const failed = results.length && results.every((r) => /^error/.test(r));
-      const sig = failed ? results.map((r) => r.replace(/\d+/g, "#").slice(0, 80)).join("|") : "";
+      const failed = plain.length && plain.every((r, i) => reps[i] || /^error/.test(r));
+      const sig = failed ? plain.map((r) => r.replace(/\d+/g, "#").slice(0, 80)).join("|") : "";
       failRun = failed && (sig === lastFail || failRun === 0) ? failRun + 1 : failed ? 1 : 0;
       lastFail = sig;
       if (failRun >= 3) {
@@ -193,13 +220,30 @@ export class Agent {
         else {
           try { result = String(await t.run(c.arguments || {}, { signal, step })); }
           catch (err) { result = `error: ${err.message}`; }
-          if (c.salvage && !/^error/.test(result)) result += `\nYour answer stopped before the call was complete, so only the first ${c.salvage.lines} lines of ${c.arguments.path} were saved. The last saved line is:\n${c.salvage.last}\nContinue with write_file(path: ${c.arguments.path}, append: true) starting with the line after it. Keep each part under ~120 lines.`;
+          if (c.salvage && !/^error/.test(result)) result += `\nThe answer was cut, so only the first ${c.salvage.lines} lines of ${c.arguments.path} were saved. The last saved line is:\n${c.salvage.last}\nContinue with write_file append: true from the line after it.`;
         }
       }
     }
     result = capResult(result, this.maxResultChars);
     this.onEvent({ type: "tool", call: c, result, step, ms: Date.now() - t0 });
     return result;
+  }
+
+  // at most one card per step: the most urgent one earned, unless its last copy is still in the
+  // prompt or it was sent MAX_PER times this request
+  _card(R, found, results, reps, step) {
+    const cards = (R.cards ||= {});
+    let best = -1, id = null;
+    for (let i = 0; i < results.length; i++) {
+      const k = results[i] === STOPPED ? null : pickCard({ call: found[i], result: results[i], repeat: reps[i] });
+      if (!k || (cards[k] || 0) >= (MAX_PER[k] ?? 2) || (id && PRIORITY.indexOf(k) >= PRIORITY.indexOf(id))) continue;
+      if (this.turns.some((t) => t.text.includes(hint(k)))) continue;
+      best = i; id = k;
+    }
+    if (best < 0) return;
+    results[best] += hint(id);
+    cards[id] = (cards[id] || 0) + 1;
+    this.onEvent({ type: "card", id, step });
   }
 
   _size() { return this.count(this.system) + this.turns.reduce((n, t) => n + this.count(t.text) + 4, 0); }
