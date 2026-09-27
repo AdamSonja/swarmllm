@@ -48,8 +48,12 @@ const TOL = prefillTol(!!eng.moe);
 const set = (on) => { eng.attnPrefillTile = on && !!eng.attnPTCfg; eng.prefillWide = on && eng.ubatch > 0; eng.moeGroup = on && eng.moeGrpU > 0; };
 console.log(`${MODEL}: ${L} layers, mtp ${!!eng.mtp}, attnPrefillTile ${!!eng.attnPTCfg}${eng.attnPTCfg ? ` (TK ${eng.attnPTCfg.TK})` : ""}, ubatch ${eng.ubatch}, moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC} tiled ${eng.moeGrpTiled}` : ""}`);
 
-let src = [];
-for (const f of ["../engine/qwen35.js", "../engine/gguf.js", "../harness/agent.js"]) src.push(...tok.encode(await Deno.readTextFile(new URL(f, import.meta.url))));
+// The code the chat prompt summarizes is a frozen fixture (golden/prefill_opts_prompt.txt: the first 400 lines
+// of engine/qwen35.js as of v1.0.0, ~8k tokens, repeated past that). It used to be read live from
+// engine/qwen35.js, so any edit there changed the prompts and the MoE's on-vs-off relDiff with them (700 tokens:
+// 1.5e-3 at v1.0.0, 3.0e-2 after the GPU sampling merge, with identical kernels: routing near-ties).
+let src = tok.encode(await Deno.readTextFile(new URL("./golden/prefill_opts_prompt.txt", import.meta.url)));
+while (src.length < Math.max(...LENS)) src = src.concat(src);
 const V = tok.vocab;
 // PROMPT_FILE=path (relative to tests/): that file's raw tokens repeated to each length, no chat template (the
 // Chrome bench's ?prefilllen prompt is its page's HTML repeated this way)

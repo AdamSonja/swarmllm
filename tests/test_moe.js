@@ -59,5 +59,4 @@ for (const [name, prompt, golden] of CASES) {
   }
 }
 if (GPU_SAMPLE) fail += await checkHeadIds(eng) ? 1 : 0;
-if (GPU_SAMPLE) fail += await checkHeadIds(eng) ? 1 : 0;
 console.log(fail ? "MOE FAIL" : "MOE PASS ✓"); if (fail) Deno.exit(1);
