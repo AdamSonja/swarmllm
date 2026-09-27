@@ -1,9 +1,8 @@
 // Qwen35Engine: the hybrid Gated-DeltaNet + attention engine (Qwen 3.5/3.6/3.8),
 // with batched prefill/verify paths and multi-token-prediction speculation.
-// See docs/architecture.md.
-// Qwen3.5/3.8 engine: hybrid Gated-DeltaNet + gated-attention WebGPU
-// inference, layer-shardable like DenseEngine. Golden reference: ref_q38.mjs
-// (validated line-by-line against llama.cpp eval-callback dumps).
+// See docs/architecture.md. Layer-shardable like DenseEngine. Golden
+// reference: tests/reference/ref_q38.mjs (validated line by line against
+// llama.cpp eval-callback dumps).
 import { WGSL } from "./wgsl/base.js";
 import { gemmWGSL, GEMM_S, GEMM_TILE } from "./wgsl/gemm.js";
 import { coopWGSL, probeUnpack } from "./wgsl/coop.js";
@@ -739,7 +738,7 @@ export class Qwen35Engine {
       M2.proj = mv(M2.ehProj, M2.ehIn, this.x, dim, 2 * dim);           // eh_proj -> MTP residual (in x)
       M2.bgHeadNorm = bgNorm(this.x, M2.headNorm, this.xn);               // shared_head_norm -> xn
     }
-    // One-submit draft chain (roadmap 26 #2; on by default, draftChain: false or ?draftchain=0 turns
+    // One-submit draft chain (roadmap/26-host-side-overhead.md; on by default, draftChain: false or ?draftchain=0 turns
     // it off; it keeps the embedding table on the GPU too, ~715 MB for the 27B, ~290 MB for the
     // 35B-A3B, or only its first draftVocab rows): the K draft steps of a speculative step go into
     // one command buffer; each step gathers the previous argmax's embedding on the GPU (bit-exact
@@ -1071,7 +1070,7 @@ export class Qwen35Engine {
     return out;
   }
 
-  // ---- batched prefill (4 prompt tokens per pass) ----
+  // ---- batched prefill (NC prompt tokens per pass; the room uses 16) ----
   _bg2g0(pipe, resources) {
     return this.device.createBindGroup({
       layout: pipe.getBindGroupLayout(0),
@@ -1378,9 +1377,9 @@ export class Qwen35Engine {
     });
   }
 
-  // nCols < 4: batched matvecs still compute 4 columns (extra columns are
-  // garbage into scratch); every per-column op runs as ONE multi-column
-  // dispatch over the live columns. snapshotDN (set through frame.snap) makes
+  // nCols < NC: the batched matvecs pick their narrower twins (b8/b4) and
+  // dispatch over the live columns only; every per-column op runs as ONE
+  // multi-column dispatch over the live columns. snapshotDN (set through frame.snap) makes
   // the recurrent kernels save their state after each non-final column so a
   // rejected speculative suffix can be rolled back.
   _encodeLayerBatch(enc, i, basePos, nCols = this.NC, snapshotDN = false) {
@@ -1515,7 +1514,7 @@ export class Qwen35Engine {
     this.pos = basePos + n;
     return out;
   }
-  // ids.length columns (1..4). snapshot: save recurrent state after every
+  // ids.length columns (1..NC). snapshot: save recurrent state after every
   // non-final column so restoreDN(k) can undo a rejected speculative suffix.
   _snapWord(snapshot, n) {   // frame.snap: slot base + 1 | total << 8 | replay (bit 31); records the verify chunk for the encoder
     if (!snapshot) { this._snapNow = null; return 0; }
@@ -1624,7 +1623,7 @@ export class Qwen35Engine {
     return await this._readback(this.logits, this.stageLogits, vocab);
   }
 
-  // verify tokens[k] at positions pos+k (2..4 tokens): trunk (local batched
+  // verify tokens[k] at positions pos+k (any n, run in chunks of NC): trunk (local batched
   // pass with DeltaNet snapshots, or a caller-supplied runTrunk for a device
   // chain) then one batched head pass -> logits per column.
   async verifyN(tokens, pos, runTrunk = null) {
@@ -1666,12 +1665,6 @@ export class Qwen35Engine {
     this.device.queue.submit([enc.finish()]);
   }
 
-  // One speculative step with K chained drafts (K <= 3). Precondition: this.x
-  // holds the trunk hidden of the previous position and `tNext` is the
-  // already-sampled token for this.pos. Returns 1..K+1 new tokens.
-  // runTrunk(tokens, pos) -> hidden states for all columns (chain mode);
-  // onReject(k) tells the other devices to roll their recurrent state back
-  // to what it was after column k.
   // the K drafts of specStep in one submit (see draftChain in _init); same kernels, same inputs
   async _draftChain(tNext, pos, K) {
     this.device.queue.writeBuffer(this.mtp.emb, 0, this._embedRowF32(tNext));
@@ -1767,6 +1760,12 @@ export class Qwen35Engine {
     return !!this.bgFinalNormMC;
   }
 
+  // One speculative step with K chained drafts (K up to maxDrafts). Precondition:
+  // this.x holds the trunk hidden of the previous position and `tNext` is the
+  // already-sampled token for this.pos. Returns 1..K+1 new tokens.
+  // runTrunk(tokens, pos) -> hidden states for all columns (chain mode);
+  // onReject(k) tells the other devices to roll their recurrent state back
+  // to what it was after column k.
   async specStep(tNext, sample, K = 3, { runTrunk = null, onReject = null } = {}) {
     const pos = this.pos, M2 = this.mtp;
     K = Math.max(1, Math.min(7, K));

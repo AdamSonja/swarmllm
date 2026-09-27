@@ -1,4 +1,8 @@
 // Device autotune: time a few cooperative-GEMV shapes on the real GPU at load and keep the winner.
+// Times the quantized GEMV (the hot kernel) at a few candidate workgroup
+// shapes on synthetic buffers sized like a real layer. Wall-clock around
+// onSubmittedWorkDone; never timestamp-query (enabling it alone has measured
+// multi-x slowdowns). ~1s total at model load.
 import { WGSL } from "./wgsl/base.js";
 import { probeUnpack, coopWGSL } from "./wgsl/coop.js";
 

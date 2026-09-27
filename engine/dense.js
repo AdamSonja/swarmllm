@@ -603,9 +603,3 @@ export class DenseEngine {
     return await this._readback(this.x, this.stageX, dim);
   }
 }
-
-// ---- device autotune: pick the coop kernel shape this GPU actually likes ----
-// Times the quantized GEMV (the hot kernel) at a few candidate workgroup
-// shapes on synthetic buffers sized like a real layer. Wall-clock around
-// onSubmittedWorkDone; never timestamp-query (enabling it alone has measured
-// multi-x slowdowns). ~1s total at model load.

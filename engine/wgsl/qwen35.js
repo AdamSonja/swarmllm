@@ -446,7 +446,7 @@ fn dn_gates_mc(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(1) @binding(2) var<storage, read_write> cvm_st: array<f32>;
 @group(1) @binding(3) var<storage, read_write> cvm_y: array<f32>;
 @group(1) @binding(4) var<uniform> cvm_mc: MC;          // n = convDim, x stride, y stride
-@group(1) @binding(5) var<storage, read_write> cvm_shadow: array<f32>;   // [7][convDim*3]
+@group(1) @binding(5) var<storage, read_write> cvm_shadow: array<f32>;   // [max(7, maxDrafts)][convDim*3]
 @compute @workgroup_size(64)
 fn dn_conv_mc(@builtin(global_invocation_id) gid: vec3<u32>) {
   let c = gid.x; let n = cvm_mc.n;

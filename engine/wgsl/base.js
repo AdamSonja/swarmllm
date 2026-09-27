@@ -29,7 +29,7 @@ fn matvec(@builtin(global_invocation_id) gid: vec3<u32>) {
   mv_y[r] = acc;
 }
 
-// --- matvec_q8: y = W x with W in Q8_0 (int8 + per-32-block f32 scale) ---
+// --- matvec_q8: y = W x with W in Q8_0 (int8 + per-32-block f16 scale) ---
 @group(1) @binding(0) var<storage, read> q8_qs: array<u32>;   // int8s packed 4/word
 @group(1) @binding(1) var<storage, read> q8_sc: array<u32>;   // f16 scales, 2 per word
 fn q8s(i: u32) -> f32 { return unpack2x16float(q8_sc[i >> 1u])[i & 1u]; }
@@ -78,7 +78,7 @@ fn head_norm(@builtin(global_invocation_id) gid: vec3<u32>) {
   for (var i: u32 = 0u; i < cfg.headDim; i++) { hn_v[off + i] *= inv * hn_w[i]; }
 }
 
-// --- matvec_q4: y = W x with W in Q4_0 (packed nibbles + per-32-block f32 scale) ---
+// --- matvec_q4: y = W x with W in Q4_0 (packed nibbles + per-32-block f16 scale) ---
 // nibble layout per block: byte j holds elem j (low nibble) and elem j+16 (high)
 @group(1) @binding(0) var<storage, read> q4_qs: array<u32>;
 @group(1) @binding(1) var<storage, read> q4_sc: array<u32>;   // f16 scales, 2 per word
@@ -344,14 +344,3 @@ fn add_res(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 `;
-
-// ============ cooperative matvec family (generated) ============
-// One workgroup of WG threads computes ROWS output rows together (the shape
-// llama.cpp's WebGPU backend, web-llm's generated kernels and zero-tvm all
-// converge on for decode GEMV). Thread t = (block-lane bl = t/4) x (quarter
-// qt = t%4, an 8-element slice of a 32-element quant block): consecutive
-// threads read consecutive words of the same row (coalesced) and each
-// thread's activation slice is loaded once and reused across all ROWS rows.
-// Scalar accumulators only: a dynamically-indexed local array spills to
-// scratch memory and ran 3x slower. Reduction is a portable shared-memory
-// halving tree (no subgroups: absent from shipping Safari 26).

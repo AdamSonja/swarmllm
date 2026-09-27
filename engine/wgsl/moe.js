@@ -6,7 +6,9 @@
 //
 // One launch covers every (column, slot) pair: workgroup y = col * K + slot. Each pair's math is
 // the same whether a pass has 1 column (decode) or many (verify / prefill), so the batched path
-// gives the same bits as the one-token path, which keeps speculative decoding exact.
+// is meant to give the same bits as the one-token path, which keeps speculative decoding exact.
+// Known open failure: tests/e2e/moe_synth.mjs's "batched prefill == one token" check still differs
+// in 202 logits (docs/bench-log.md, 2026-09-26; roadmap/31-moe-split-correctness.md).
 //
 //   moe_router      logits [col][nExp] -> sel [col][K] (expert ids), selw [col][K] (weights)
 //   moe_gu_{q4,q8}  h[col,slot] = silu(Wgate[e] x[col]) * (Wup[e] x[col])
@@ -194,7 +196,7 @@ ${Array.from({ length: n }, (_, r) => `      ${red}[${r * WG}u + t] += ${red}[${
 //
 // Uniform MOEF: dOut, dIn (routed matrix), sDim (shared expert FFN width: rows for gate/up, dIn for down),
 // nExp, xs (input / residual column stride, floats), ys (h stride per (column, slot), floats), norm,
-// shared (unused, 1), oUq / oGs / oUs (word offsets of the shared up qs, gate scales, up scales in the
+// shOff (unused; the engine writes 1), oUq / oGs / oUs (word offsets of the shared up qs, gate scales, up scales in the
 // packed shared gate/up buffer, whose gate qs start at 0), pad.
 
 // termOff: like term(), with word offsets into Q / SC and explicit block count / index names

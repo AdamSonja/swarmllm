@@ -1,9 +1,9 @@
 // GGUF loading: header and tensor parsing, tokenizer extraction, Q4_0/Q8_0
 // repacking into GPU-friendly layouts (packed nibbles + f16 scales), and
 // streaming upload straight into GPU buffers. See docs/models.md.
-// GGUF (v2/v3) parser + Q8_0 dequant. Shared by the CPU reference and the
-// WebGPU engine. Returns tensor byte ranges so browser peers can range-fetch
-// only their layers, same trick as the safetensors path.
+// Parses GGUF v2/v3 and handles Q4_0, Q4_1, Q5_0, Q5_K, Q6_K, Q8_0, F16, BF16
+// and F32 tensors, plus the qwen35 loaders. The parser returns tensor byte
+// ranges so browser peers can range-fetch only their layers.
 
 const T_U8 = 0, T_I8 = 1, T_U16 = 2, T_I16 = 3, T_U32 = 4, T_I32 = 5, T_F32 = 6,
   T_BOOL = 7, T_STR = 8, T_ARR = 9, T_U64 = 10, T_I64 = 11, T_F64 = 12;
@@ -15,7 +15,8 @@ export const Q8_0_BLOCK_BYTES = 34;      // f16 scale + 32 int8
 
 const _f16buf = new Float32Array(1), _f16u32 = new Uint32Array(_f16buf.buffer);
 export function f32ToF16(v) {
-  // IEEE f32 -> f16 bits, round-to-nearest-even. The scratch views are hoisted:
+  // IEEE f32 -> f16 bits, round to nearest with ties rounded up (away from
+  // zero in magnitude), not ties-to-even like the GPU's pack2x16float. The scratch views are hoisted:
   // this is called once per element of every wire frame and every quantized block.
   _f16buf[0] = v;
   const x = _f16u32[0];
@@ -180,9 +181,9 @@ export const GGML_EMBED = "token_embd.weight";
 export const GGML_FINAL_NORM = "output_norm.weight";
 export const GGML_OUTPUT = "output.weight"; // absent when embeddings are tied
 
-// Build the engine's weight structure from a parsed GGUF header.
+// One tensor's engine entry (repacked for the GPU) from a parsed GGUF header.
 // bytesOf: async (info) => Uint8Array of that tensor's data (local slice or
-// HTTP range fetch — same contract as the safetensors shard path).
+// HTTP range fetch, same contract as the safetensors shard path).
 export async function ggufEntry(G, bytesOf, name, optional, onBytes = () => {}) {
   const info0 = G.tensors[name];
   if (!info0) {
@@ -402,8 +403,8 @@ export function dequantF32(info, bytes) {
   throw new Error("dequantF32: unsupported type " + T);
 }
 
-// Tokenizer straight from GGUF metadata (tokens + merges arrays); returns the
-// same {vocab, encode, decode} shape as makeTokenizer(tokenizer.json).
+// Tokenizer straight from GGUF metadata (tokens + merges arrays); returns a
+// tokenizer.json-shaped object to pass to makeTokenizer.
 export function tokenizerFromGGUF(meta) {
   const tokens = meta["tokenizer.ggml.tokens"];
   const merges = meta["tokenizer.ggml.merges"];

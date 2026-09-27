@@ -1,5 +1,15 @@
 // Generated WGSL: cooperative GEMV, batched/twin variants, fused gate/up, accumulate variants.
 // See docs/kernels.md for the rules these kernels follow.
+//
+// One workgroup of WG threads computes ROWS output rows together (the shape
+// llama.cpp's WebGPU backend, web-llm's generated kernels and zero-tvm all
+// converge on for decode GEMV). Thread t = (block-lane bl = t/4) x (quarter
+// qt = t%4, an 8-element slice of a 32-element quant block): consecutive
+// threads read consecutive words of the same row (coalesced) and each
+// thread's activation slice is loaded once and reused across all ROWS rows.
+// Scalar accumulators only: a dynamically-indexed local array spills to
+// scratch memory and ran 3x slower. Reduction is a portable shared-memory
+// halving tree (no subgroups: absent from shipping Safari 26).
 
 export async function probeUnpack(device) {
   if (device.__unpackOk !== undefined) return device.__unpackOk;
@@ -25,7 +35,7 @@ export function coopWGSL(WG = 256, ROWS = 4, WGB = 64, COLS = 4, ROWSB = ROWS, U
   const i8x4 = (w) => UNPACK ? `vec4<f32>(unpack4xI8(bitcast<u32>(${w})))`
     : `vec4<f32>(f32((${w} << 24u) >> 24u), f32((${w} << 16u) >> 24u), f32((${w} << 8u) >> 24u), f32(${w} >> 24u))`;
   const LANES = WG / 4;
-  const LANESB = WGB / 4;   // batched kernels: smaller workgroups amortize the reductions                  // 32-elem blocks in flight per iteration
+  const LANESB = WGB / 4;   // batched kernels: smaller workgroups amortize the reductions
   const accDecl = Array.from({ length: ROWS }, (_, r) => `var acc${r} = 0.0;`).join(" ");
   const fullBody = (term) => Array.from({ length: ROWS }, (_, r) => `      acc${r} += ${term(r)};`).join("\n");
   const tailBody = (term, dOut) => Array.from({ length: ROWS - 1 }, (_, r) =>
@@ -367,7 +377,7 @@ ${singleCoopAcc}
 
 // ---- batched (COLS-column) variants for prefill / verify: each weight word is
 // loaded and decoded once and applied to C token columns (rowsFor(C) rows per WG). x is [C][xs4] vec4s,
-// y is [4][ys] f32s (strides in BShape; slices are 256-byte aligned by the
+// y is [C][ys] f32s (strides in BShape; slices are 256-byte aligned by the
 // engine). Workgroup ${WGB}: more loop work per thread, cheaper reductions.
 struct BShape { dOut: u32, dIn: u32, xs4: u32, ys: u32 };
 @group(1) @binding(3) var<uniform> mvb_shape: BShape;
@@ -446,8 +456,3 @@ ${guAll}
 `;
 }
 
-
-// ---------- weight entries ----------
-// A weight entry is {kind:"f32", data:Float32Array} or {kind:"q8", qs:Uint8Array,
-// scales:Float32Array}. The engine consumes a normalized structure:
-// { embed?, head?, finalNorm?, layers: [{inNorm,q,k,v,o,postNorm,gate,up,down,qNorm?,kNorm?}] }
