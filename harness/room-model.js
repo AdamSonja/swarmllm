@@ -29,7 +29,7 @@ function tagHold(s) {
 export function roomModel(api, {
   thinking = false,       // Code mode default off: a think block eats the answer budget
   maxNew = 4096,          // answer cap; per call also min(maxNew, maxSeq - prompt - 16)
-  tools = null,           // for the tool-name constraint
+  tools = null,           // for the tool-call constraint (harness/constrain.js)
   style = "xml",
   sampling = "focused",   // room/sampling.js preset; code wants a low temperature
   sample = null,          // (logits) -> id, overrides `sampling` (tests)
@@ -64,14 +64,14 @@ export function roomModel(api, {
     // a single-token <tool_response> (Qwen's added token) is a stop token: it is then never written
     // into the caches, and the next step still extends them. Split across tokens it is caught as text.
     const stop = new Set([S.imEnd, S.eot, T.vocab?.[TAG]].filter(Number.isInteger));
-    const cs = constrainedSampler(sample || pickSampler(sampling), tools, { tokenText: tt, vocabSize, style });
+    const cs = constrainedSampler(sample || pickSampler(sampling), tools, { tokenText: tt, vocabSize, style, stops: [...stop], thinking: think });
     const ctrl = new AbortController();
     const onAbort = () => ctrl.abort();
     if (signal?.aborted) ctrl.abort(); else signal?.addEventListener("abort", onAbort, { once: true });
 
     const q = asyncQueue();
     const dec = deltaDecoder(T);
-    let raw = "", sent = 0, cutAt = -1, thinkSent = 0, text = "";
+    let raw = "", sent = 0, cutAt = -1, thinkSent = 0, text = "", garbage = false;
     // the visible text so far: the answer part when thinking, cut at an invented tool response
     const visible = () => {
       let s = raw;
@@ -92,10 +92,14 @@ export function roomModel(api, {
     };
     const onToken = (id) => {
       if (cutAt >= 0) return;   // tokens of the step that was in flight when the tag appeared
+      cs.keep(1);
       const d = dec.push(id);
       raw += d;
       cs.setText(raw);
       if (d) flush(false);
+      // the call grammar forced most of a call's tokens: the logits are not the model's (a
+      // misbehaving engine), so stop decoding garbage instead of running to the cap
+      if (cs.garbage && cutAt < 0) { garbage = true; cutAt = visible().length; ctrl.abort(); flush(true); }
     };
     const run = api.generate(ids, { onToken, stop, maxNew: Math.min(maxNew, maxSeq - ids.length - MARGIN), sample: cs.sample, signal: ctrl.signal })
       .then((r) => { if (cutAt < 0) raw += dec.end(); text = flush(true); q.end(); return r; }, (err) => { q.end(err); throw err; });
@@ -112,7 +116,7 @@ export function roomModel(api, {
       if (mine) own.set(text, mine);
       stats.reused += r.reused || 0; stats.prefilled += r.prefilled || 0; stats.generated += (r.tokens?.length ?? r.count ?? 0);
       stats.tps = r.tps || 0;
-      stats.last = { reason: cutAt >= 0 ? "tool_response" : r.reason, prompt: ids.length, reused: r.reused || 0, prefilled: r.prefilled || 0, generated: r.tokens?.length ?? r.count ?? 0, tps: r.tps || 0, stats: r.stats || "" };
+      stats.last = { reason: garbage ? "garbage" : cutAt >= 0 ? "tool_response" : r.reason, prompt: ids.length, reused: r.reused || 0, prefilled: r.prefilled || 0, generated: r.tokens?.length ?? r.count ?? 0, tps: r.tps || 0, stats: r.stats || "", forced: cs.forced || 0 };
     } finally {
       signal?.removeEventListener("abort", onAbort);
       if (!finished) { ctrl.abort(); await run.catch(() => {}); }   // consumer left early: stop the room's step

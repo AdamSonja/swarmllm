@@ -14,6 +14,7 @@ import { Agent, briefCall } from "../harness/agent.js";
 import { codingTools } from "../harness/codetools.js";
 import { PreviewServer } from "../harness/preview.js";
 import { previewTools } from "../harness/preview-tools.js";
+import { runJsTool, runJsAvailable } from "../harness/run-js.js";
 import { mountPreview, openPreviewTab } from "../harness/preview-frame.js";
 import { PreviewPublisher, PreviewSubscriber } from "../harness/preview-sync.js";
 import { lineDiff } from "../harness/diff.js";
@@ -69,6 +70,10 @@ function wireDiff(d) {
   while (k > 0 && JSON.stringify(rows.slice(0, k)).length > 3800) k = Math.floor(k * 0.8);
   return { ...w, rows: rows.slice(0, k), more: rows.length - k };
 }
+
+// the eval suite (tests/eval/, not deployed) runs only on a development host
+const DEV_HOST = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(globalThis.location?.hostname || "");
+const EVAL = DEV_HOST ? new URLSearchParams(globalThis.location?.search || "").get("eval") : null;
 
 export async function initCode(api, { mock = null } = {}) {
   const ui = codeUI({ onMode: (m) => { if (m === "code") entered(); } });
@@ -162,7 +167,8 @@ export async function initCode(api, { mock = null } = {}) {
     closeProject();
     project = p;
     server = new PreviewServer(p.ws);
-    tools = [...codingTools(p.ws, { server }), ...previewTools(server)];
+    // run_js only when the snippet runs on the isolated preview host (a loop there cannot freeze the room)
+    tools = [...codingTools(p.ws, { server }), ...previewTools(server), ...(runJsAvailable() ? [runJsTool(server)] : [])];
     publisher = new PreviewPublisher(server, { send: api.send, broadcast: api.broadcast, channel: api.channel });
     server.onUpdate(portUpdate);
     const saved = await loadSession(p.id).catch(() => null);
@@ -337,6 +343,7 @@ export async function initCode(api, { mock = null } = {}) {
     const box = $("code-prompt"), text = box.value.trim();
     if (!text || running || !isHost()) return;
     if (!api.ready()) { localNote("the model is not loaded yet: pick a model in the sidebar and press start", true); return; }
+    if (EVAL != null && /^\/eval\b/.test(text)) { box.value = ""; grow(); return runEval(text.slice(5).trim() || EVAL); }
     running = true;
     ui.running(true);
     try {
@@ -366,6 +373,40 @@ export async function initCode(api, { mock = null } = {}) {
     } finally {
       running = false; ctrl = null;
       ui.running(false);
+    }
+  }
+  // ?eval=all (or ?eval=tetris,todo): "/eval [ids]" in the prompt runs the eval suite
+  // (tests/eval/) on the room's model, each task in a fresh in-memory project; the records and
+  // trajectories download as .jsonl at the end
+  async function runEval(spec) {
+    if (!api.lock("code")) { localNote("the room is busy: try again when it is done", true); return; }
+    running = true; ui.running(true); ctrl = new AbortController();
+    const lines = [];
+    try {
+      let TASKS, byId, S;
+      try { ({ TASKS, byId } = await import("../tests/eval/tasks/index.js")); S = await import("../tests/eval/suite.js"); }
+      catch { throw new Error("the eval suite is not deployed here (run it from a local checkout)"); }
+      const tasks = !spec || spec === "all" ? TASKS : spec.split(",").map((id) => byId(id.trim())).filter(Boolean);
+      const style = detectStyle(api.chatTemplate());
+      localNote(`eval: ${tasks.length} task${tasks.length === 1 ? "" : "s"} on ${api.peers().length + 1} device(s)`);
+      const recs = await S.runSuite(tasks, {
+        model: "room", signal: ctrl.signal, root: document.body,
+        makeModel: ({ tools }) => ({ ...roomModel(api, { tools, style, maxNew: 8192 }), style }),
+        onResult: ({ rec, trajectory }) => {
+          lines.push(JSON.stringify(rec), JSON.stringify({ trajectory }));
+          localNote(`${rec.ok ? "PASS" : "FAIL"} ${rec.id} · ${rec.reason} · ${rec.steps} steps · ${rec.generated} tok · ${(rec.ms / 1000).toFixed(0)} s`, !rec.ok);
+        },
+      });
+      localNote(S.summary(recs));
+    } catch (err) { localNote("eval failed: " + err.message, true); }
+    finally {
+      api.unlock(); running = false; ctrl = null; ui.running(false);
+      if (lines.length) {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "application/x-ndjson" }));
+        a.download = `eval-room-${new Date().toISOString().slice(0, 16).replace(/:/g, "")}.jsonl`;
+        a.click();
+      }
     }
   }
   api.onStop(() => ctrl?.abort());

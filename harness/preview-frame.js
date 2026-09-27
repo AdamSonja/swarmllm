@@ -16,8 +16,12 @@
 // Messages from the frame are accepted only from its own window and with this mount's nonce, and
 // are treated as untrusted text (typed and capped here, shown with textContent by the UI).
 //
-//   mountPreview(el, source, port, { onLog, onStatus, autorun = true, relay = relayUrl() })
+//   mountPreview(el, source, port, { onLog, onStatus, autorun = true, relay = relayUrl(), onShow, onDone, run })
 //     -> { reload(), destroy(), frame, rev }
+// run: a hidden run_js frame (harness/run-js.js). It never falls back to local mode (no relay, or
+// no hello: status "nohost"), and while it lives the other previews' watchdogs pause (the relay is
+// one site, so one process: a snippet's loop would read as their hang). When it goes while the
+// relay is hung, the other relay previews get fresh frames, so the hung process has none left.
 //   onLog({ level, text, src, line, col, ms, rev })
 //   onStatus({ state: "idle"|"loading"|"ready"|"stopped"|"waiting"|"hung", rev, path })
 // autorun false (a peer's first view) shows a "Run preview :port" button instead of running it.
@@ -26,6 +30,8 @@ import { buildPreviewDoc } from "./preview-build.js";
 const LEVELS = new Set(["log", "info", "warn", "error"]);
 const str = (v, n) => String(v ?? "").slice(0, n);
 export const HANG_MS = 3000, HELLO_MS = 5000, MAX_NAV = 3;
+const views = new Set();   // the visible previews of this page (not run frames)
+let runs = 0;              // run_js frames alive
 
 // The relay's address: <meta name="preview-origin" content="https://..."> on the page (a second
 // deployment of this site on another registrable domain), else in development the other loopback
@@ -42,10 +48,14 @@ export function relayUrl(doc = globalThis.document) {
   return null;
 }
 
-export function mountPreview(el, source, port, { onLog = () => {}, onStatus = () => {}, autorun = true, relay = undefined } = {}) {
+export function mountPreview(el, source, port, { onLog = () => {}, onStatus = () => {}, autorun = true, relay = undefined, onShow = null, onDone = null, run = false } = {}) {
   const doc = el.ownerDocument, win = doc.defaultView;
   if (relay === undefined) relay = relayUrl(doc);
   try { if (relay) new URL(relay); } catch { relay = null; }
+  if (run && !relay) {   // a snippet in this tab's own process could freeze the room
+    queueMicrotask(() => { try { onStatus({ state: "nohost", rev: 0, path: null }); } catch (e) { console.error(e); } });
+    return { frame: null, mode: "none", rev: 0, path: null, loaded: false, run() {}, reload() {}, navigate() {}, destroy() {} };
+  }
   let frame = null, mode = relay ? "relay" : "local";
   let nonce = "", rev = 0, path = null, detach = () => {}, running = autorun, gate = null;
   let url = null, expect = 0, navs = 0, html = null;
@@ -75,6 +85,7 @@ export function mountPreview(el, source, port, { onLog = () => {}, onStatus = ()
       // the relay never answered (not deployed, blocked): run here instead
       helloTimer = setTimeout(() => {
         if (hello || !frame) return;
+        if (run) { status("nohost"); return; }
         log("warn", "the isolated preview host did not answer; running the preview in this tab");
         mode = "local"; frame.remove(); makeFrame(); if (running) load();
       }, HELLO_MS);
@@ -94,11 +105,13 @@ export function mountPreview(el, source, port, { onLog = () => {}, onStatus = ()
     if (mode === "relay") {
       if (!hello) return;   // sent on hello
       frame.contentWindow?.postMessage({ pvr: "doc", html }, "*");   // the relay is sandboxed too: an opaque origin
+      onShow?.();
       return;
     }
     const old = url;
     url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
     expect = 1; frame.src = url;
+    onShow?.();
     if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
   };
   // local mode: every load we did not start is the page navigating itself somewhere
@@ -137,7 +150,7 @@ export function mountPreview(el, source, port, { onLog = () => {}, onStatus = ()
     clearInterval(dog);
     beat = Date.now();
     dog = setInterval(() => {
-      if (doc.visibilityState !== "visible") { beat = Date.now(); return; }
+      if (doc.visibilityState !== "visible" || (!run && runs)) { beat = Date.now(); return; }
       if (Date.now() - beat > HANG_MS) onHang();
     }, 500);
   };
@@ -167,13 +180,15 @@ export function mountPreview(el, source, port, { onLog = () => {}, onStatus = ()
     if (d.pv !== nonce || flood()) return;
     const ms = Math.max(0, Number(d.ms) || 0);
     if (d.t === "log") {
-      const entry = { level: LEVELS.has(d.level) ? d.level : "log", text: str(d.text, 1200), src: str(d.src, 200), line: d.line >>> 0, col: d.col >>> 0, ms, rev };
+      const t = String(d.text ?? "");
+      const entry = { level: LEVELS.has(d.level) ? d.level : "log", text: t.length > 1200 ? t.slice(0, 1194) + "…(cut)" : t, src: str(d.src, 200), line: d.line >>> 0, col: d.col >>> 0, ms, rev };
       source.pushLog?.(port, entry);
       onLog(entry);
     } else if (d.t === "ready" || d.t === "idle") {
       source.frameEvent?.(port, { t: d.t, rev, ms });
       if (d.t === "ready") status("ready");
-    } else if (d.t === "nav") {
+    } else if (d.t === "done") onDone?.(d);   // run_js's snippet finished
+    else if (d.t === "nav") {
       const p = str(d.path, 300);
       const snap = source.snapshot(port);
       if (snap?.files.has(p) && /\.html?$/i.test(p)) { path = p; load(); }
@@ -198,6 +213,15 @@ export function mountPreview(el, source, port, { onLog = () => {}, onStatus = ()
     detach = source.attach?.(port) || (() => {});
     load();
   };
+  // a run frame left while the relay was hung: move this preview to a fresh frame, quietly
+  const refresh = () => {
+    if (mode !== "relay" || !frame) return;
+    clearInterval(dog); dog = 0; clearTimeout(helloTimer);
+    frame.remove(); makeFrame(); if (running) load();
+  };
+  const me = { refresh };
+  let gone = false;
+  if (run) runs++; else views.add(me);
   makeFrame();
   if (autorun) start();
   else {
@@ -218,6 +242,13 @@ export function mountPreview(el, source, port, { onLog = () => {}, onStatus = ()
     reload() { if (running) load(); },
     navigate(p) { path = p || null; load(); },
     destroy() {
+      if (gone) return;
+      gone = true;
+      if (run) {
+        runs--;
+        const stuck = mode === "relay" && (hung || (hello && Date.now() - beat > 1500));
+        if (stuck) queueMicrotask(() => { for (const v of views) v.refresh(); });
+      } else views.delete(me);
       off(); detach(); clearInterval(dog); clearTimeout(helloTimer);
       win.removeEventListener("message", onMessage);
       frame?.remove(); gate?.remove();

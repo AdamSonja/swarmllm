@@ -1,4 +1,5 @@
-// serve / preview_logs / stop_serve: the agent's side of the preview server
+// serve / preview_logs: the agent's side of the preview server (run_js is in run-js.js; ports are
+// stopped from the UI, the agent has no stop_serve: docs/design/harness-light.md A.2)
 // (docs/design/harness-app.md C.2). serve answers with what the page did in its first 500 ms,
 // so the common "write, serve, see the error" loop needs no separate preview_logs step.
 import { DEFAULT_PORT } from "./preview.js";
@@ -18,7 +19,7 @@ export function logLine(e) {
   return `[${secs(e.t)}] ${e.level} ${where(e)}${text}`;
 }
 // consecutive identical entries fold into one line with ×N
-function fold(lines) {
+export function fold(lines) {
   const out = [];
   for (const e of lines) {
     const k = e.level + "\u0000" + e.src + e.line + "\u0000" + e.text, p = out[out.length - 1];
@@ -37,8 +38,8 @@ export function previewTools(server) {
   return [
     {
       name: "serve", mutates: false,
-      description: `Serve a folder as a static site on a preview port and report the page's first errors. Serving again reloads it.`,
-      parameters: { type: "object", properties: { dir: { type: "string", description: "folder, default project root" }, port: { type: "integer", description: `default ${DEFAULT_PORT}` }, entry: { type: "string", description: "default index.html" } } },
+      description: "Serve a folder on a preview port; returns the page's first errors.",
+      parameters: { type: "object", properties: { dir: { type: "string" }, port: { type: "integer", description: `default ${DEFAULT_PORT}` }, entry: { type: "string", description: "default index.html" } } },
       async run({ dir = "", port, entry = "index.html" } = {}) {
         port = portOf(port);
         const since = server.cursor(port);
@@ -60,7 +61,7 @@ export function previewTools(server) {
     },
     {
       name: "preview_logs", mutates: false,
-      description: "Console output and errors of a served page since a cursor (each result ends with next: since=N).",
+      description: "Console output of a served page since a cursor.",
       parameters: { type: "object", properties: { port: { type: "integer" }, since: { type: "integer" } } },
       async run({ port, since = 0 } = {}) {
         port = portOf(port);
@@ -88,15 +89,6 @@ export function previewTools(server) {
         if (cut) out.push(`(${cut} earlier lines, since=${Number(since) || 0}; newest shown)`);
         out.push(...rows.slice(cut).map((r) => r.text), `next: since=${next}`);
         return out.join("\n");
-      },
-    },
-    {
-      name: "stop_serve", mutates: false,
-      description: "Stop serving a preview port.",
-      parameters: { type: "object", properties: { port: { type: "integer" } }, required: ["port"] },
-      async run({ port } = {}) {
-        port = portOf(port);
-        return server.stop(port) ? `stopped :${port}` : nothing(port);
       },
     },
   ];

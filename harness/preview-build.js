@@ -249,6 +249,8 @@ function capture(C) {
     e.preventDefault();
     send({ t: "nav", path: p });
   }, true);
+  // run_js's loader (harness/run-js.js) reports that the snippet finished
+  Object.defineProperty(window, "__pvDone", { value: (ok, ms, tok) => send({ t: "done", ok: !!ok, ms: +ms || 0, tok: String(tok ?? "").slice(0, 64) }) });
   addEventListener("load", () => {
     send({ t: "ready", ms: Math.round(performance.now()) });
     setTimeout(() => send({ t: "idle", ms: Math.round(performance.now()) }), 500);

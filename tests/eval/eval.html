@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pooled evals</title>
+<body style="font: 13px ui-monospace, monospace; margin: 16px">
+<pre id="out">loading…</pre>
+<script type="module">
+// The eval suite's page (tests/eval/run.mjs drives it): ?model=mock|engine. window.__eval:
+//   init() -> "ready"             loads the model (engine: /__m.gguf, the file run.mjs serves)
+//   task(id) -> { rec, trajectory }
+//   selfTest(id) -> { ok, detail }
+import { TASKS, byId } from "./tasks/index.js";
+import { runTask, selfTest } from "./suite.js";
+import { scripted } from "../scripted-model.js";
+
+const q = new URLSearchParams(location.search), kind = q.get("model") || "mock";
+const out = document.getElementById("out");
+const say = (s) => { out.textContent += "\n" + s; };
+let makeModel = null;
+
+async function loadEngine() {
+  const { Qwen35Engine } = await import("/engine/qwen35.js");
+  const { parseGGUFHeader, qwen35Weights, GGML_EMBED, tokenizerFromGGUF } = await import("/engine/gguf.js");
+  const { makeTokenizer } = await import("/engine/tokenizer.js");
+  const { engineModel } = await import("/harness/engine-model.js");
+  const buf = await (await fetch("/__m.gguf")).arrayBuffer();
+  const G = parseGGUFHeader(buf);
+  const tok = makeTokenizer(tokenizerFromGGUF(G.meta));
+  const arch = G.meta["general.architecture"] || "qwen35";   // qwen35, or qwen35moe for the 35B MoE
+  const L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
+  const adapter = await navigator.gpu.requestAdapter();
+  const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
+  const maxSeq = +(q.get("ctx") || 16384);
+  const eng = await Qwen35Engine.create({ device, meta: G.meta, layerRange: [0, L], hasEmbed: true, hasHead: true, vocab: G.tensors[GGML_EMBED].shape[0], maxSeq,
+    weights: await qwen35Weights(G, async (i) => new Uint8Array(buf, i.byteOffset, i.byteLength).slice(), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: !!G.meta[arch + ".nextn_predict_layers"] }) });
+  say(`engine: ${L} layers, context ${maxSeq}`);
+  return ({ tools }) => {
+    const m = engineModel(eng, tok, { tools, maxNew: 4096 });
+    let last = { prompt: 0, reused: 0, generated: 0 };
+    const generate = async function* (req) {
+      const s0 = { ...m.stats };
+      yield* m.generate(req);
+      last = { prompt: m.stats.prefilled - s0.prefilled + m.stats.reused - s0.reused, reused: m.stats.reused - s0.reused, generated: m.stats.generated - s0.generated };
+    };
+    return { generate, stats: { get last() { return last; }, get forced() { return m.stats.forced || 0; } }, budget: maxSeq - 4200, count: (t) => tok.encode(t).length };
+  };
+}
+
+window.__eval = {
+  tasks: TASKS.map((t) => t.id),
+  async init() {
+    makeModel = kind === "engine" ? await loadEngine() : ({ task }) => ({ generate: scripted(task.mock) });
+    say(`model: ${kind}`);
+    return "ready";
+  },
+  async task(id) {
+    const res = await runTask(byId(id), { makeModel, model: kind });
+    say(`${res.rec.ok ? "PASS" : "FAIL"} ${id}`);
+    return res;
+  },
+  selfTest: (id) => selfTest(byId(id)),
+};
+out.textContent = "ready";
+</script>

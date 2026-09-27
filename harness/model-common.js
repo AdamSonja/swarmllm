@@ -10,25 +10,51 @@ export function tokenTexts(tok) {
   return (id) => (texts[id] ??= tok.decode([id]));
 }
 
-// Wrap a sampler with the tool-name constraint. setText(t) tells it the answer so far (call it
-// after each emitted token); within one speculative step every sampled column is appended to it
-// in order, so each verified position is masked against the text before it, and accepted tokens
-// always satisfy the constraint. Without tools it is the base sampler.
-export function constrainedSampler(base, tools, { tokenText, vocabSize, style = "xml" }) {
-  if (!tools?.length) return { sample: base, setText() {}, constraint: null };
-  const C = new ToolCallConstraint(tools, { vocabSize, tokenText, style });
-  let text = "", pend = "";
-  return {
+// Wrap a sampler with the tool-call constraint (harness/constrain.js). setText(t) tells it the
+// answer so far (call it after each emitted token); within one speculative step every sampled
+// column is appended to it in order, so each verified position is masked against the text before
+// it, and accepted tokens always satisfy the constraint.
+// keep(n): the caller emitted the next n sampled tokens (in order; the columns of a speculative
+// step that were rejected are dropped at the next step's first sample). `forced` counts kept
+// positions where the model's own top token was not allowed (reset by setText("")): a healthy
+// model forces ~0 per call, garbage logits (a misbehaving engine) force most tokens. `garbage`
+// turns on when one call forces GARBAGE.abs tokens, or GARBAGE.min and more than GARBAGE.ratio of
+// its tokens: the caller should end the answer there and run none of its calls.
+// Without tools it is the base sampler.
+export const GARBAGE = { abs: 16, min: 6, ratio: 0.2 };
+export function constrainedSampler(base, tools, { tokenText, vocabSize, style = "xml", stops = [], thinking = false }) {
+  if (!tools?.length) return { sample: base, setText() {}, keep() {}, constraint: null, forced: 0, garbage: false };
+  const C = new ToolCallConstraint(tools, { vocabSize, tokenText, style, stops, thinking });
+  let cols = [], kept = false, callF = 0, callN = 0, lastIn = false;
+  const w = {
+    forced: 0, garbage: false,
     sample(lg) {
-      C.text = text + pend;
+      if (kept) { cols = []; kept = false; }   // a new step
+      const inCall = C.inCall;
       C.mask(lg);
+      cols.push({ f: C.forced, inCall });
       const t = base(lg);
-      pend += tokenText(t);
+      C.push(tokenText(t));
       return t;
     },
-    setText(t) { text = t; pend = ""; },
+    keep(n = 1) {
+      kept = true;
+      for (let i = 0; i < n && cols.length; i++) {
+        const { f, inCall } = cols.shift();
+        if (f) w.forced++;
+        if (!inCall) { lastIn = false; continue; }
+        if (!lastIn) { callF = 0; callN = 0; lastIn = true; }
+        callN++; if (f) callF++;
+        if (callF >= GARBAGE.abs || (callF >= GARBAGE.min && callF > GARBAGE.ratio * callN)) w.garbage = true;
+      }
+    },
+    setText(t) {
+      if (!t) { w.forced = 0; w.garbage = false; cols = []; kept = false; callF = callN = 0; lastIn = false; }
+      C.setText(t);
+    },
     constraint: C,
   };
+  return w;
 }
 
 // Streaming decode: push(id) -> the new text, holding back while the tail is an incomplete UTF-8

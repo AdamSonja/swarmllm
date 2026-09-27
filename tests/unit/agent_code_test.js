@@ -94,7 +94,7 @@ Deno.test("agent: usage after each step; ContextFull from the model ends the run
   const ev = [];
   const A = new Agent({ generate: scripted(["hi"]), tools: tools(), usage: () => ({ prompt: 10, reused: 4, generated: 1, tps: 3 }), onEvent: (e) => ev.push(e) });
   await A.run("x");
-  eq(ev.find((e) => e.type === "usage"), { type: "usage", step: 1, prompt: 10, reused: 4, generated: 1, tps: 3 });
+  eq(ev.find((e) => e.type === "usage"), { type: "usage", step: 1, prompt: 10, reused: 4, generated: 1, tps: 3, forced: 0 });
   const gen = async function* () { const e = new Error("full"); e.name = "ContextFull"; throw e; };
   const B = new Agent({ generate: gen, tools: tools() });
   const r = await B.run("y");
@@ -182,7 +182,7 @@ Deno.test("agent: a call cut by the answer cap is not run; the model is told why
   const r = await A.run("go");
   eq(r.reason, "done");
   eq(log, [], "no truncated edit");
-  ok(/cut at 4096 tokens.*append: true/.test(A.turns[2].text), A.turns[2].text);
+  ok(/cut at 4096 tokens[\s\S]*hint: Write long files in parts[\s\S]*append: true/.test(A.turns[2].text), A.turns[2].text);
 });
 
 Deno.test("agent: a write_file cut by the answer cap keeps its complete lines and says where to continue", async () => {
@@ -246,6 +246,10 @@ Deno.test("agent: a write_file that ends early for any reason keeps its lines; t
   const B = new Agent({ generate: scripted(["<tool_call>\n<function=edit_file>\n<parameter=path>\nx\n</parameter>\n<parameter=old>\nab", "ok"]), tools: tools([]), usage: () => ({ reason: "stop", generated: 12, prompt: 10 }) });
   await B.run("go");
   ok(/ended in the middle of a tool call \(stop after 12 tokens\)/.test(B.turns[2].text), B.turns[2].text);
+  // many positions forced by the call grammar: say the engine may be the problem
+  const C = new Agent({ generate: scripted(["<tool_call>\n<function=edit_file>\n<parameter=path>\nx", "ok"]), tools: tools([]), usage: () => ({ reason: "stop", generated: 30, prompt: 10, forced: 20 }) });
+  await C.run("go");
+  ok(/20 tokens were forced by the call format/.test(C.turns[2].text), C.turns[2].text);
 });
 
 Deno.test("agent: the same failing call three steps in a row stops the run as stuck", async () => {

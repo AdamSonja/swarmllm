@@ -1,65 +1,226 @@
-// Lazy tool-call constraint: decode freely, but inside a tool call force the function name and
-// the parameter names to be ones the tools declare (llama.cpp's lazy grammars / XGrammar's
-// trigger mode, reduced to what a coding harness needs). Values stay free text. Works with the
-// XML format (<function=NAME> / <parameter=NAME>) and the JSON format ("name": "NAME").
+// Tool-call constraint while sampling (docs/design/harness-light.md B.1): decode freely, but once
+// a <tool_call> starts, only tokens that keep the call well-formed are allowed. XML style (Qwen3.5+)
+// runs a small character automaton over the whole call:
 //
-// Usage per generated token: const m = C.allowed(); if (m) mask logits outside m (or call
-// C.mask(logits)); sample; C.push(tokenText). With speculative decoding, apply the same check to
-// each position's logits in the sample callback, so accepted tokens always satisfy the mask.
+//   FREE --"<tool_call>"--> "\n<function=" NAME(tool)">" BODY
+//   BODY --"\n<parameter=" (an unused param of fn)">\n" VALUE "</parameter>"--> BODY
+//   BODY --"\n</function>" (only when the required params are given)--> "\n</tool_call>" FREE
 //
-// tokenText(id) must give the token's decoded text (byte-level BPE: the decoded string of that
-// single token). The mask for a state is computed once over the vocabulary and cached, so the
-// cost is one vocabulary scan per distinct (state, typed-so-far) pair, then O(1).
+// After </tool_call> the text is free again (the parser ignores trailing text; a stop, a second
+// <tool_call> or an invented "\n<tool_response>" are all fine there).
+// VALUE is free text except: stop tokens, <tool_call> and </tool_call> anywhere, and <function=,
+// </function>, <parameter= at the start of a line (those mean a missing </parameter>; elsewhere
+// they can be legitimate file content); integer / number params take digits, boolean params
+// true / false. A token is allowed iff running its characters from the current
+// state never rejects, so tokens may cross state boundaries (">\n", "</parameter>\n<").
+// JSON style (no model we ship) only limits the "name" string to declared tools.
+//
+// Masks are a function of the automaton state (not of the text inside a value), computed with one
+// vocabulary scan per distinct state and cached per (tokenizer, tools) across steps and requests:
+// literal states keep a short allow list, values a short deny list. Nothing is masked outside calls.
+//
+//   const C = new ToolCallConstraint(tools, { vocabSize, tokenText, style, stops, thinking })
+//   C.allowed() -> null (anything) | { allow: Int32Array } | { deny: Int32Array }   (sorted ids)
+//   C.mask(logits) -> logits;  C.push(tokenText);  C.setText(answerSoFar)  (base for push)
+// tokenText(id) is the decoded text of that one token; stops are the end-of-turn ids.
+
+const OPEN = "<tool_call>", THINK_END = "</think>", CLOSE_P = "</parameter>";
+const FORBID = new Set(["<tool_call>", "</tool_call>", "\n<function=", "\n</function>", "\n<parameter="]);
+const PREFIXES = new Set();
+for (const p of [CLOSE_P, ...FORBID]) for (let k = 1; k < p.length; k++) PREFIXES.add(p.slice(0, k));
+const DIGIT = /[0-9]/;
+const MAX_KEYS = 512;
+
+const shared = new WeakMap();   // tokenText fn -> Map(signature -> Map(key -> mask))
+const has = (a, id) => { let lo = 0, hi = a.length - 1; while (lo <= hi) { const m = (lo + hi) >> 1; if (a[m] === id) return true; if (a[m] < id) lo = m + 1; else hi = m - 1; } return false; };
+export const maskHas = (m, id) => !m || (m.allow ? has(m.allow, id) : !has(m.deny, id));
+
+// how far s ends in a prefix of "<tool_call>" (or </think>); the patterns have no inner '<'
+const tail = (m, ch, pat) => (ch === pat[m] ? m + 1 : ch === pat[0] ? 1 : 0);
 
 export class ToolCallConstraint {
-  constructor(tools, { vocabSize, tokenText, style = "xml" }) {
-    this.fns = new Map(tools.map((t) => [t.name, Object.keys(t.parameters?.properties || {})]));
+  constructor(tools, { vocabSize, tokenText, style = "xml", stops = [], thinking = false }) {
     this.vocabSize = vocabSize; this.tokenText = tokenText; this.style = style;
-    this.text = "";          // everything generated so far (only the tail matters)
-    this.cache = new Map();
-  }
-  // Where we are: null = free text; else { targets: [strings the slot may be], typed }.
-  _slot() {
-    const t = this.text;
-    const call = t.lastIndexOf("<tool_call>");
-    if (call < 0 || t.indexOf("</tool_call>", call) >= 0) return null;
-    const body = t.slice(call);
-    if (this.style === "xml") {
-      const f = /<function=([^>\n]*)$/.exec(body);
-      if (f) return { targets: [...this.fns.keys()].map((n) => n + ">"), typed: f[1] };
-      const fn = /<function=([^>\n]+)>/.exec(body)?.[1];
-      const p = /<parameter=([^>\n]*)$/.exec(body);
-      if (p && fn && this.fns.has(fn)) return { targets: this.fns.get(fn).map((n) => n + ">"), typed: p[1] };
-      return null;
+    this.stops = new Set(stops); this.thinking = thinking;
+    this.fns = new Map();
+    for (const t of tools) {
+      const props = t.parameters?.properties || {}, names = Object.keys(props);
+      const ty = names.map((n) => ({ integer: "i", number: "n", boolean: "b" })[props[n]?.type] || "s");
+      let req = 0;
+      for (const r of t.parameters?.required || []) if (names.includes(r)) req |= 1 << names.indexOf(r);
+      this.fns.set(t.name, { names, ty, req });
     }
-    const j = /"name"\s*:\s*"([^"]*)$/.exec(body);
-    if (j) return { targets: [...this.fns.keys()].map((n) => n + "\""), typed: j[1] };
+    const sig = style + "|" + vocabSize + "|" + [...this.stops].join(",") + "|"
+      + [...this.fns].map(([n, f]) => n + ":" + f.names.map((p, i) => p + f.ty[i]).join(",") + ":" + f.req).join(";");
+    let byTok = shared.get(tokenText);
+    if (!byTok) shared.set(tokenText, (byTok = new Map()));
+    if (!byTok.has(sig)) byTok.set(sig, new Map());
+    this.cache = byTok.get(sig);
+    this.opts = new Map();   // literal options per (tag, fn, given)
+    this.setText("");
+  }
+
+  // ---- state
+  _start() { return this.style === "xml" ? { k: this.thinking ? "T" : "F", m: 0 } : ""; }
+  // the answer so far: later push()es extend it. Incremental when it extends the last text.
+  setText(t) {
+    const b = this.base;
+    let from = null;
+    if (b && t.startsWith(b.text)) from = b;
+    else if (this.clean && t.startsWith(this.clean.text)) from = this.clean;
+    let st = from ? from.st : this._start();
+    st = this._feed(st, t.slice(from ? from.text.length : 0), true);
+    this.base = { text: t, st };
+    if (!t.endsWith("�")) this.clean = this.base;
+    this.st = st;
+  }
+  push(s) { this.st = this._feed(this.st, s, true); }
+  get text() { return this.base.text; }
+  // inside a tool call (the next token is masked)
+  get inCall() { return this.style === "xml" ? this.st.k !== "F" && this.st.k !== "T" : this._jsonSlot(this.st) != null; }
+  set text(t) { this.setText(t); }   // (older callers)
+
+  // feed text; `lenient`: a character the automaton rejects drops the call back to free text
+  _feed(st, s, lenient) {
+    if (this.style !== "xml") { const t = st + s; return t.length > 4096 ? t.slice(-2048) : t; }
+    for (let i = 0; i < s.length && st; i++) {
+      const n = this._step(st, s[i]);
+      st = n || (lenient ? { k: "F", m: 0 } : null);
+    }
+    return st;
+  }
+
+  _lit(tag, fn, given, typed, p) { return { k: "L", tag, fn, given, typed, p }; }
+  _options(st) {
+    const key = st.tag + "|" + st.fn + "|" + st.given + "|" + st.p;
+    let o = this.opts.get(key);
+    if (o) return o;
+    const f = this.fns.get(st.fn);
+    o = [];
+    if (st.tag === "open") o.push(["\n<function=", () => this._lit("name", "", 0, "")]);
+    else if (st.tag === "name") for (const n of this.fns.keys()) o.push([n + ">", () => this._lit("body", n, 0, "")]);
+    else if (st.tag === "body") {
+      if (f.names.some((_, i) => !(st.given & (1 << i)))) o.push(["\n<parameter=", () => this._lit("pname", st.fn, st.given, "")]);
+      if ((st.given & f.req) === f.req) o.push(["\n</function>", () => this._lit("close", "", 0, "")]);
+    } else if (st.tag === "pname") {
+      f.names.forEach((n, i) => {
+        if (st.given & (1 << i)) return;
+        const g = st.given | (1 << i), ty = f.ty[i];
+        o.push([n + ">\n", () => (ty === "s" ? { k: "V", fn: st.fn, given: g, pm: "" }
+          : ty === "b" ? this._lit("bool", st.fn, g, "") : { k: "N", fn: st.fn, given: g, ty, d: 0, sign: 0 })]);
+      });
+    } else if (st.tag === "bool" || st.tag === "vclose") {
+      const vals = st.tag === "bool" ? ["true", "false"] : [""];
+      for (const v of vals) for (const c of ["\n" + CLOSE_P, CLOSE_P]) o.push([v + c, () => this._lit("body", st.fn, st.given, "")]);
+    } else if (st.tag === "close") o.push(["\n</tool_call>", () => ({ k: "F", m: 0 })]);
+    this.opts.set(key, o);
+    return o;
+  }
+
+  // one character: the next state, or null when the call cannot continue with it
+  _step(st, ch) {
+    switch (st.k) {
+      case "T": { const m = tail(st.m, ch, THINK_END); return m === THINK_END.length ? { k: "F", m: 0 } : m === st.m && m === 0 ? st : { k: "T", m }; }
+      case "F": { const m = tail(st.m, ch, OPEN); return m === OPEN.length ? this._lit("open", "", 0, "") : m === st.m && m === 0 ? st : { k: "F", m }; }
+      case "L": {
+        const typed = st.typed + ch;
+        let live = false;
+        for (const [s, to] of this._options(st)) {
+          if (s === typed) return to();
+          if (s.startsWith(typed)) live = true;
+        }
+        return live ? { ...st, typed } : null;
+      }
+      case "V": {
+        if (!st.pm && ch !== "<" && ch !== "\n") return st;
+        const s = st.pm + ch;
+        if (s === CLOSE_P) return this._lit("body", st.fn, st.given, "");
+        if (FORBID.has(s)) return null;
+        let pm = "";
+        for (let k = 0; k < s.length; k++) if (PREFIXES.has(s.slice(k))) { pm = s.slice(k); break; }
+        return pm === st.pm ? st : { ...st, pm };
+      }
+      case "N": {
+        if (DIGIT.test(ch) || (st.ty === "n" && ch === "." && st.d)) return st.d ? st : { ...st, d: 1 };
+        if (ch === "-" && !st.d && !st.sign) return { ...st, sign: 1 };
+        if (!st.d) return null;
+        return this._step(this._lit("vclose", st.fn, st.given, ""), ch);
+      }
+    }
     return null;
   }
-  // Uint8Array(vocabSize) of allowed tokens, or null when anything goes.
-  allowed() {
-    const s = this._slot();
-    if (!s) return null;
-    const key = s.targets.join("\u0000") + "\u0001" + s.typed;
-    let m = this.cache.get(key);
-    if (m) return m;
-    m = new Uint8Array(this.vocabSize);
-    const rest = s.targets.filter((x) => x.startsWith(s.typed)).map((x) => x.slice(s.typed.length));
-    for (let id = 0; id < this.vocabSize; id++) {
-      const w = this.tokenText(id);
-      if (!w) continue;
-      // the token either stays inside a target, or finishes one (anything after the closing
-      // character is the next slot's business: a newline, the next tag)
-      for (const r of rest) if (r.startsWith(w) || w.startsWith(r)) { m[id] = 1; break; }
+
+  _key(st) {
+    if (this.style !== "xml") { const s = this._jsonSlot(st); return s ? "J|" + s.typed : null; }
+    if (st.k === "F" || st.k === "T") return null;
+    if (st.k === "L") return `L|${st.tag}|${st.fn}|${st.given}|${st.typed}`;
+    if (st.k === "V") return `V|${st.fn}|${st.given}|${st.pm}`;
+    return `N|${st.fn}|${st.given}|${st.ty}|${st.d}|${st.sign}`;
+  }
+  _jsonSlot(t) {
+    const call = t.lastIndexOf(OPEN);
+    if (call < 0 || t.indexOf("</tool_call>", call) >= 0) return null;
+    const j = /"name"\s*:\s*"([^"]*)$/.exec(t.slice(call));
+    return j ? { typed: j[1] } : null;
+  }
+  _okJson(typed, w) {
+    for (const n of this.fns.keys()) {
+      const r = (n + "\"").slice(typed.length);
+      if ((n + "\"").startsWith(typed) && (r.startsWith(w) || w.startsWith(r))) return true;
     }
-    if (!m.some(Boolean)) return null;   // no token fits (odd tokenizer): don't wedge the decoder
+    return false;
+  }
+
+  // the mask for the current state (cached), or null when anything goes
+  allowed() {
+    const key = this._key(this.st);
+    if (key == null) return null;
+    let m = this.cache.get(key);
+    if (m !== undefined) { this.cache.delete(key); this.cache.set(key, m); return m; }
+    m = this._scan();
     this.cache.set(key, m);
+    if (this.cache.size > MAX_KEYS) this.cache.delete(this.cache.keys().next().value);
     return m;
   }
+  _scan() {
+    const st = this.st, json = this.style !== "xml";
+    const slot = json ? this._jsonSlot(st) : null;
+    const allow = [], deny = [], first = new Map();
+    for (let id = 0; id < this.vocabSize; id++) {
+      let ok;
+      if (this.stops.has(id)) ok = false;
+      else {
+        const w = this.tokenText(id);
+        if (!w) ok = false;
+        else if (json) ok = this._okJson(slot.typed, w);
+        else if (st.k === "V" && !st.pm && w.indexOf("<") < 0 && w.indexOf("\n") < 0) ok = true;   // the common case: plain text
+        else {
+          // most tokens fail on their first character: step each distinct first character once
+          const c = w[0];
+          let s1 = first.get(c);
+          if (s1 === undefined) first.set(c, (s1 = this._step(st, c)));
+          ok = s1 !== null && (w.length === 1 || this._feed(s1, w.slice(1), false) !== null);
+        }
+      }
+      (ok ? allow : deny).push(id);
+    }
+    if (!allow.length) return null;   // no token fits (odd tokenizer): don't wedge the decoder
+    return allow.length <= deny.length ? { allow: Int32Array.from(allow) } : { deny: Int32Array.from(deny) };
+  }
+
+  // mask logits in place; this.forced: the unmasked argmax was not allowed
   mask(logits) {
     const m = this.allowed();
-    if (m) for (let i = 0; i < logits.length; i++) if (!m[i]) logits[i] = -Infinity;
+    this.forced = false;
+    if (!m) return logits;
+    let b = 0;
+    for (let i = 1; i < logits.length; i++) if (logits[i] > logits[b]) b = i;
+    this.forced = !maskHas(m, b);
+    if (m.allow) {
+      const keep = Array.from(m.allow, (i) => logits[i]);
+      logits.fill(-Infinity);
+      m.allow.forEach((i, k) => { logits[i] = keep[k]; });
+    } else for (const i of m.deny) logits[i] = -Infinity;
     return logits;
   }
-  push(tokenText) { this.text += tokenText; if (this.text.length > 8192) this.text = this.text.slice(-4096); }
 }

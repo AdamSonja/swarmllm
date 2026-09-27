@@ -3,6 +3,8 @@
 import { MemoryWorkspace, watch } from "../../harness/workspace.js";
 import { codingTools, MAX_LINES, MAX_CHARS, MAX_HITS, MAX_ENTRIES } from "../../harness/codetools.js";
 import { previewTools } from "../../harness/preview-tools.js";
+import { runJsTool } from "../../harness/run-js.js";
+import { CARDS } from "../../harness/cards.js";
 import { PreviewServer } from "../../harness/preview.js";
 import { toolsSystemPrompt } from "../../harness/tools.js";
 import { lineDiff } from "../../harness/diff.js";
@@ -95,13 +97,15 @@ Deno.test("lineDiff: add, remove, change, folding, cap", () => {
   eq(lineDiff("", lines(500), { max: 600 }).length, 500);
 });
 
-Deno.test("prompt size: the 8 code tools in the xml block plus the Code system prompt stay under 4,200 chars", () => {
+Deno.test("prompt size: the 8 code tools in the xml block plus the Code system prompt stay under 3,700 chars", () => {
   const ws = watch(new MemoryWorkspace()), s = new PreviewServer(ws);
-  const tools = [...codingTools(ws, { server: s }), ...previewTools(s)].map(({ name, description, parameters }) => ({ name, description, parameters }));
-  eq(tools.map((t) => t.name), ["list_dir", "read_file", "search", "edit_file", "write_file", "serve", "preview_logs", "stop_serve"]);
-  const system = CODE_SYSTEM;   // harness/code-prompt.js (F.2)
+  const tools = [...codingTools(ws, { server: s }), ...previewTools(s), runJsTool(s)].map(({ name, description, parameters }) => ({ name, description, parameters }));
+  eq(tools.map((t) => t.name), ["list_dir", "read_file", "search", "edit_file", "write_file", "serve", "preview_logs", "run_js"]);
+  const system = CODE_SYSTEM;   // harness/code-prompt.js (harness-light A.2)
   const p = toolsSystemPrompt(tools, { style: "xml", system });
-  ok(p.length <= 4200, `system prompt + tool block is ${p.length} chars`);
+  console.log(`system prompt + tool block: ${p.length} chars`);
+  ok(p.length <= 3700, `system prompt + tool block is ${p.length} chars`);
+  for (const [id, t] of Object.entries(CARDS)) ok(t.length <= 245, `card ${id} is ${t.length} chars (~70 tokens max)`);
   s.close();
 });
 

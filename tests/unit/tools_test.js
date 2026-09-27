@@ -91,3 +91,9 @@ Deno.test("a call that ends after </parameter> without </function> still counts"
   const e = P.end();
   if (e.calls.length !== 1 || e.calls[0].name !== "read_file" || e.calls[0].arguments.path !== "game.js") throw new Error(JSON.stringify(e));
 });
+
+Deno.test("xml: tool-call tags inside a line of a value are the value's text; a missing </parameter> still ends at a line-start <parameter=", () => {
+  const doc = "Calls look like <function=x> with <parameter=y> and </function>.";
+  eq(parseCallBody(`<function=write_file>\n<parameter=path>\nREADME.md\n</parameter>\n<parameter=content>\n${doc}\n</parameter>\n</function>`).arguments, { path: "README.md", content: doc });
+  eq(parseCallBody("<function=write_file>\n<parameter=path>\na.md\n<parameter=content>\nhi\n</parameter>\n</function>").arguments, { path: "a.md", content: "hi" });
+});
