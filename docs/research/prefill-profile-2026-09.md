@@ -245,6 +245,12 @@ A first-cut tiled kernel sits at about 7 TFLOPS, 42% of the measured f32 peak. U
   2. `engine/qwen35.js`: build the pipeline in `G1` and a bind group in `_initBatch` next to `flashT2`. In `_encodeLayerBatch`, when `nCols === this.NC && this.attnTileP !== false`, dispatch it instead of `attn_flash` / `attn_flash_t2`. Add a runtime kill switch `engine.attnPrefillTile = false`.
   3. Add `tests/test_attn_tile.js` (random Q/K/V against the `attn_flash` path, relDiff), plus `prof_prefill.js` and the goldens.
 
+- **Status (branch prefill/flash-attn, not GPU-validated yet).** Implemented as `attn_flash_tile` + `attn_combine_tile` in `engine/wgsl/attn_tile.js`, behind `attnPrefillTile` (off by default; `ATTN_PREFILL_TILE=1` for every Deno test that loads through `tests/load_model.js`, `?attnptile=1` / `ATTN_PREFILL_TILE=1` for the Chrome bench).
+  - Differences from the plan above: one workgroup per (split, KV head, group of up to 64 query rows = `floor(64/G)` columns × G heads), and 4 threads per row, each keeping a quarter of q and of the output in registers for the whole split. That avoids the S = Q·Kᵀ micro-GEMM's Q staging, which does not fit 16 KB. Per tile of TK = 8 positions (16 when the device grants 32 KB of workgroup memory), K and then V are staged once as f32 vec4s. Partial dots go through workgroup memory, and every row runs its online softmax per tile.
+  - The split length is derived from the pass (about 32 splits, at most `faSplit`, within the `faO` slot count), so short contexts still launch enough workgroups.
+  - Its own shader module: if it fails to compile, the option turns itself off with a warning.
+  - CPU check: `tests/unit/attn_tile_test.js` runs the generated kernel bodies as JavaScript against exact attention. GPU A/B: `tests/test_attn_tile.js`.
+
 ### (B) Wide prefill ubatch with shared-memory tiled GEMMs (dequantize once)
 
 - **Why.** The GEMMs are 81% of 27B prefill at 512 and still 43% at 16k. They sit at 3.0 to 5.8 TFLOPS. A 16-column pass cannot amortize dequantization well, and down-shaped and Q8 shapes lag.

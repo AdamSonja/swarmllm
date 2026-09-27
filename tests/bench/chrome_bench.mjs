@@ -18,6 +18,6 @@ if (prof && prof !== "0") { ctx = await chromium.launchPersistentContext(prof, {
 else { b = await chromium.launch({ headless: false, args }); ctx = await b.newContext(); }
 const p = await ctx.newPage(); p.on("console", (m) => console.log("  tab:", m.text())); p.on("crash", () => console.log("TAB CRASHED"));
 const gold = GOLD[Object.keys(GOLD).find((k) => model.includes(k))] || [];
-await p.goto(`http://127.0.0.1:8791/tests/bench/bench.html?model=/${model}&tokens=${N}&wcache=${wcache ? 1 : 0}&gold=${encodeURIComponent(JSON.stringify(gold))}${EXTRA}${process.env.MOE_FUSE === "0" ? "&moefuse=0" : ""}${process.env.MOE_DN_ROWS ? "&moednrows=" + process.env.MOE_DN_ROWS : ""}${MOEK ? "&moe=" + encodeURIComponent(MOEK) : ""}`);
+await p.goto(`http://127.0.0.1:8791/tests/bench/bench.html?model=/${model}&tokens=${N}&wcache=${wcache ? 1 : 0}&gold=${encodeURIComponent(JSON.stringify(gold))}${EXTRA}${process.env.MOE_FUSE === "0" ? "&moefuse=0" : ""}${process.env.MOE_DN_ROWS ? "&moednrows=" + process.env.MOE_DN_ROWS : ""}${MOEK ? "&moe=" + encodeURIComponent(MOEK) : ""}${process.env.ATTN_PREFILL_TILE === "1" ? "&attnptile=1" : ""}`);
 await p.waitForFunction(() => window.RESULT, null, { timeout: 30 * 60e3, polling: 2000 }).catch((e) => console.log("timeout", e.message));
 await ctx.close(); if (b) await b.close(); srv.kill();

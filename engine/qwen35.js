@@ -9,14 +9,18 @@ import { gemmWGSL, GEMM_S, GEMM_TILE } from "./wgsl/gemm.js";
 import { coopWGSL, probeUnpack } from "./wgsl/coop.js";
 import { WGSL2 } from "./wgsl/qwen35.js";
 import { moeWGSL, moeFusedWGSL, moeKernelConfig } from "./wgsl/moe.js";
+import { attnTileWGSL, attnTileConfig } from "./wgsl/attn_tile.js";
 import { f16ToF32 } from "./gguf.js";
 
 
 
 export class Qwen35Engine {
+  // Option defaults applied under every create() call's own options (test runners set these from the
+  // environment for A/B runs, e.g. tests/load_model.js ATTN_PREFILL_TILE=1).
+  static defaults = {};
   static async create(opts) {
     const e = new Qwen35Engine();
-    await e._init(opts);
+    await e._init({ ...Qwen35Engine.defaults, ...opts });
     return e;
   }
 
@@ -124,7 +128,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, attnPrefillTile = false, attnPrefillSplits = 32, attnPrefillTK = 0, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -207,6 +211,14 @@ export class Qwen35Engine {
     // two columns per workgroup in batched passes (attn_flash_t2): K/V read once per pair, same bits
     this.attnTileOn = this.flash && !this.kvQ8 && attnTile !== false && 2 * (nH / nKV) * hd <= 3072 && nH / nKV <= 8;
     this.attnTile = this.attnTileOn;
+    // attnPrefillTile: tiled causal flash attention for full-width prefill passes (engine/wgsl/attn_tile.js):
+    // one workgroup per (split, kv head, group of up to 64 query rows) instead of per column (pair).
+    // It changes the prefill summation order (tolerance, not bits), so it is off by default and only
+    // ever runs where the prefill GEMM runs (nCols === NC); decode and verify keep attn_flash.
+    // engine.attnPrefillTile = false at runtime restores attn_flash(_t2) for A/B.
+    this.attnPTCfg = this.flash && !this.kvQ8 && attnPrefillTile === true
+      ? attnTileConfig({ hd, G: nH / nKV, faSplit: this.faSplit, faSplits: this.faSplits,
+        wgMem: device.limits.maxComputeWorkgroupStorageSize, target: attnPrefillSplits, tk: attnPrefillTK }) : null;
     // fused attention glue (qsplit + q/k head_norm + rope in one dispatch, bit-identical); its
     // staging array holds one 256-wide head. engine.attnGlue = false restores the five dispatches.
     this.attnGlueOn = attnGlue !== false && hd <= 256;
@@ -359,6 +371,9 @@ export class Qwen35Engine {
         compute: { module: mod, entryPoint: name },
       });
     }));
+
+    if (this.attnPTCfg) await this._initAttnTile(device, layout0, bufType);
+    this.attnPrefillTile = !!this.pipes.attn_flash_tile;
 
     // ---- uniforms ----
     const cfgData = new ArrayBuffer(48);
@@ -1078,6 +1093,29 @@ export class Qwen35Engine {
       entries: resources.map((r, i) => ({ binding: i, resource: r })),
     });
   }
+  // attn_flash_tile + attn_combine_tile from their own module (engine/wgsl/attn_tile.js), so a compile
+  // problem there only turns the option off (with a warning) instead of failing the engine.
+  async _initAttnTile(device, layout0, bufType) {
+    const C = GPUShaderStage.COMPUTE;
+    const specs = { attn_flash_tile: ["ro", "ro", "ro", "rw", "rw", "u"], attn_combine_tile: ["ro", "ro", "rw", "u"] };
+    const pipes = {};
+    let fail = null;
+    device.pushErrorScope("validation");
+    try {
+      const module = device.createShaderModule({ code: attnTileWGSL(this.attnPTCfg) });
+      for (const [name, spec] of Object.entries(specs)) {
+        const layout1 = device.createBindGroupLayout({ entries: spec.map((t, i) => ({ binding: i, visibility: C, buffer: { type: bufType[t] } })) });
+        pipes[name] = await device.createComputePipelineAsync({
+          layout: device.createPipelineLayout({ bindGroupLayouts: [layout0, layout1] }), compute: { module, entryPoint: name } });
+      }
+    } catch (e) { fail = e; }
+    const err = await device.popErrorScope();   // always popped: the scope must not leak into later calls
+    fail ||= err;
+    if (fail) {
+      console.warn("attnPrefillTile disabled:", String(fail.message || fail).slice(0, 300));
+      this.attnPTCfg = null;
+    } else Object.assign(this.pipes, pipes);
+  }
   _bg2res(pipe, resources) {
     return this.device.createBindGroup({
       layout: pipe.getBindGroupLayout(1),
@@ -1176,6 +1214,7 @@ export class Qwen35Engine {
       "rmsnorm_mc", "add_res_mc", "dn_gates_mc", "dn_conv_mc", "dn_l2_mc", "dn_pre_mc", "dn_delta_mc", "dn_gatenorm_mc",
       "qsplit_mc", "head_norm_mc", "rope_part_mc", "sigmoid_mul_mc", "attn_glue",
       "attn_scores_mc", "attn_softmax_wg_mc", "attn_out_mc", "kv_store", "attn_flash", "attn_combine", "kv_store_q8", "attn_flash_q8", "attn_flash_t2",
+      ...(this.pipes.attn_flash_tile ? ["attn_flash_tile", "attn_combine_tile"] : []),
       ...(this.moe ? ["moe_router", "moe_combine", "moe_gu_q4", "moe_gu_q8", "moe_dn_q4", "moe_dn_q8"] : []),
       ...(this.moeFuse ? ["moe_route", ...this.moe.guPairs.map((p) => "moe_gus_" + p), ...this.moe.dnPairs.map((p) => "moe_dnc_" + p)] : [])];
     this.bgCommonB = cix.map((c) => {
@@ -1273,6 +1312,8 @@ export class Qwen35Engine {
           { buffer: this.faUB }]),
         flashT2: this.attnTileOn && this._bg2res(this.pipes.attn_flash_t2, [whole(B.q), { buffer: L.kCache }, { buffer: L.vCache }, { buffer: this.faO }, { buffer: this.faML }, { buffer: this.faUB }]),
         combine: this.flash && this._bg2res(this.pipes.attn_combine, [{ buffer: this.faO }, { buffer: this.faML }, whole(B.attnOut), { buffer: this.faUB }]),
+        flashTile: !!this.pipes.attn_flash_tile && this._bg2res(this.pipes.attn_flash_tile, [whole(B.q), { buffer: L.kCache }, { buffer: L.vCache }, { buffer: this.faO }, { buffer: this.faML }, { buffer: this.faUB }]),
+        combineTile: !!this.pipes.attn_combine_tile && this._bg2res(this.pipes.attn_combine_tile, [{ buffer: this.faO }, { buffer: this.faML }, whole(B.attnOut), { buffer: this.faUB }]),
         scoresMC: this.scoresMC && this._bg2res(this.pipes.attn_scores_mc, [whole(B.q), { buffer: L.kCache }, { buffer: this.scoresMC }, mcU(0, st(B.q))]),
         softmaxMC: this.scoresMC && this._bg2res(this.pipes.attn_softmax_wg_mc, [{ buffer: this.scoresMC }]),
         outMC: this.scoresMC && this._bg2res(this.pipes.attn_out_mc, [{ buffer: this.scoresMC }, { buffer: L.vCache }, whole(B.attnOut), mcU(0, st(B.attnOut))]),
@@ -1413,9 +1454,16 @@ export class Qwen35Engine {
         const p = enc.beginComputePass();
         if (this.flash) {
           this._dMC(p, this.ksPipe, M.kvStore, D.kvDim / (this.kvQ8 ? 32 : 2), 64, nCols);
-          if (this.attnTile && M.flashT2 && nCols > 1) this._dMC(p, "attn_flash_t2", M.flashT2, Math.ceil((basePos + nCols) / this.faSplit) * 256, 256, Math.ceil(nCols / 2), D.nKV);
-          else this._dMC(p, this.faPipe, M.flash, Math.ceil((basePos + nCols) / this.faSplit) * 256, 256, nCols, D.nKV);
-          this._dMC(p, "attn_combine", M.combine, D.nH * 256, 256, nCols);
+          if (this.attnPrefillTile && M.flashTile && nCols === this.NC) {
+            // full-width prefill pass: tiled kernel over every split slot (slots past this pass's split
+            // count exit at once; the kernel derives the split length from frame), then its combine
+            this._dMC(p, "attn_flash_tile", M.flashTile, this.faSplits * 256, 256, D.nKV, Math.ceil(nCols / this.attnPTCfg.CW));
+            this._dMC(p, "attn_combine_tile", M.combineTile, D.nH * 256, 256, nCols);
+          } else {
+            if (this.attnTile && M.flashT2 && nCols > 1) this._dMC(p, "attn_flash_t2", M.flashT2, Math.ceil((basePos + nCols) / this.faSplit) * 256, 256, Math.ceil(nCols / 2), D.nKV);
+            else this._dMC(p, this.faPipe, M.flash, Math.ceil((basePos + nCols) / this.faSplit) * 256, 256, nCols, D.nKV);
+            this._dMC(p, "attn_combine", M.combine, D.nH * 256, 256, nCols);
+          }
         } else if (this.attnMC && M.scoresMC) {
           this._dMC(p, "attn_scores_mc", M.scoresMC, basePos + nCols, 64, nCols, D.nH);
           this._dMC(p, "attn_softmax_wg_mc", M.softmaxMC, D.nH * 256, 256, nCols);
