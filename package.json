@@ -22,7 +22,8 @@
     "bench:breakdown": "deno run --unstable-webgpu --allow-read --allow-env benchmarks/bench_breakdown.js",
     "serve": "npx -y serve -l 8080 .",
     "deploy:staging": "scripts/deploy-staging.sh",
-    "e2e": "node tests/e2e/room.mjs"
+    "e2e": "node tests/e2e/room.mjs",
+    "e2e:code": "node tests/e2e/harness_tetris.mjs"
   },
   "engines": {
     "deno": ">=2.0"

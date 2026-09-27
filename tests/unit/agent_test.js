@@ -3,6 +3,7 @@
 import { MemoryWorkspace, normPath } from "../../harness/workspace.js";
 import { codingTools } from "../../harness/codetools.js";
 import { Agent } from "../../harness/agent.js";
+import { scripted } from "../scripted-model.js";
 
 const eq = (a, b, m) => { const ja = JSON.stringify(a), jb = JSON.stringify(b); if (ja !== jb) throw new Error((m || "mismatch") + ": " + ja + " != " + jb); };
 const ok = (c, m) => { if (!c) throw new Error(m || "assertion failed"); };
@@ -47,15 +48,6 @@ Deno.test("edit_file needs one exact match", async () => {
   eq(await ws.read("src/add.js"), "export function add(a, b) {\n  return a + b;\n}\n");
 });
 
-// a scripted model: each call yields the next reply in small pieces
-function scripted(replies, seen) {
-  let i = 0;
-  return async function* ({ system, turns }) {
-    seen.push({ system, turns: turns.map((t) => ({ ...t })) });
-    const r = replies[i++] ?? "done";
-    for (let k = 0; k < r.length; k += 5) yield r.slice(k, k + 5);
-  };
-}
 
 Deno.test("agent: read, edit, answer", async () => {
   const ws = project(), seen = [], events = [];

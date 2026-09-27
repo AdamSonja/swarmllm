@@ -209,7 +209,7 @@ function enterRoom() {
   $("room-badge").textContent = roomCode;
   $("side-code").textContent = roomCode;
   $("side-code").addEventListener("click", openShare);
-  if (isHost) $("host-controls").hidden = false;
+  if (isHost) { $("host-controls").hidden = false; $("mode-bar").hidden = false; }   // Code tab: peers see it once the host starts a session
   peerCard("self", myName, myMeta, true);
   updateCluster();
   log("swarm", `room ${roomCode} — share this code with your other devices`);
@@ -2380,7 +2380,7 @@ async function aiOnData(from, d) {
 // without an engine, and room/code.js takes its model from window.__pooledMock.model.
 const MOCK = new URLSearchParams(location.search).get("mock") === "code" && ["127.0.0.1", "localhost"].includes(location.hostname);
 // Code messages only the host sends; the one that goes the other way is ai-pv-want.
-const CODE_FROM_HOST = new Set(["ai-code-start", "ai-code-tok", "ai-code-tool", "ai-code-done", "ai-code-files", "ai-code-history",
+const CODE_FROM_HOST = new Set(["ai-code-start", "ai-code-tok", "ai-code-tool", "ai-code-note", "ai-code-done", "ai-code-files", "ai-code-history",
   "ai-pv", "ai-pv-blob", "ai-pv-stop"]);
 const CODE_TO_HOST = new Set(["ai-pv-want"]);
 const codeHandlers = new Map();   // message type -> fn(from, d)
@@ -2434,10 +2434,12 @@ function codeOnData(from, d) {
     await codeHandlers.get(d.t)?.(from, d);
   }).catch((err) => console.error("code message", d.t, err));
 }
-document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code")) loadCode().catch((err) => toast("Code mode failed to load: " + err.message)); });
+// initCode returns { show(mode) }; the Chat tab is handled by code.js once it is loaded
+document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code")) loadCode().then((c) => c?.show?.("code")).catch((err) => toast("Code mode failed to load: " + err.message)); });
 
 const roomApi = {
   myId: () => peer?.id,
+  name: () => myName,
   role: () => ai.role,                                  // "host" | "worker" | "guest" | undefined
   ready: () => MOCK || (!!ai.engine && !ai.degraded),   // host: can generate now
   tok: () => ai.tok,

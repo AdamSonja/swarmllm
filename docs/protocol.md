@@ -66,6 +66,26 @@ The host owns the conversation: `{system, turns}` rendered to ChatML ids by `roo
 
 The host keeps `{code, name, model, turns, transcript, settings, peers}` in `localStorage` after every answer. A reloaded host page offers "resume room ABCD" for 15 minutes: it claims the same PeerJS id (retrying while the old registration expires), restores the conversation, waits up to 25 s for the devices that held layers and deals again; the next question re-prefills the history. When the host link closes, the other devices keep knocking on the host id every 3 s for a minute before calling the room over.
 
+## Code mode
+
+The host's coding agent and its previews (docs/design/harness-app.md, room/code.js). All of them go through the chat's visibility rules (`ai-visibility`): hidden screens get nothing. Everything but `ai-pv-want` is accepted only from the host; a peer treats the contents as untrusted text (typed and capped, shown with `textContent`), and runs previews in its own sandboxed frame.
+
+| Message | Direction | Meaning |
+|---|---|---|
+| `ai-code-start {sid, mid, name, text}` | host → all | a new request to the agent; `sid` changes when the host opens another project |
+| `ai-code-tok {mid, step, text}` | host → all | the model's visible text for a step, coalesced every 50 ms |
+| `ai-code-tool {mid, step, i, name, brief, state, result?, diff?, ms?}` | host → all | tool call `i` of the request: `running`, `pending` (waiting for the host's approval), `approved`, `declined`, `done`, `error`; later messages for the same `i` update the card. `brief` ≤ 200 chars, `result` ≤ 600, `diff` (≤ ~4 KB) = `{path, isNew, lines, add, del, rows: [[op, text, skip?]], more}` |
+| `ai-code-note {mid, text, err?}` | host → all | a line in the timeline: stopped, compaction, errors |
+| `ai-code-done {mid, steps, reason, stats}` | host → all | the request ended (`done`, `stopped`, `limit`, `context`, `error`) |
+| `ai-code-files {tree}` | host → all | the project's paths (≤ 500) after each file change |
+| `ai-code-history {sid, items, tree}` | host → newcomer / all | the last 50 timeline items (same shapes as above) to a device that joins, and to everyone when the host switches project |
+| `ai-pv {port, dir, entry, rev, bytes, manifest}` | host → all | a served port at revision `rev`: `manifest = [[path, type, hash, size]]` (sha-256, first 20 hex chars). Peers check the limits (400 files, 2 MB each, 8 MB total) and paths |
+| `ai-pv-want {port, rev, hs}` | peer → host | the blobs a peer does not hold yet; the host answers only hashes in that port's current manifest |
+| `ai-pv-blob {h, i, n, b}` | host → peer | chunk `i` of `n` (64 KB, `b` an ArrayBuffer) of blob `h`; the host waits while the data channel has over 1 MB buffered. The peer verifies the hash before using it |
+| `ai-pv-stop {port}` | host → all | the port is no longer served |
+
+A code run holds the room's generation lock for all its steps, so chat questions asked meanwhile queue and run after it. None of this changes the frame format, so the protocol version stays 4: an older peer ignores these messages.
+
 ## Versioning
 
 `PROTOCOL` in `room/transport.js` is 4 (frame flags, ordered delivery, frame-borne reset/rollback, frame-borne checkpoints; 32-byte slice header). Protocol changes bump it; peers with another version are refused at `hello` with a message instead of failing mid-answer. See GOVERNANCE.md for what counts as a protocol change.

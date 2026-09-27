@@ -380,6 +380,139 @@
   #resume-btn { font-family: var(--mono); font-size: 12.5px; border-radius: 100px; border-color: var(--accent); color: var(--accent); }
   #resume-btn[hidden] { display: none; }
   #join-status.warn { color: var(--warn); max-width: 420px; text-align: center; }
+
+  /* ---- Code mode (room/code.js, room/code-ui.js; docs/design/harness-app.md E) ---- */
+  :root { --diff-add: color-mix(in srgb, var(--ok) 13%, transparent); --diff-del: color-mix(in srgb, var(--err) 11%, transparent); }
+  #chatpane { container-type: inline-size; container-name: pane; }
+  #mode-bar { display: flex; gap: 4px; margin: 10px max(16px, 3vw) 0; padding: 3px; align-self: flex-start; border: 1px solid var(--border); border-radius: 100px; background: var(--panel); }
+  #mode-bar[hidden] { display: none; }
+  #mode-bar button { border: none; background: transparent; border-radius: 100px; padding: 5px 16px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); position: relative; }
+  #mode-bar button:hover:not(:disabled) { transform: none; color: var(--text); }
+  #mode-bar button[aria-selected="true"] { background: var(--text); color: var(--bg); }
+  #mode-bar button.fresh::after { content: ""; position: absolute; top: 4px; right: 7px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  #chatpane.code-mode > :not(#mode-bar, #code-pane, #swarm-map) { display: none !important; }
+  #code-pane { display: none; }
+  #chatpane.code-mode #code-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+  #code-agent, #code-out { display: flex; flex-direction: column; min-width: 0; }
+  #code-pane .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.2em; color: var(--muted); text-transform: uppercase; }
+  #code-pane button { font-family: var(--mono); font-size: 11px; padding: 5px 12px; border-radius: 100px; }
+  #code-pane select, #code-pane input[type="text"] { font-family: var(--mono); font-size: 11.5px; padding: 5px 10px; border-radius: 8px; }
+  #code-pane [hidden] { display: none !important; }
+  #code-project { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 10px max(16px, 3vw) 8px; border-bottom: 1px solid var(--border); }
+  #code-proj-select { max-width: 200px; min-width: 0; flex: 0 1 auto; }
+  #code-new-name { width: 150px; }
+  #code-proj-kind { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-left: auto; }
+  #code-driver { padding: 10px max(16px, 3vw) 8px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  #code-log { flex: 1; min-height: 180px; overflow-y: auto; padding: 12px max(16px, 3vw); display: flex; flex-direction: column; gap: 8px; }
+  .cm-empty { margin: auto; text-align: center; font-family: var(--mono); font-size: 12px; color: var(--muted); max-width: 340px; line-height: 1.7; }
+  .cm-empty b { color: var(--text); font-weight: 500; }
+  .cm-user { align-self: flex-end; max-width: 86%; display: flex; flex-direction: column; align-items: flex-end; }
+  .cm-user .who { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; }
+  .cm-user .bubble { background: var(--text); color: var(--bg); padding: 9px 14px; border-radius: 16px; border-bottom-right-radius: 5px; font-size: 14px; white-space: pre-wrap; word-wrap: break-word; }
+  .cm-text { font-size: 14px; line-height: 1.6; word-wrap: break-word; max-width: 100%; }
+  .cm-text p { margin: 4px 0; }
+  .cm-text ul, .cm-text ol { margin: 4px 0 4px 18px; }
+  .cm-text code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
+  .cm-text pre { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 10px 12px; border-radius: 10px; overflow-x: auto; margin: 6px 0; }
+  .cm-tool { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); font-family: var(--mono); font-size: 11.5px; min-width: 0; }
+  .cm-tool > details > summary { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; list-style: none; min-width: 0; }
+  .cm-tool > details > summary::-webkit-details-marker { display: none; }
+  .cm-tool .nm { color: var(--accent); flex: none; }
+  .cm-tool .br { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  .cm-tool .ms { color: var(--muted); font-size: 10px; flex: none; }
+  .chip { flex: none; font-size: 10px; padding: 1px 8px; border-radius: 100px; border: 1px solid var(--border); color: var(--muted); }
+  .chip.running, .chip.pending { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .chip.done, .chip.approved { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+  .chip.error, .chip.declined { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+  .cm-tool pre.res { margin: 0 10px 8px; padding: 8px 10px; background: var(--bg); border-radius: 8px; font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto; color: var(--text); }
+  .cm-diff { border-top: 1px solid var(--border); font-size: 11px; line-height: 1.5; max-height: 280px; overflow: auto; }
+  .cm-diff.new { max-height: 180px; }
+  .cm-diff .dh { display: flex; gap: 10px; padding: 4px 10px; color: var(--muted); font-size: 10.5px; background: var(--panel-2); position: sticky; top: 0; }
+  .cm-diff .dh b { color: var(--text); font-weight: 500; }
+  .cm-diff .add { color: var(--ok); } .cm-diff .del { color: var(--err); }
+  .cm-diff .rows { display: inline-block; min-width: 100%; }
+  .cm-diff .r { white-space: pre; padding: 0 10px 0 22px; position: relative; }
+  .cm-diff .r::before { position: absolute; left: 9px; color: var(--muted); }
+  .cm-diff .r-add { background: var(--diff-add); } .cm-diff .r-add::before { content: "+"; color: var(--ok); }
+  .cm-diff .r-del { background: var(--diff-del); } .cm-diff .r-del::before { content: "-"; color: var(--err); }
+  .cm-diff .r-skip { color: var(--muted); font-style: italic; }
+  .cm-approve { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 8px 10px; border-top: 1px solid var(--border); }
+  .cm-approve .wait { color: var(--warn); font-size: 10.5px; }
+  .cm-approve button.ok { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .cm-approve input { flex: 1; min-width: 120px; }
+  .cm-note { align-self: center; font-family: var(--mono); font-size: 10.5px; color: var(--muted); padding: 3px 12px; border: 1px dashed var(--border); border-radius: 100px; text-align: center; }
+  .cm-note.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+  .cm-stats { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  #code-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px max(16px, 3vw) 0; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+  #code-bar label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  #code-bar input { accent-color: var(--accent); }
+  #code-bar button { background: transparent; color: var(--muted); padding: 3px 10px; font-size: 10.5px; }
+  #code-ctx { margin-left: auto; }
+  #code-ctx.warn { color: var(--warn); }
+  #code-row { display: flex; gap: 8px; align-items: flex-end; padding: 8px max(16px, 3vw) 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  #code-prompt { flex: 1; resize: none; min-height: 44px; max-height: 160px; line-height: 1.4; font: 14.5px/1.4 var(--sans); background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 22px; padding: 12px 18px; overflow-y: auto; }
+  #code-prompt:focus { outline: none; border-color: var(--accent); }
+  #code-pane #code-send { font-size: 13px; padding: 11px 22px; }
+  #code-pane #code-stop { font-size: 13px; padding: 11px 18px; background: var(--err); border-color: var(--err); color: #fff; }
+  #code-out { border-top: 1px solid var(--border); }
+  #code-out-tabs { display: flex; align-items: center; gap: 4px; padding: 8px max(16px, 3vw); }
+  #code-out-tabs button { background: transparent; border-color: transparent; color: var(--muted); }
+  #code-out-tabs button.on { border-color: var(--border); background: var(--panel); color: var(--text); }
+  #pv-panel, #files-panel { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: 0 max(16px, 3vw) 12px; }
+  #pv-bar { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border: 1px solid var(--border); border-bottom: none; border-radius: 12px 12px 0 0; background: var(--panel); min-width: 0; }
+  #pv-tabs { display: flex; gap: 4px; flex: none; }
+  .pv-tab { display: inline-flex; align-items: center; gap: 6px; }
+  #code-pane .pv-tab { padding: 3px 10px; background: transparent; }
+  #code-pane .pv-tab.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .pv-tab .x { opacity: 0.6; font-size: 12px; line-height: 1; }
+  .pv-tab .x:hover { opacity: 1; }
+  #pv-addr { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--bg); border-radius: 100px; padding: 3px 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pv-state { font-family: var(--mono); font-size: 10px; color: var(--muted); flex: none; }
+  #code-pane #pv-reload { padding: 3px 10px; flex: none; }
+  #pv-frame-wrap { position: relative; height: 380px; border: 1px solid var(--border); background: #fff; overflow: hidden; }
+  .pv-view { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .pv-view[hidden] { display: none; }
+  .pv-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 20px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); background: var(--bg); line-height: 1.7; }
+  #code-pane .pv-run { position: absolute; font-size: 12.5px; padding: 10px 20px; background: var(--text); color: var(--bg); border-color: var(--text); }
+  #pv-console { border: 1px solid var(--border); border-top: none; border-radius: 0 0 12px 12px; background: var(--panel); font-family: var(--mono); font-size: 11px; }
+  #pv-con-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; flex-wrap: wrap; }
+  #pv-counts { color: var(--muted); flex: 1; min-width: 0; }
+  #pv-counts b.e { color: var(--err); font-weight: 500; } #pv-counts b.w { color: var(--warn); font-weight: 500; }
+  #pv-con-head button { background: transparent; padding: 2px 10px; font-size: 10.5px; color: var(--muted); }
+  #pv-con-rows { max-height: 150px; overflow-y: auto; border-top: 1px solid var(--border); }
+  #pv-console.closed #pv-con-rows { display: none; }
+  .pv-row { display: flex; gap: 8px; padding: 2px 10px; white-space: pre-wrap; word-break: break-word; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+  .pv-row .src { color: var(--muted); flex: none; }
+  .pv-row.error { color: var(--err); background: var(--diff-del); }
+  .pv-row.warn { color: var(--warn); }
+  .pv-row.old { opacity: 0.45; }
+  .pv-row.rev { color: var(--muted); font-style: italic; justify-content: center; }
+  #files-panel { gap: 8px; }
+  #code-tree { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 6px 0; max-height: 220px; overflow: auto; font-family: var(--mono); font-size: 11.5px; }
+  #code-tree .f, #code-tree .d { padding: 2px 12px; white-space: nowrap; }
+  #code-tree .f { cursor: pointer; color: var(--text); }
+  #code-tree .f:hover, #code-tree .f.on { background: var(--panel-2); }
+  #code-tree .d { color: var(--muted); }
+  #code-tree .none { padding: 6px 12px; color: var(--muted); }
+  #code-view { flex: 1; min-height: 160px; max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); font-family: var(--mono); font-size: 11.5px; line-height: 1.55; padding: 8px 0; margin: 0; }
+  #code-view:empty { display: none; }
+  #code-view .ln { display: inline-block; width: 44px; padding-right: 10px; text-align: right; color: var(--faint); user-select: none; }
+  @container pane (min-width: 900px) {
+    #chatpane.code-mode #code-pane { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(0, 1.25fr); overflow: hidden; }
+    #code-agent { min-height: 0; border-right: 1px solid var(--border); }
+    #code-out { border-top: none; min-height: 0; overflow-y: auto; }
+    #pv-panel { flex: 1; }
+    #pv-frame-wrap { flex: 1; height: auto; min-height: 300px; }
+  }
+  @media (max-width: 820px) {
+    #mode-bar { margin: 8px 10px 0; }
+    #code-project, #code-driver, #code-log, #code-bar, #code-row, #code-out-tabs, #pv-panel, #files-panel { padding-left: 10px; padding-right: 10px; }
+    #code-log { max-height: 60vh; }
+    #pv-frame-wrap { height: 300px; }
+    #code-prompt, #code-pane select, #code-pane input[type="text"] { font-size: 16px; }
+    /* Code mode on a phone: the sidebar keeps the room code and devices, not the loaded model's panel */
+    #room-screen:has(#chatpane.code-mode) :is(#add-virtual, #virtual, #ai-panel.online, #awake, #cache-line) { display: none !important; }
+  }
   @media (max-width: 820px) {
     header { padding: 10px 14px; }
     .tagline, #room-badge { display: none !important; }
@@ -508,6 +641,7 @@
     <div id="cluster-bar">cluster: <b id="cluster-summary">—</b></div>
   </aside>
   <main id="chatpane">
+    <div id="mode-bar" role="tablist" aria-label="room mode" hidden><button id="mode-chat" role="tab" type="button" aria-selected="true">Chat</button><button id="mode-code" role="tab" type="button" aria-selected="false">Code</button></div>
     <div id="chat-log"></div>
     <div id="ai-empty">pick a model and press start</div>
     <div id="load-card">
@@ -530,6 +664,38 @@
       <span id="ctx-meter"></span>
     </div>
     <div id="ai-row"><textarea id="ai-prompt" rows="1" placeholder="ask the swarm…" enterkeyhint="send"></textarea><button id="ai-send" class="primary">Send</button></div>
+    <section id="code-pane" aria-label="code mode">
+      <div id="code-agent">
+        <div id="code-project" hidden>
+          <span class="k">PROJECT</span>
+          <select id="code-proj-select" aria-label="project"></select>
+          <input id="code-new-name" type="text" placeholder="project name" maxlength="40" hidden>
+          <button id="code-new" type="button">New</button>
+          <button id="code-open" type="button" hidden>Open folder…</button>
+          <span id="code-proj-kind"></span>
+        </div>
+        <div id="code-driver" hidden>the host is driving the agent · you see what it does, live</div>
+        <div id="code-log" aria-live="polite"></div>
+        <div id="code-bar">
+          <label id="code-auto-l" title="apply the agent's edits without asking"><input type="checkbox" id="code-auto"> auto-approve edits</label>
+          <button id="code-newtask" type="button" title="forget the agent's conversation; files and previews stay">new task</button>
+          <span id="code-ctx"></span>
+        </div>
+        <div id="code-row"><textarea id="code-prompt" rows="1" placeholder="build me a tetris game…" enterkeyhint="send"></textarea><button id="code-send" class="primary" type="button">Send</button><button id="code-stop" type="button" hidden>Stop</button></div>
+      </div>
+      <div id="code-out">
+        <div id="code-out-tabs" role="tablist"><button type="button" role="tab" data-tab="preview" class="on">Preview</button><button type="button" role="tab" data-tab="files">Files</button></div>
+        <div id="pv-panel">
+          <div id="pv-bar"><div id="pv-tabs"></div><span id="pv-addr">no port served</span><span id="pv-state"></span><button id="pv-reload" type="button" title="reload the preview">↻</button></div>
+          <div id="pv-frame-wrap"><div class="pv-empty" id="pv-empty">nothing served yet<br>the agent serves the app on a port like :5173</div></div>
+          <div id="pv-console" class="closed">
+            <div id="pv-con-head"><button id="pv-con-toggle" type="button" aria-expanded="false">console ▸</button><span id="pv-counts">0 logs</span><button id="pv-clear" type="button">clear</button><button id="pv-to-agent" type="button">send to agent</button></div>
+            <div id="pv-con-rows"></div>
+          </div>
+        </div>
+        <div id="files-panel" hidden><div id="code-tree"><div class="none">no files yet</div></div><pre id="code-view"></pre></div>
+      </div>
+    </section>
   </main>
 </div>
 
