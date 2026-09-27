@@ -26,7 +26,7 @@ device.addEventListener?.("uncapturederror", (e) => { if (gpuErrors++ < 4) conso
 const L = cfg.num_hidden_layers;
 const weights = await ggufWeights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true });
 const eng = await DenseEngine.create({ device, cfg, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: Math.max(4096, P + D + 64), ...OPTS });
-let ids = tok.encode(await Deno.readTextFile(new URL("../engine/dense.js", import.meta.url)));
+let ids = tok.encode(await Deno.readTextFile(new URL("../engine/gguf.js", import.meta.url)));   // a file no kopt branch changes, so hashes compare across branches
 while (ids.length < P + 16) ids = ids.concat(ids);
 const defaults = {};
 for (const v of VARIANTS) for (const k of Object.keys(v)) if (!(k in defaults)) defaults[k] = eng[k];
