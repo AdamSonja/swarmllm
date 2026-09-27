@@ -14,6 +14,7 @@
 //   deno run --unstable-webgpu --allow-read --allow-env tests/test_moe_split.js
 // env: MOE=<gguf>  SPLIT=20[,5,36]  TOKENS=64  CTX=4096  NC=16  CASES=two-sum,hash-map,bash,copy
 //      HOST_TUNE / WORKER_TUNE=WG,ROWS  (per-device cooperative GEMV tuning, as autotune picks it)
+//      CKPT=0 (skip the checkpoint-after-rollback check)  CKPT_OLD=1 (also run it with the pre-fix protocol)
 //      WIRE=f16|f32  MOE_FUSE=0  SPECFUSE=0  DRAFTCHAIN=0  SOLO=0 (skip the solo engine)
 //      SYNTH=1: a synthetic file (tests/e2e/synth.mjs --moe), prompts are token ids
 // CPU-only check with a synthetic model (lavapipe):
@@ -238,6 +239,58 @@ async function splitSpec(host, worker, prompt) {
 // greedy runs keep going past <|im_end|>; what comes after the first end token is not an answer
 const EOS = SYNTH ? new Set() : new Set(["<|im_end|>", "<|endoftext|>"].map((t) => globalThis.__tok.vocab[t]));
 const answerLen = (g) => { const i = g.findIndex((t) => EOS.has(t)); return i < 0 ? g.length : i + 1; };
+// Checkpoint after an answer whose last speculative step rejected drafts, the room's Code-mode path
+// (room.js ckptSave / resetState / ckptResume, workerFrame): the rollback k is still pending for the
+// worker when the save rides the next frame. The worker must roll back before saving (the host
+// already did); then a reset, a load of the checkpoint and plain decoding from it must give exactly
+// the tokens that continuing directly gives. oldOrder = true replays the pre-fix protocol (the
+// rollback was dropped when that frame also carried a reset).
+async function ckptCheck(host, worker, prompt, M, oldOrder) {
+  host.reset(); worker.reset(); host.mtpFill = true;
+  const C = chain(host, worker);
+  const { logits, lastHidden, pos } = await splitPrefill(host, C, prompt);
+  host.setHidden(lastHidden); host.pos = pos;
+  const spec = {
+    runTrunk: async (tokens, p) => {
+      const n = tokens.length, dim = host.dims.dim, hb = new Float32Array(n * dim);
+      for (let c = 0; c < n; c += NC) hb.set(await host.embedRunBatch(tokens.slice(c, c + Math.min(NC, n - c)), p + c, { base: c, total: n }), c * dim);
+      return C.workerBatch(wire(hb), p, n, true);
+    },
+    onReject: async (k) => { C.pendingRb = k; },
+  };
+  let next = argmax(logits), steps = 0;
+  const gen = [next];
+  // speculate until a step ends with a rejection (its rollback still pending for the worker)
+  while (steps < 8 || C.pendingRb == null) {
+    const toks = await host.specStep(next, argmax, 3, spec);
+    gen.push(...toks); next = toks[toks.length - 1];
+    if (++steps > 200) throw new Error("no rejected step");
+  }
+  const rb = C.pendingRb; C.pendingRb = null;
+  const p0 = host.pos;
+  // the save frame: host saved its (rolled-back) state at the end of the answer
+  host.saveSlot(1);
+  if (!oldOrder) worker.restoreDN(rb);
+  worker.saveSlot(1);
+  // reference: continue straight on (the rollback applied), then the checkpoint path
+  const cont = async () => {
+    const out = [];
+    let t = next, p = p0;
+    for (let i = 0; i < M; i++) {
+      const h = await C.workerOne(wire(await host.embedRun(t, p)), p);
+      p++; t = argmax(await host.headFromHidden(h)); out.push(t);
+    }
+    return out;
+  };
+  if (oldOrder) worker.restoreDN(rb);   // the reference state (what a correct protocol leaves)
+  const direct = await cont();
+  host.reset(); worker.reset();         // another request in between started from scratch
+  host.loadSlot(1); worker.loadSlot(1); // a later request resumes the checkpoint
+  const resumed = await cont();
+  host.dropAllSlots(); worker.dropAllSlots();
+  return { d: firstDiff(direct, resumed), direct, resumed, rb, steps };
+}
+
 const firstDiff = (a, b) => { const n = Math.min(a.length, b.length); for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i; return a.length === b.length ? -1 : n; };
 let fail = 0;
 const splits = env("SPLIT", SYNTH ? "2,5" : "20").split(",").map(Number);
@@ -260,6 +313,15 @@ for (const S of splits) {
   console.log(`--- split at ${S}: host [0,${S}) + embed/head/mtp, worker [${S},${L})`);
   const host = await mk(0, S, true, true);
   const worker = await mk(S, L, false, false);
+  if (env("CKPT", "1") !== "0") {
+    const [name, prompt] = CASES[0], M = +env("CKPT_TOKENS", 24);
+    for (const oldOrder of env("CKPT_OLD", "0") === "1" ? [true, false] : [false]) {
+      const r = await ckptCheck(host, worker, prompt, M, oldOrder);
+      console.log(`[split ${S}] ${name}: checkpoint saved with a pending rollback (k=${r.rb}) then resumed, ${oldOrder ? "OLD protocol (rollback dropped)" : "fixed protocol"}: ${r.d < 0 ? `== continuing directly (${M} tokens)` : `DIFFERS at ${r.d}`}`);
+      if (r.d >= 0) console.log(`  direct : ${dec(r.direct)}\n  resumed: ${dec(r.resumed)}`);
+      if (r.d >= 0 && !oldOrder) fail++;
+    }
+  }
   for (const [name, prompt] of CASES) {
     const p = await splitPlain(host, worker, prompt);
     const s = await splitSpec(host, worker, prompt);
