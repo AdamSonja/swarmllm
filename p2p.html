@@ -432,6 +432,16 @@
   .chip.done, .chip.approved { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
   .chip.error, .chip.declined { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
   .cm-tool pre.res { margin: 0 10px 8px; padding: 8px 10px; background: var(--bg); border-radius: 8px; font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto; color: var(--text); }
+  .cm-live { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); overflow: hidden; }
+  .cm-live .lh { display: flex; gap: 8px; align-items: baseline; padding: 6px 10px; font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--panel-2); }
+  .cm-live .lh b { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+  .cm-live .lh .nm::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent, #2b4eff); margin-right: 6px; vertical-align: 1px; animation: cmpulse 1s ease-in-out infinite; }
+  .cm-live .lh .n { margin-left: auto; }
+  .cm-live pre.code { margin: 0; padding: 8px 10px; font-family: var(--mono); font-size: 11px; line-height: 1.5; max-height: 280px; overflow: auto; white-space: pre; }
+  .cm-live pre.code::after { content: "▍"; color: var(--accent, #2b4eff); animation: cmblink 1s steps(1) infinite; }
+  @keyframes cmpulse { 50% { opacity: .35; } }
+  @keyframes cmblink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .cm-live .lh .nm::before, .cm-live pre.code::after { animation: none; } }
   .cm-diff { border-top: 1px solid var(--border); font-size: 11px; line-height: 1.5; max-height: 280px; overflow: auto; }
   .cm-diff.new { max-height: 180px; }
   .cm-diff .dh { display: flex; gap: 10px; padding: 4px 10px; color: var(--muted); font-size: 10.5px; background: var(--panel-2); position: sticky; top: 0; }

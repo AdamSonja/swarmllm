@@ -89,6 +89,7 @@ export async function initCode(api, { mock = null } = {}) {
     api.broadcast(wire);
   }
   function record(m) {
+    if (m.t === "ai-code-live") return;   // live typing is not history: the finished call's card is
     if (m.t === "ai-code-tok") {
       const last = hist[hist.length - 1];
       if (last?.t === m.t && last.mid === m.mid && last.step === m.step) { last.text += m.text; return; }
@@ -110,6 +111,23 @@ export async function initCode(api, { mock = null } = {}) {
     if (step !== tokStep) flushTok();
     tokStep = step; tokBuf += text;
     tokTimer ||= setTimeout(flushTok, TOK_MS);
+  }
+  // the tool call the model is typing, sent as deltas (a new call resets), at most every TOK_MS
+  let liveRaw = null, liveSent = 0, liveN = 0, liveStep = 0, liveTimer = 0;
+  function flushLive() {
+    clearTimeout(liveTimer); liveTimer = 0;
+    if (liveRaw == null || liveRaw.length <= liveSent) return;
+    emit({ t: "ai-code-live", mid, step: liveStep, n: liveN, reset: liveSent === 0, text: liveRaw.slice(liveSent) });
+    liveSent = liveRaw.length;
+  }
+  function live(step, raw) {
+    if (raw == null) {
+      if (liveRaw != null) { flushLive(); emit({ t: "ai-code-live", mid, step: liveStep, n: liveN, end: true }); }
+      liveRaw = null; liveSent = 0; return;
+    }
+    if (liveRaw == null || raw.length < liveSent || step !== liveStep) { liveN++; liveSent = 0; }
+    liveRaw = raw; liveStep = step;
+    liveTimer ||= setTimeout(flushLive, TOK_MS);
   }
   const tool = (i, fields, wire) => {
     const base = { t: "ai-code-tool", mid, i, ...fields };
@@ -280,8 +298,9 @@ export async function initCode(api, { mock = null } = {}) {
   function onEvent(e) {
     switch (e.type) {
       case "text": tok(e.step, e.text); break;
+      case "call-live": live(e.step, e.raw); break;
       case "tool-start": {
-        flushTok();
+        flushTok(); live(e.step, null);
         const i = ++toolN;
         callIdx.set(e.call, i);
         tool(i, { step: e.step, name: str(e.call.name || "?", 60), brief: str(briefCall(e.call), 200), state: "running" });
@@ -392,6 +411,9 @@ export async function initCode(api, { mock = null } = {}) {
     if ("ms" in d) o.ms = d.ms >>> 0;
     if ("steps" in d) o.steps = d.steps >>> 0;
     if (d.err) o.err = true;
+    if ("n" in d) o.n = d.n >>> 0;
+    if (d.reset) o.reset = true;
+    if (d.end) o.end = true;
     if (d.diff && typeof d.diff === "object") {
       const x = d.diff;
       const lines = (a) => (Array.isArray(a) ? a.slice(0, 50).map((t) => str(t, 200)) : null);
@@ -410,7 +432,7 @@ export async function initCode(api, { mock = null } = {}) {
     if (m.t === "ai-code-start" && m.sid && m.sid !== sid) { sid = m.sid; }
     ui.apply(m);
   };
-  for (const t of ["ai-code-start", "ai-code-tok", "ai-code-tool", "ai-code-note", "ai-code-done"]) api.on(t, (from, d) => peerMsg(d));
+  for (const t of ["ai-code-start", "ai-code-tok", "ai-code-live", "ai-code-tool", "ai-code-note", "ai-code-done"]) api.on(t, (from, d) => peerMsg(d));
   api.on("ai-code-files", (from, d) => { if (!isHost() && Array.isArray(d.tree)) ui.tree(d.tree.slice(0, 500).map((p) => str(p, 300))); });
   api.on("ai-code-history", (from, d) => {
     if (isHost()) return;

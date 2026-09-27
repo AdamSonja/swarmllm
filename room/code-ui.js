@@ -14,6 +14,27 @@ const CON_MAX = 300;   // console rows kept per port
 
 // rows: lineDiff output as [[op, text, skip?]] (the wire form). Too long to diff: head / tail
 // (the first and last lines of the proposed file) and, on the host, full for "view full file".
+// A tool call still being typed: { name, path, code } for write_file / edit_file, else null. Both
+// the Qwen XML format and JSON are read loosely (the call is unfinished by definition).
+function parseLive(raw) {
+  const fx = /<function=([^>\s]+)>/.exec(raw);
+  if (fx) {
+    const name = fx[1];
+    if (name !== "write_file" && name !== "edit_file") return null;
+    const path = /<parameter=path>\n?([^\n<]*)/.exec(raw)?.[1]?.trim() || "";
+    const m = /<parameter=(content|new)>\n?([\s\S]*)$/.exec(raw);
+    const code = m ? m[2].replace(/\n?<\/parameter>[\s\S]*$/, "") : "";
+    return { name, path, code };
+  }
+  const nm = /"name"\s*:\s*"(write_file|edit_file)"/.exec(raw);
+  if (!nm) return null;
+  const path = /"path"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw)?.[1] || "";
+  const m = /"(content|new)"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(raw);
+  let code = m ? m[2] : "";
+  code = code.replace(/\\$/, "").replace(/\\(u[0-9a-fA-F]{4}|.)/g, (_, c) => c[0] === "u" && c.length === 5 ? String.fromCharCode(parseInt(c.slice(1), 16)) : c === "n" ? "\n" : c === "t" ? "\t" : c === "r" ? "" : c);
+  return { name: nm[1], path, code };
+}
+
 function diffBlock(d, onFull) {
   const box = h("div", "cm-diff" + (d.isNew ? " new" : ""));
   const head = h("div", "dh");
@@ -106,9 +127,11 @@ export function codeUI({ onMode = () => {} } = {}) {
         if (stick) log.scrollTop = log.scrollHeight;
         break;
       }
-      case "ai-code-tool": toolCard(d); break;
+      case "ai-code-live": liveCard(d); break;
+      case "ai-code-tool": for (const l of log.querySelectorAll(".cm-live")) l.remove(); toolCard(d); break;
       case "ai-code-note": add(h("div", "cm-note" + (d.err ? " err" : ""), d.text)); break;
       case "ai-code-done": {
+        for (const l of log.querySelectorAll(".cm-live")) l.remove();
         for (const t of log.querySelectorAll('.cm-text[aria-busy="true"]')) t.removeAttribute("aria-busy");
         const text = d.stats || `${plural(d.steps || 0, "step")} · ${d.reason || "done"}`;
         add(h("div", "cm-stats", text));
@@ -116,6 +139,32 @@ export function codeUI({ onMode = () => {} } = {}) {
         break;
       }
     }
+  }
+
+  // code being written: the model is still typing a write_file / edit_file call. Shown live, then
+  // replaced by the finished call's card (with its diff) when the call completes.
+  function liveCard(d) {
+    const k = key("l", d.mid, d.step, d.n);
+    let el = find(k);
+    if (d.end) { el?.remove(); return; }
+    if (!el) {
+      for (const t of log.querySelectorAll('.cm-text[aria-busy="true"]')) t.removeAttribute("aria-busy");
+      el = h("div", "cm-live"); el.dataset.k = k; el.dataset.raw = "";
+      const head = h("div", "lh"); head.append(h("span", "nm", ""), h("b", "", ""), h("span", "n", ""));
+      el.append(head, h("pre", "code"));
+      el.hidden = true; add(el);
+    }
+    el.dataset.raw = (d.reset ? "" : el.dataset.raw) + (d.text || "");
+    const p = parseLive(el.dataset.raw);
+    if (!p || !p.code) return;
+    const stick = near(), pre = el.querySelector("pre");
+    el.hidden = false;
+    el.querySelector(".nm").textContent = p.name === "edit_file" ? "editing" : "writing";
+    el.querySelector("b").textContent = p.path || "";
+    el.querySelector(".n").textContent = `${p.code.split("\n").length} lines`;
+    pre.textContent = p.code;
+    pre.scrollTop = pre.scrollHeight;
+    if (stick) log.scrollTop = log.scrollHeight;
   }
 
   function toolCard(d) {

@@ -155,7 +155,7 @@ console.log("tetris ready");
       check("preview_logs: the current rev ran clean", /tetris ready/.test(cur) && !/\] error /.test(cur), r);
       return "Tetris is running on :5173.";
     },
-  ], { piece: 12 });
+  ], { piece: 12, delay: 4 });   // a little time per piece, like a real model, so the live card shows
 }
 
 // ---------------------------------------------------------------- main
@@ -221,6 +221,13 @@ try {
   await host.waitForFunction(() => document.getElementById("code-proj-select").value === "opfs:tetris", null, { timeout: 10000 });
   check("New project 'tetris' is an OPFS project, auto-approve on", await host.isChecked("#code-auto"));
   await host.uncheck("#code-auto");   // exercise the approval card once
+  // record the live "writing <file>" card while the model types a write_file (host and peer)
+  const watchLive = () => { window.__live = { max: 0, paths: [] }; new MutationObserver(() => {
+    for (const el of document.querySelectorAll(".cm-live:not([hidden])")) {
+      const n = el.querySelector("pre")?.textContent.split("\n").length || 0, p = el.querySelector(".lh b")?.textContent;
+      window.__live.max = Math.max(window.__live.max, n); if (p && !window.__live.paths.includes(p)) window.__live.paths.push(p);
+    } }).observe(document.getElementById("code-log"), { childList: true, subtree: true, characterData: true }); };
+  await host.evaluate(watchLive); await peer.evaluate(watchLive);
   await host.fill("#code-prompt", "build a tetris game");
   await host.click("#code-send");
   // the first edit asks; "Allow edits for this task" approves the rest
@@ -238,6 +245,10 @@ try {
   await host.click("text=Allow edits for this task");
   await host.waitForSelector(".cm-stats", { timeout: 60000 });
   log("agent run finished");
+  for (const [who, pg] of [["host", host], ["peer", peer]]) {
+    const L = await pg.evaluate(() => ({ ...window.__live, left: document.querySelectorAll(".cm-live").length }));
+    check(`${who}: code streamed live into a "writing" card, then became the tool card`, L.max > 5 && L.paths.includes("game.js") && L.left === 0, JSON.stringify(L));
+  }
 
   // ---- host asserts
   const H = await host.evaluate(() => ({

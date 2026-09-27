@@ -95,6 +95,9 @@ export class Agent {
           const r = P.feed(d);
           shown += r.text; found.push(...r.calls);
           if (r.text) this.onEvent({ type: "text", text: r.text, step });
+          // the tool call being typed, so the UI can show code as it is written (null once it is complete)
+          if (P.inCall) this.onEvent({ type: "call-live", raw: P.buf, step });
+          else if (r.calls.length) this.onEvent({ type: "call-live", raw: null, step });
         }
       } catch (err) {
         if (err?.name === "ContextFull") {

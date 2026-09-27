@@ -2398,7 +2398,7 @@ async function aiOnData(from, d) {
 // without an engine, and room/code.js takes its model from window.__pooledMock.model.
 const MOCK = new URLSearchParams(location.search).get("mock") === "code" && ["127.0.0.1", "localhost"].includes(location.hostname);
 // Code messages only the host sends; the one that goes the other way is ai-pv-want.
-const CODE_FROM_HOST = new Set(["ai-code-start", "ai-code-tok", "ai-code-tool", "ai-code-note", "ai-code-done", "ai-code-files", "ai-code-history",
+const CODE_FROM_HOST = new Set(["ai-code-start", "ai-code-tok", "ai-code-live", "ai-code-tool", "ai-code-note", "ai-code-done", "ai-code-files", "ai-code-history",
   "ai-pv", "ai-pv-blob", "ai-pv-stop"]);
 const CODE_TO_HOST = new Set(["ai-pv-want"]);
 const codeHandlers = new Map();   // message type -> fn(from, d)
