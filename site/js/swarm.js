@@ -8,7 +8,16 @@
   const RM = matchMedia("(prefers-reduced-motion: reduce)").matches;
   const TAU = Math.PI * 2;
   const ease = x => x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x);
-  const easeOut = x => x <= 0 ? 0 : x >= 1 ? 1 : 1 - Math.pow(1 - x, 3);
+  // cubic-bezier(x1,y1,x2,y2), as in CSS: solve x(u) = x for u, return y(u)
+  const bezier = (x1, y1, x2, y2) => x => {
+    if (x <= 0) return 0; if (x >= 1) return 1;
+    const bx = u => 3 * x1 * u * (1 - u) * (1 - u) + 3 * x2 * u * u * (1 - u) + u * u * u;
+    const by = u => 3 * y1 * u * (1 - u) * (1 - u) + 3 * y2 * u * u * (1 - u) + u * u * u;
+    let lo = 0, hi = 1, u = x;
+    for (let i = 0; i < 20; i++) { u = (lo + hi) / 2; if (bx(u) < x) lo = u; else hi = u; }
+    return by(u);
+  };
+  const gatherEase = bezier(.2, .7, .2, 1);   // the site's --ease: most of the way there by 40%
   // the mark: 3 x 3 dots on a 24-unit grid; the last one is blue
   const LOGO = [[3.4, 3.4, 1.8], [10.2, 3.4, 1.99], [18.5, 3.4, 2.38], [3.4, 10.2, 1.99], [10.2, 10.2, 2.38],
     [18.5, 10.2, 2.94], [3.4, 18.5, 2.38], [10.2, 18.5, 2.94], [18.5, 18.5, 3.9]];
@@ -61,7 +70,7 @@
     // how far a dot has gone into the logo (0..1)
     const into = p => {
       if (!o.logo || p.L < 0 || gather < 0) return 0;
-      return easeOut((t - gather - p.d * 1.1 - (p.L % 3) * .1) / 2.4);
+      return gatherEase((t - gather - p.d * 1.1 - (p.L % 3) * .1) / 2.4);
     };
     const crisp = () => (!o.logo || gather < 0) ? 0 : ease((t - gather - 3.4) / 1.1);
     function home(p, tt) {
@@ -181,7 +190,7 @@
       if (o.logo) new IntersectionObserver((es, io) => {
         if (!es[0].isIntersecting) return;
         measure(); gather = t; io.disconnect();
-      }, { threshold: .6 }).observe(document.getElementById(o.logo));
+      }, { threshold: .3 }).observe(c.parentNode);   // the closer section, 30% on screen
     } else { visible = true; if (o.logo) gather = 0; }
     document.addEventListener("visibilitychange", () => { last = 0; wake(); });
     wake();
