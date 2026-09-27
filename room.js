@@ -169,7 +169,7 @@ function peerCard(id, name, meta, self) {
         <span>rtt <b class="rtt">\u2014</b></span>
         <span>bw <b class="bw">\u2014</b></span>
       </div>
-      ${self ? '<button class="compute-btn" id="compute-btn-self" type="button"><span class="cdots" aria-hidden="true"><i></i><i></i><i></i></span>Just compute on this device</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}
+      ${self ? '<button class="compute-btn" id="compute-btn-self" type="button"><span class="cdots" aria-hidden="true"><i></i><i></i><i></i></span>Lend this device</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}
     </div>`;
   paintCard(card, name, meta, self);
   $("peers").appendChild(card);
@@ -275,7 +275,40 @@ function updateCluster() {
     : `${all.length} device${all.length > 1 ? "s" : ""} \u00b7 ${+pledged.toFixed(1)} GB pooled`;
   $("hdr-sum").innerHTML = `<b>${+pledged.toFixed(1)} GB</b> pooled`;
   $("peers-n").textContent = String(all.length);
+  renderPool(pledged);
 }
+// The model card's side: what the room pools (one segment per device, in its colour, with a tick at
+// each model's need), what this device lends (+/-), and the invite (QR, code, copy link).
+function renderPool(pledged) {
+  const devs = [{ name: myName, meta: myMeta }, ...[...members.values()].map((m) => ({ name: m.name || "device", meta: m.meta || {} }))]
+    .filter((d) => d.meta?.webgpu && d.meta?.contribGB);
+  const needs = Object.entries(PICK_NEED).sort((a, b) => a[1] - b[1]);
+  const top = Math.max(pledged, ...needs.map((x) => x[1])) * 1.06 || 1;
+  $("ap-total").textContent = `${+pledged.toFixed(1)} GB`;
+  const meter = $("ap-meter");
+  meter.querySelector(".apm-fill").innerHTML = devs.map((d, i) => `<i style="--sw:${swatch(i)};width:${(d.meta.contribGB / top * 100).toFixed(2)}%" title="${esc(String(d.name))}: ${d.meta.contribGB} GB"></i>`).join("");
+  // a tick where each model starts to fit; the picked one says what it needs
+  const sel = $("ai-model").value;
+  meter.querySelector(".apm-ticks").innerHTML = needs.map(([k, gb]) => `<span class="${pledged >= gb ? "ok" : ""}${k === sel ? " sel" : ""}${gb / top > 0.6 ? " r" : gb / top < 0.3 ? " l" : ""}" style="left:${(gb / top * 100).toFixed(2)}%" title="${esc(shortName(k))} needs ${gb} GB">${k === sel ? `<b>${esc(shortName(k))} needs ${gb} GB</b>` : ""}</span>`).join("");
+  $("ap-devs").innerHTML = devs.map((d, i) => `<li style="--sw:${swatch(i)}"><i></i><span>${esc(String(d.name))}${d.name === myName ? " <small>(this device)</small>" : ""}</span><b>${d.meta.contribGB} GB</b></li>`).join("")
+    || '<li class="none">No device with WebGPU yet</li>';
+  const can = !!myMeta.webgpu;
+  $("ap-step").hidden = !can; $("ap-no").hidden = can;
+  if (can) { $("ap-gb").textContent = myMeta.contribGB; $("ap-minus").disabled = myMeta.contribGB <= lendMin(); $("ap-plus").disabled = myMeta.contribGB >= 64; }
+}
+const lendMin = () => (myMeta.phone ? 0.5 : 1);
+// lend a different amount: this device's card, the room's total, and every other device hear it
+function lendGB(v) {
+  v = Math.round(Math.min(64, Math.max(lendMin(), v)) * 10) / 10;
+  if (!myMeta.webgpu || v === myMeta.contribGB) return;
+  myMeta.contribGB = v;
+  const selfCard = document.querySelector(".peer-card.self");
+  if (selfCard) { setLends(selfCard, v); const i = selfCard.querySelector(".pledge input"); if (i) i.value = v; }
+  updateCluster(); broadcastAll({ t: "pledge", gb: v });
+}
+$("ap-minus").addEventListener("click", () => lendGB(myMeta.contribGB - (myMeta.phone ? 0.5 : 1)));
+$("ap-plus").addEventListener("click", () => lendGB(myMeta.contribGB + (myMeta.phone ? 0.5 : 1)));
+$("ap-copy").addEventListener("click", copyRoomLink);
 
 function enterRoom() {
   $("join-screen").style.display = "none";
@@ -286,6 +319,7 @@ function enterRoom() {
   $("room-badge").textContent = roomCode;
   $("side-code").textContent = roomCode;
   $("side-code").addEventListener("click", openShare);
+  $("ap-qr").innerHTML = qrSVG(roomLink(), { size: 112 });
   if (isHost) { $("host-controls").hidden = false; $("mode-bar").hidden = false; }   // Code tab: peers see it once the host starts a session
   peerCard("self", myName, myMeta, true);
   updateCluster();
@@ -301,7 +335,7 @@ function enterRoom() {
     selfCard.querySelector(".pop").appendChild(row);
     row.querySelector("input").addEventListener("change", (e) => {
       const v = parseFloat(e.target.value);
-      if (v >= (myMeta.phone ? 0.5 : 1)) { myMeta.contribGB = v; setLends(selfCard, v); updateCluster(); broadcastAll({ t: "pledge", gb: v }); }
+      if (v >= lendMin()) lendGB(v);
     });
   }
 }
@@ -617,7 +651,7 @@ async function keepAwake() {
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "Pooled \u00b7 room"; } });
 document.addEventListener("touchstart", keepAwake, { passive: true });
-// Just compute: this device as a full screen that shows its layers and the passes going through it
+// Lend this device: this device as a full screen that shows its layers and the passes going through it
 function computeState() {
   const by = ai.layersByName || {};
   const spanMax = Object.values(by).reduce((t, r) => { const m = /(\d+)\D*$/.exec(String(r)); return m ? Math.max(t, +m[1] + 1) : t; }, 0);
@@ -1122,7 +1156,7 @@ function openCard() {
   $("card").hidden = false;
 }
 async function cardBlob() { return new Promise((res) => $("card-canvas").toBlob(res, "image/png")); }
-$("card-btn").addEventListener("click", openCard);
+$("card-btn").addEventListener("click", () => { $("room-menu").open = false; openCard(); });
 $("card-close").addEventListener("click", () => { $("card").hidden = true; });
 $("card").addEventListener("click", (e) => { if (e.target === $("card")) $("card").hidden = true; });
 $("card-save").addEventListener("click", async () => {
@@ -1168,7 +1202,10 @@ function sendLabel() {
   b.classList.toggle("stop", stop);
   b.textContent = stop ? "Stop" : busy ? "Queue" : "Send";
 }
+const kfmt = (n) => n >= 10000 ? (n / 1000).toFixed(0) + "k" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
 function setCtx(used, max) {
+  const sm = $("sm-ctx");
+  if (sm) { sm.textContent = used ? `${kfmt(used)} / ${kfmt(max)}` : "-"; sm.classList.toggle("warn", !!used && used > max * 0.8); }
   const el = $("ctx-meter"); if (!el) return;
   if (!used) { el.textContent = ""; return; }
   el.textContent = `context ${used} / ${max}`;
@@ -1597,6 +1634,7 @@ function aiMaybeReady() {
   saveHost();
   mascot("Cluster online! Ask anything. Everyone in the room can.");
   codeRoleChanged();
+  codeFirst();
 }
 
 // ---- laps ----
@@ -1860,12 +1898,19 @@ function renderMap(nodes, st, live) {
     let c = 0;
     strip.innerHTML = spans.sort((x, y) => x.lo - y.lo).map((sp) => {
       let cells = "";
+      const c0 = c;
       for (; c < n && c * per < sp.hi; c++) cells += `<i style="--c:${c}"></i>`;
       const dev = [...conns.values()].find((e) => e.name === sp.name)?.meta;
       const icon = iconFor(sp.name === myName ? myMeta : dev || {});
-      return `<div class="sm-half" style="--sw:${swatch(sp.i)};--n:${Math.max(1, sp.hi - sp.lo)}" title="${esc(String(sp.name))}: layers ${sp.lo + 1}\u2013${sp.hi}"><p class="hl">${icon}<b>${esc(String(sp.name))}</b><span>layers ${sp.lo + 1}-${sp.hi}</span></p><div class="cells">${cells}</div></div>`;
+      // a lane: the device (a dot that flashes as the pass goes through it), its layers, its ms per token
+      return `<div class="sm-half" data-name="${esc(String(sp.name))}" style="--sw:${swatch(sp.i)};--n:${Math.max(1, sp.hi - sp.lo)};--c0:${c0}" title="${esc(String(sp.name))}: layers ${sp.lo + 1}-${sp.hi}"><p class="hl"><i class="act" aria-hidden="true"></i>${icon}<b>${esc(String(sp.name))}</b><span class="lr">layers ${sp.lo + 1}-${sp.hi}</span><span class="lms"></span></p><div class="cells">${cells}</div></div>`;
     }).join('<span class="sm-gap"></span>');
     strip.style.setProperty("--cells", n);
+  }
+  // each lane's own time per token (what its GPU spends on its layers)
+  for (const lane of strip.querySelectorAll(".sm-half")) {
+    const x = nodes.find((y) => String(y.name) === lane.dataset.name);
+    lane.querySelector(".lms").textContent = x?.ms ? `${Math.round(x.ms)} ms` : "";
   }
   const agm = $("ag-m");
   if (agm) agm.textContent = `${shortName(ai.model || $("ai-model").value)} on ${nodes.length} device${nodes.length > 1 ? "s" : ""}`;
@@ -1878,6 +1923,10 @@ function renderMap(nodes, st, live) {
     card.classList.toggle("holds", k >= 0 && !!nodes[k].layers);
     card.querySelector(".play").textContent = k >= 0 && nodes[k].layers ? `layers ${humanRange(nodes[k].layers)}` : "";
   }
+  const S = lastMap.st;
+  $("sm-tps").textContent = S?.tps ? S.tps.toFixed(1) : "-";
+  $("sm-lap").textContent = S?.lap ? String(Math.round(S.lap)) : "-";
+  el.querySelector(".sm-lt").textContent = live ? "live" : "idle";
   const bits = [];
   if (st?.tps) bits.push(`${st.tps.toFixed(1)} tok/s`);
   if (st?.lap) bits.push(DEV ? `lap ${st.lap} ms = GPUs ${st.gpu} + wire ${st.net}` : `${st.lap} ms a lap`);
@@ -1887,8 +1936,10 @@ function renderMap(nodes, st, live) {
 }
 // a token came out: a sweep runs along the layer strip and through the device cards. At most one
 // sweep per lap; tokens that come faster ride along with the one running.
-let pulseAt = 0;
+let pulseAt = 0, bandTokens = 0;
 function mapPulse() {
+  bandTokens++;
+  const tk = $("sm-tok"); if (tk) tk.textContent = bandTokens.toLocaleString("en-US");
   const now = performance.now(), rs = $("room-screen");
   const lap = parseFloat(rs.style.getPropertyValue("--lap")) || 600;
   if (now - pulseAt < Math.min(lap, 900) || document.hidden || compute.isOpen) return;
@@ -2557,6 +2608,7 @@ async function aiOnData(from, d) {
       aiStatus(ai.range ? `cluster online · serving layers ${ai.range[0]}–${ai.range[1] - 1}` : "cluster online · this device asks, the others think");
       mascot("Cluster online! Type a question, the whole room answers.");
       codeRoleChanged();
+      codeFirst();
       break;
     case "ai-ask":
       if (ai.role !== "host") break;
@@ -2636,6 +2688,13 @@ function codeOnData(from, d) {
     await codeHandlers.get(d.t)?.(from, d);
   }).catch((err) => console.error("code message", d.t, err));
 }
+// Once a model is ready, Code is the first tab: switch to it once (only where the tab shows)
+let codeFirstDone = false, simReady = false;
+function codeFirst() {
+  if (codeFirstDone || $("mode-bar").hidden) return;
+  codeFirstDone = true;
+  loadCode().then((c) => c?.show?.("code")).catch(() => {});
+}
 // initCode returns { show(mode) }; the Chat tab is handled by code.js once it is loaded
 document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code")) loadCode().then((c) => c?.show?.("code")).catch((err) => toast("Code mode failed to load: " + err.message)); });
 
@@ -2643,7 +2702,7 @@ const roomApi = {
   myId: () => peer?.id,
   name: () => myName,
   role: () => ai.role,                                  // "host" | "worker" | "guest" | undefined
-  ready: () => MOCK || (!!ai.engine && !ai.degraded),   // host: can generate now
+  ready: () => MOCK || simReady || (!!ai.engine && !ai.degraded),   // host: can generate now (simReady: ?sim=1 pictures only)
   tok: () => ai.tok,
   chatTemplate: () => ai.tok?.chatTemplate || ai.G?.meta?.["tokenizer.chat_template"] || "",
   maxSeq: () => ctxMax(),
@@ -2699,7 +2758,7 @@ $("cache-clear").addEventListener("click", async (ev) => {
 });
 $("new-chat").addEventListener("click", aiNewChat);
 $("draft-view").addEventListener("click", () => setDraftView(!draftView));
-$("export-chat").addEventListener("click", exportChat);
+$("export-chat").addEventListener("click", () => { $("room-menu").open = false; exportChat(); });
 for (const [id, cmd] of [["continue-btn", "continue"], ["regen-btn", "regen"]])
   $(id).addEventListener("click", () => { setAfterAnswer(false, false); if (ai.role === "host") aiCommand(cmd, peer.id); else if (ai.hostId) sendTo(ai.hostId, { t: "ai-cmd", cmd }); });
 // Questions asked while the swarm is answering wait in the host's queue and run in order, one
@@ -2759,13 +2818,6 @@ function growPrompt() {
 // the button stops while it says Stop; Enter always sends (or queues) the text, never stops
 $("ai-send").addEventListener("click", () => { if ($("ai-send").classList.contains("stop")) aiStop(); else aiSubmit(); });
 $("ai-prompt").addEventListener("input", () => { growPrompt(); sendLabel(); noteTyping(); });
-if (!("speechSynthesis" in window)) $("read-aloud").hidden = true;
-$("read-aloud").addEventListener("click", () => {
-  readAloud = !readAloud;
-  $("read-aloud").classList.toggle("on", readAloud);
-  if (!readAloud) try { speechSynthesis.cancel(); } catch {}
-  toast(readAloud ? "answers are read aloud by this device's own voice (nothing leaves the room)" : "read aloud off");
-});
 $("ai-prompt").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !myMeta?.phone) { e.preventDefault(); aiSubmit(); }
 });
@@ -2822,6 +2874,8 @@ if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "lo
       const ns = names();
       renderMap(Object.keys(ai.layersByName).map((nm, i) => ({ name: nm, layers: ai.layersByName[nm], host: i === 0 ? 1 : 0, ms: 18 + i * 9 })), { tps: 21.4, lap: 64 }, false);
       aiStatus("cluster online");
+      simReady = true; setCtx(1846, 32768);
+      codeFirst();
     },
     chat() {
       if (!$("ai-panel").classList.contains("online")) this.ready();
@@ -2836,8 +2890,10 @@ if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "lo
       chatUser(ns[ns.length - 1], "can it write code?");
       chatBotStart(2);
       chatBotPiece("Yes. Open **Code** and tell me what to build. I write the files, run them, and you watch it ", 0);
+      setCtx(1846, 32768);
       renderMap(lastMap.nodes, { tps: 21.4, lap: 64 }, true);
       this.pulse(6);
+      loadCode().then((c) => c?.show?.("chat"));
     },
     pulse(n = 1) { for (let i = 0; i < n; i++) setTimeout(() => { pulseAt = 0; mapPulse(); }, i * 250); },
     idle() { $("ai-panel").classList.remove("online", "loading"); ai.range = null; },

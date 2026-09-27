@@ -1,4 +1,4 @@
-// "Just compute": a full-screen view for a device that is only lending its GPU (a phone on a
+// "Lend this device": a full-screen view for a device that is only lending its memory and GPU (a phone on a
 // charger, a laptop in the corner). It shows which layers this device holds, and a packet of dots
 // runs through the logo every time a real forward pass runs here. Pure presentation: it reads the
 // room's state through `state()` and is told about passes by `pass(n, ms)`; it never touches the
@@ -78,11 +78,23 @@ export function computeScreen({ state, keepAwake = () => {} }) {
         { duration: 520, delay: delay + rc * 55, easing: "cubic-bezier(.2,.7,.2,1)" });
     }
   }
+  // the pass reaches this device: a ring leaves the logo and a light runs along its layers
+  let ringAt = 0;
+  function arrive(delay) {
+    const now = performance.now();
+    if (now - ringAt < 420) return;
+    ringAt = now;
+    $("cs-ring")?.animate([{ opacity: 0.55, transform: "translate(-50%,-50%) scale(.92)" }, { opacity: 0, transform: "translate(-50%,-50%) scale(1.55)" }],
+      { duration: 900, delay, easing: "cubic-bezier(.2,.7,.2,1)" });
+    const strip = $("cs-strip");
+    setTimeout(() => { strip.classList.remove("sweep"); void strip.offsetWidth; strip.classList.add("sweep"); }, delay);
+  }
   function spawn(now) {
     const dur = Math.max(900, Math.min(1600, W * 1.3));
     if (packets.length > 16) packets.shift();
     packets.push({ t0: now, dur });
     wave(dur * 0.36);
+    arrive(dur * 0.4);
     kick();
   }
 
@@ -92,8 +104,8 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     const s = state();
     $("cs-tok").textContent = fmt(tokens);
     $("cs-rate").textContent = stamps.length > 1 ? (stamps.length / Math.max(1, (now - stamps[0]) / 1000)).toFixed(1) : "0";
-    $("cs-ms").textContent = lastMs != null ? Math.round(lastMs) + " ms" : "—";
-    $("cs-rate-k").textContent = s.role === "host" ? "tokens / s" : "hops / s";
+    $("cs-ms").textContent = lastMs != null ? Math.round(lastMs) + " ms" : "-";
+    $("cs-rate-k").textContent = s.role === "host" ? "tokens / s" : "passes / s";
   }
   function refresh() {
     if (!open) return;
@@ -103,22 +115,26 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     const has = s.lo != null && s.hi != null;
     const lay = has ? `${s.lo + 1}–${s.hi}` : "";
     let k, title, sub;
-    if (s.phase === "serving" && has) { k = s.role === "host" ? "Serving, and writing the tokens" : "Serving"; title = `Serving layers ${lay}`; sub = `of ${s.model}`; }
+    if (s.phase === "serving" && has) { k = s.role === "host" ? "Lending, and writing the tokens" : "Lending"; title = `Serving layers ${lay}`; sub = `of ${s.model}`; }
     else if (s.phase === "loading") { k = "Loading"; title = has ? `Loading layers ${lay}` : "Loading the model"; sub = `${s.model}${s.pct != null ? ` · ${Math.round(s.pct)}%` : ""}`; }
     else if (s.phase === "serving") { k = "The room is running"; title = "Not holding layers"; sub = `${s.model} runs on the other devices. This one asks.`; }
-    else { k = "Idle"; title = "Waiting for the host"; sub = "to start the model"; }
+    else { k = "Idle"; title = "Ready to lend"; sub = "It starts serving when someone in the room starts a model."; }
     root.dataset.phase = s.phase;
+    // serving, and no pass for a moment: say so, and let the logo rest
+    const quiet = s.phase === "serving" && has && (!stamps.length || performance.now() - stamps[stamps.length - 1] > 2500);
+    root.toggleAttribute("data-quiet", quiet);
+    if (quiet) k = "Lending, waiting for the next token";
     $("cs-k").textContent = k; $("cs-title").textContent = title; $("cs-sub").textContent = sub;
     // this device's slice of the model
     const strip = $("cs-strip"), total = s.total || 0;
     const n = total ? Math.min(total, 64) : 0, per = total ? total / n : 1;
     if (strip.dataset.sig !== `${n}:${s.lo}:${s.hi}:${s.phase}:${Math.round(s.pct || 0)}`) {
       strip.dataset.sig = `${n}:${s.lo}:${s.hi}:${s.phase}:${Math.round(s.pct || 0)}`;
-      let html = "";
+      let html = "", j = 0;
       for (let i = 0; i < n; i++) {
         const L = i * per, mine = has && L >= s.lo && L < s.hi;
         const got = mine && (s.phase !== "loading" || (L - s.lo) / Math.max(1, s.hi - s.lo) * 100 < (s.pct || 0));
-        html += `<i class="${mine ? (got ? "mine" : "mine wait") : ""}"></i>`;
+        html += `<i class="${mine ? (got ? "mine" : "mine wait") : ""}"${mine ? ` style="--j:${j++}"` : ""}></i>`;
       }
       strip.innerHTML = html;
       strip.style.setProperty("--n", n);
@@ -162,6 +178,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
       stamps.push(now);
       if (stamps.length > 400) stamps.splice(0, stamps.length - 400);
       if (!open || document.hidden) return;
+      if (root.hasAttribute("data-quiet")) refresh();
       if (now - statAt > 250) { statAt = now; renderStats(); }
       if (REDUCED()) return;
       // at most one packet per 140 ms; faster passes ride along with the next one

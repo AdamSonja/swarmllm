@@ -282,6 +282,7 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
     }
     // --card PATH: open the swarm card and save a screenshot of it
     if (arg("card")) {
+      await tabs.host.click("#room-menu > summary");   // the room card lives in the room menu
       await tabs.host.click("#card-btn");
       await tabs.host.locator("#card-canvas").screenshot({ path: arg("card") });
       log(`[${label}] swarm card saved to ${arg("card")}`);
