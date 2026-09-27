@@ -1,5 +1,6 @@
 // Run tests/bench/bench.html in Chrome with the real GPU. node tests/bench/chrome_bench.mjs <model path under repo> [tokens] [extra query]
 // extra query: e.g. "draftvocab=65536&predraft=0&specfuse=0" (see the knobs at the top of bench.html)
+//   wide prefill A/B: "ubatch=256&prefilllen=2048" (prefill tok/s with prefillUbatch off and on, logits relDiff)
 // env: MOE_FUSE=0, MOE_DN_ROWS=1|2|4, MOE_KERNEL=legacy|default|JSON (unfused expert GEMV layout)
 // Loading (not part of the tok/s numbers) is made cheap for repeated runs:
 //   WCACHE=1 (default): the page takes pre-converted tensors from serve.mjs's weight cache

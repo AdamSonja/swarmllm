@@ -3,11 +3,12 @@
 // stays identical to plain at every fill and that no logit goes NaN.
 //   MODEL=moe|27b  CTX=<maxSeq, default the room default>  FILLS=1024,4096,16384,32000  TOKENS=32
 //   MOEGROUP=U (MoE: expert-grouped prefill in U-token ubatches, a multiple of 16; 0 = off)  MOEGROUP_UC=8
+//   PREFILL_UBATCH=256 [PREFILL_TILE=json]: wide prefill (engine option prefillUbatch; see load_model.js wideOpts)
 //   cd tests && MODEL=moe deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights bench_ctx.js
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { makeTokenizer, argmax } from "../engine/engine.js";
 import { qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
-import { openGGUF } from "./load_model.js";
+import { openGGUF, wideOpts, wideLimits } from "./load_model.js";
 import { CTX } from "../room/models.js";
 
 const env = (k, d) => Deno.env.get(k) ?? d;
@@ -21,7 +22,7 @@ const FILLS = env("FILLS", [1024, 4096, 16384, 32768, 65536].filter((f) => f + 2
 const model = openGGUF(PATH);   // node:fs reads through the converted-weights cache (tests/weight_cache.js; WEIGHT_CACHE=0 disables)
 const readAt = model.readAt;
 const adapter = await navigator.gpu.requestAdapter();
-const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
+const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, ...wideLimits(adapter) } });
 let gpuErrors = 0;
 device.addEventListener?.("uncapturederror", (e) => { if (gpuErrors++ < 4) console.error("GPU ERROR:", e.error?.message?.slice(0, 200)); });
 
@@ -34,9 +35,9 @@ const tok = makeTokenizer(tokenizerFromGGUF(m));
 let t0 = performance.now();
 const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
 const eng = await Qwen35Engine.create({ device, meta: m, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: MAXSEQ, batchCols: 16, coopRowsB: 1,
-  moeGroupPrefill: +env("MOEGROUP", 0), moeGroupUC: +env("MOEGROUP_UC", 8), moeGroupTiled: env("MOEGROUP_TILED", "1") === "1" });
+  moeGroupPrefill: +env("MOEGROUP", 0), moeGroupUC: +env("MOEGROUP_UC", 8), moeGroupTiled: env("MOEGROUP_TILED", "1") === "1", ...wideOpts() });
 console.log(`moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC} tiled ${!!eng.moeGrpTiled}` : ""}`);
-console.log(`loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!!eng.mtp}, attnPrefillTile ${eng.attnPrefillTile}${eng.attnPTCfg ? ` (TK ${eng.attnPTCfg.TK}, ${eng.attnPTCfg.CW} columns per workgroup)` : ""}`);
+console.log(`loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!!eng.mtp}, attnPrefillTile ${eng.attnPrefillTile}${eng.attnPTCfg ? ` (TK ${eng.attnPTCfg.TK}, ${eng.attnPTCfg.CW} columns per workgroup)` : ""}, wide prefill ${eng.ubatch ? `U=${eng.ubatch} tile ${JSON.stringify(eng.wideCfg)}` : "off"}`);
 
 // a long, realistic coding context: this repo's own source, tokenized until there is enough
 const need = Math.max(...FILLS) + 16;

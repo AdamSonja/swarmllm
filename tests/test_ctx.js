@@ -4,7 +4,7 @@
 // Standalone, or as a check of tests/run_q38_once.js (export run(ctx), see tests/load_model.js).
 import { argmax } from "../engine/engine.js";
 import { Qwen35Engine } from "../engine/qwen35.js";
-import { q38Context } from "./load_model.js";
+import { q38Context, wideOpts } from "./load_model.js";
 
 export async function run({ device, model, errors }) {
   const G = model.G;
@@ -16,7 +16,7 @@ export async function run({ device, model, errors }) {
   // engine loads its own copy (in the one-process runner both share the preuploaded set instead)
   const mk = async (maxSeq) => {
     const weights = await model.weights({ lo: 0, hi: L, hasEmbed: true, hasHead: true });
-    return Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq, batchCols: 16, coopRowsB: 1 });
+    return Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq, batchCols: 16, coopRowsB: 1, ...wideOpts() });   // PREFILL_UBATCH: the ~640-token prompt through the wide path
   };
 
   // (1) short prompt, two cache sizes, same logits bit for bit

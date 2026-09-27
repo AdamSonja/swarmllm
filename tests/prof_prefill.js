@@ -15,11 +15,13 @@
 //   MODEL=moe|27b  LENS=512,4096,16384  SAMPLES=32 (instrumented passes per segment)  MTP_FILL=1
 //   MOEGROUP=U (MoE: expert-grouped prefill in U-token ubatches; LENS must be multiples of U; the instrumented
 //   run then samples whole ubatches instead of passes)  MOEGROUP_UC=8
+//   PREFILL_UBATCH=256: profile the wide prefill (prefillUbatch); LENS must then be multiples of it and
+//   whole wide chunks are sampled (SAMPLES = chunks per segment); a wide GEMM covers the chunk's columns.
 //   cd tests && MODEL=27b deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights prof_prefill.js
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { makeTokenizer } from "../engine/engine.js";
 import { qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
-import { openGGUF } from "./load_model.js";
+import { openGGUF, wideOpts } from "./load_model.js";
 import { GEMM_S } from "../engine/wgsl/gemm.js";
 
 const env = (k, d) => Deno.env.get(k) ?? d;
@@ -46,12 +48,14 @@ const tok = makeTokenizer(tokenizerFromGGUF(m));
 let t0 = performance.now();
 const weights = await qwen35Weights(G, (i) => model.readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
 const eng = await Qwen35Engine.create({ device, meta: m, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: MAXSEQ, batchCols: NC, coopRowsB: 1,
-  moeGroupPrefill: +env("MOEGROUP", 0), moeGroupUC: +env("MOEGROUP_UC", 8), moeGroupTiled: env("MOEGROUP_TILED", "0") === "1" });
+  moeGroupPrefill: +env("MOEGROUP", 0), moeGroupUC: +env("MOEGROUP_UC", 8), moeGroupTiled: env("MOEGROUP_TILED", "0") === "1", ...wideOpts() });
 console.log(`moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC}` : ""}`);
+const UB = eng.ubatch;
+if (UB && LENS.some((l) => l % UB)) throw new Error(`LENS must be multiples of the ubatch ${UB}`);
 eng.mtpFill = env("MTP_FILL", "1") !== "0";
 const D = eng.dims;
 console.log(`${MODEL}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s · layers ${L} (${eng.layers.filter((x) => x.isFull).length} full attn) · dims ${JSON.stringify(D)}`);
-console.log(`  moe ${JSON.stringify(eng.moe)} · gemmOn ${eng.gemmOn} shapes ${JSON.stringify([...eng._gemmShapes])} q8pairs ${JSON.stringify(eng._gemm8Pairs)} · flash ${eng.flash} faSplit ${eng.faSplit} · mtp ${!!eng.mtp} fill ${eng.mtpFill}`);
+console.log(`  moe ${JSON.stringify(eng.moe)} · gemmOn ${eng.gemmOn} shapes ${JSON.stringify([...eng._gemmShapes])} q8pairs ${JSON.stringify(eng._gemm8Pairs)} · flash ${eng.flash} faSplit ${eng.faSplit} · mtp ${!!eng.mtp} fill ${eng.mtpFill} · ubatch ${UB} tile ${JSON.stringify(eng.wideCfg)}`);
 
 // prompt: this repo's source (same recipe as bench_ctx.js)
 let ids = [];
@@ -114,6 +118,30 @@ eng.layerB.forEach((LB, i) => {
 if (eng.mtp?.projB) note(eng.mtp.projB, "mtp", "mtp_eh_proj", eng.mtp.ehProj, D.dim, 2 * D.dim);
 for (const [k, n] of [["xposeXn", "xpose"], ["xposeG", "xpose"], ["xposeGated", "xpose"], ["xposeAttnOut", "xpose"]]) if (eng[k]) opInfo.set(eng[k], { cat: "glue", name: "gemm_xpose" });
 
+// wide prefill: label the wide GEMM ops (built lazily by _initWide) and remember the chunk width
+let wideW = 0;
+const labelWide = () => {
+  if (!eng.layerW || opInfo.has(eng.layerW[0].out)) return;
+  eng.layerW.forEach((R, i) => {
+    const Ly = eng.layers[i], W = weights.layers[i] || Ly, src = (k) => W?.[k] ?? Ly?.[k];
+    if (Ly.isFull) {
+      note(R.proj[0], "attn_proj", "attn_q+gate", src("wq"), D.nH * D.hd * 2, D.dim);
+      if (R.proj.length === 2) note(R.proj[1], "attn_proj", "attn_kv(merged)", src("wk"), 2 * D.kvDim, D.dim);
+      else { note(R.proj[1], "attn_proj", "attn_k", src("wk"), D.kvDim, D.dim); note(R.proj[2], "attn_proj", "attn_v", src("wv"), D.kvDim, D.dim); }
+      note(R.out, "attn_proj", "attn_out", src("wo"), D.dim, D.qDim);
+    } else {
+      if (R.proj.length === 1) note(R.proj[0], "dn_proj", "dn_qkv+z(merged)", src("wqkv"), D.convDim + D.dInner, D.dim);
+      else { note(R.proj[0], "dn_proj", "dn_qkv", src("wqkv"), D.convDim, D.dim); note(R.proj[1], "dn_proj", "dn_z", src("wz"), D.dInner, D.dim); }
+      note(R.out, "dn_proj", "dn_out", src("wOut"), D.dim, D.dInner);
+    }
+    if (R.gate) { note(R.gate, "ffn", "ffn_gate", src("ffnGate"), D.inter, D.dim); note(R.up, "ffn", "ffn_up", src("ffnUp"), D.inter, D.dim); note(R.down, "ffn", "ffn_down", src("ffnDown"), D.dim, D.inter); }
+  });
+};
+if (UB) {
+  const origDW = eng._dW.bind(eng);
+  eng._dW = (p, op, w) => { labelWide(); const prev = curOp; curOp = op; wideW = w; try { origDW(p, op, w); } finally { curOp = prev; wideW = 0; } };
+}
+
 const pipeCat = (p) => {
   if (p === "dn_delta_mc") return "dn_recurrence";
   if (p === "dn_conv_mc") return "dn_conv";
@@ -132,12 +160,16 @@ const pipeCat = (p) => {
 const pname = new Map(Object.entries(eng.pipes).map(([k, v]) => [v, k]));
 const QN = 4096;
 const qsPool = [];
-let curOp = null, inMtp = false, sampleOn = false;
+let curOp = null, inMtp = false, sampleOn = false, wideWant = null, wideChunk = 0;
 // wrap the engine's dispatch helpers to know which op / phase a dispatch belongs to
 const origDop = eng._dop.bind(eng);
 eng._dop = (pass, op, nCols) => { const prev = curOp; curOp = op; try { origDop(pass, op, nCols); } finally { curOp = prev; } };
 const origLB = eng._encodeLayerBatch.bind(eng);
 eng._encodeLayerBatch = (enc, i, ...rest) => { const prev = inMtp; inMtp = inMtp || i >= eng.layers.length; try { return origLB(enc, i, ...rest); } finally { inMtp = prev; } };
+if (UB) {
+  const origPW = eng._prefillWide.bind(eng);
+  eng._prefillWide = async (...a) => { sampleOn = !!wideWant?.has(wideChunk++); try { return await origPW(...a); } finally { sampleOn = false; } };
+}
 const origMF = eng._mtpFillBatch.bind(eng);
 eng._mtpFillBatch = (...a) => { inMtp = true; try { return origMF(...a); } finally { inMtp = false; } };
 
@@ -168,7 +200,8 @@ device.createCommandEncoder = (d) => {
         else if (info && info.cat === "glue") { cat = "glue"; name = "gemm_xpose"; }
         else if (info) { const red = /^gemm_red/.test(pn); cat = info.cat; name = `${info.name}${red ? " (split-K reduce)" : ""} [${pn.replace(/_s\d+$/, "")}${red ? "" : ` ${info.dOut}x${info.dIn} ${info.kind}`}]`; }
         else { cat = pipeCat(pn); name = pn; }
-        recs[recs.length - 1].list.push({ i, cat, name, pn, info: !inMtp && info && !/^gemm_red/.test(pn) ? info : null });
+        if (wideW) name = name.replace(/ \[gemm_w_/, ` [wide ${wideW} cols gemm_w_`);
+        recs[recs.length - 1].list.push({ i, cat, name, pn, cols: wideW || NC, info: !inMtp && info && !/^gemm_red/.test(pn) ? info : null });
       },
       dispatchWorkgroupsIndirect(buf, off) {   // grouped MoE prefill: sizes written on the GPU
         const i = nextQ();
@@ -205,7 +238,7 @@ device.queue.submit = (cbs) => {
       const ms = Number(t[d.i + 1] - t[d.i]) / 1e6 * pe.w;
       A.cat[d.cat] = (A.cat[d.cat] || 0) + ms;
       const nk = (A.name[d.name] ||= { ms: 0, n: 0, cat: d.cat }); nk.ms += ms; nk.n += pe.w;
-      if (d.info) { const g = (A.gemm[d.name] ||= { ms: 0, n: 0, bytes: d.info.bytes, flops: 2 * d.info.dOut * d.info.dIn, cols: 0 }); g.ms += ms; g.n += pe.w; }
+      if (d.info) { const g = (A.gemm[d.name] ||= { ms: 0, n: 0, bytes: d.info.bytes, fl: 0 }); g.ms += ms; g.n += pe.w; g.fl += 2 * d.info.dOut * d.info.dIn * d.cols * pe.w; }
       A.disp += pe.w;
     }
   }));
@@ -218,15 +251,25 @@ await eng.prefillTokens(ids.slice(0, NC)); eng.reset();
   let pos = 0;
   for (const len of LENS) {
     segKey = len;
-    const UB = eng.moeGrpU && eng.moeGroup !== false ? eng.moeGrpU : NC;   // grouped: sample whole ubatches
-    if ((len - pos) % UB) throw new Error(`segment ${pos}..${len} is not a multiple of ${UB}`);
-    const nPass = (len - pos) / UB, stride = Math.max(1, Math.floor(nPass / SAMPLES));
+    const GU = eng.moeGrpU && eng.moeGroup !== false ? eng.moeGrpU : NC;   // grouped: sample whole ubatches
+    if ((len - pos) % GU) throw new Error(`segment ${pos}..${len} is not a multiple of ${GU}`);
+    const nPass = (len - pos) / GU, stride = Math.max(1, Math.floor(nPass / SAMPLES));
     // sample passes at uniform stride, the middle pass of every block of `stride`
-    const want = new Set(); for (let p = Math.floor(stride / 2); p < nPass; p += stride) want.add(pos + p * UB);
+    const want = new Set(); for (let p = Math.floor(stride / 2); p < nPass; p += stride) want.add(pos + p * GU);
     const nSampled = want.size;
     weight = nPass / nSampled;
     // prefillTokens encodes each full pass at eng.pos == basePos (trunk, then MTP fill): toggle there
     const hookFrame = device.queue.writeBuffer.bind(device.queue);
+    if (UB) {   // whole wide chunks at a uniform stride
+      const nCh = (len - pos) / UB, cs = Math.max(1, Math.floor(nCh / SAMPLES));
+      wideWant = new Set(); for (let c = Math.floor(cs / 2); c < nCh; c += cs) wideWant.add(c);
+      weight = nCh / wideWant.size; wideChunk = 0;
+      const t = performance.now();
+      await eng.prefillTokens(ids.slice(pos, len));
+      await Promise.all(reads.splice(0));
+      console.log(`instrumented segment ..${len}: ${wideWant.size}/${nCh} wide chunks sampled (x${weight.toFixed(2)}), ${((performance.now() - t) / 1000).toFixed(1)} s`);
+      pos = len; continue;
+    }
     device.queue.writeBuffer = (buf, off, data, ...r) => {
       if (buf === eng.frameBufsB?.[0] && data instanceof Uint32Array && data[2] === NC) {
         const bp = data[0];
@@ -236,7 +279,7 @@ await eng.prefillTokens(ids.slice(0, NC)); eng.reset();
       return hookFrame(buf, off, data, ...r);
     };
     const origPG = eng._prefillGrouped;
-    if (UB !== NC) {   // a grouped ubatch starts at eng.pos (trunk and its MTP fills inside); the frame hook stays off
+    if (GU !== NC) {   // a grouped ubatch starts at eng.pos (trunk and its MTP fills inside); the frame hook stays off
       device.queue.writeBuffer = hookFrame;
       eng._prefillGrouped = async (...a) => { sampleOn = want.has(eng.pos); try { return await origPG.apply(eng, a); } finally { sampleOn = false; } };
     }
@@ -257,7 +300,7 @@ const cum = (len) => {   // aggregate segments up to len
     const A = agg[l]; if (!A) continue;
     for (const [k, v] of Object.entries(A.cat)) out.cat[k] = (out.cat[k] || 0) + v;
     for (const [k, v] of Object.entries(A.name)) { const o = (out.name[k] ||= { ms: 0, n: 0, cat: v.cat }); o.ms += v.ms; o.n += v.n; }
-    for (const [k, v] of Object.entries(A.gemm)) { const o = (out.gemm[k] ||= { ms: 0, n: 0, bytes: v.bytes, flops: v.flops }); o.ms += v.ms; o.n += v.n; }
+    for (const [k, v] of Object.entries(A.gemm)) { const o = (out.gemm[k] ||= { ms: 0, n: 0, bytes: v.bytes, fl: 0 }); o.ms += v.ms; o.n += v.n; o.fl += v.fl; }
     out.disp += A.disp;
   }
   return out;
@@ -271,10 +314,10 @@ for (const len of LENS) {
   for (const [k, ms] of Object.entries(A.cat).sort((a, b) => b[1] - a[1])) console.log(`    ${k.padEnd(18)} ${ms.toFixed(0).padStart(8)} ms ${(ms / gpu * 100).toFixed(1).padStart(5)}%  ${(ms / len).toFixed(3)} ms/tok`);
   console.log("  top kernels:");
   for (const [k, v] of Object.entries(A.name).sort((a, b) => b[1].ms - a[1].ms).slice(0, 28)) console.log(`    ${k.slice(0, 70).padEnd(70)} ${v.ms.toFixed(0).padStart(7)} ms ${(v.ms / gpu * 100).toFixed(1).padStart(5)}%  ${(v.ms / v.n * 1000).toFixed(1).padStart(8)} µs each`);
-  console.log("  projections (each dispatch = one pass of NC columns): µs each, weight GB/s, TFLOPS");
+  console.log(`  projections (each dispatch = one pass of ${UB ? "the wide chunk's" : "NC"} columns): µs each, weight GB/s, TFLOPS`);
   const gem = [];
   for (const [k, v] of Object.entries(A.gemm).sort((a, b) => b[1].ms - a[1].ms)) {
-    const us = v.ms / v.n * 1000, gbs = v.bytes / (us * 1e-6) / 1e9, tf = v.flops * NC / (us * 1e-6) / 1e12;
+    const us = v.ms / v.n * 1000, gbs = v.bytes / (us * 1e-6) / 1e9, tf = v.fl / (v.ms * 1e-3) / 1e12;
     gem.push({ k, ms: +v.ms.toFixed(1), us: +us.toFixed(1), gbs: +gbs.toFixed(1), tflops: +tf.toFixed(3) });
     console.log(`    ${k.slice(0, 70).padEnd(70)} ${us.toFixed(1).padStart(8)} µs ${gbs.toFixed(0).padStart(5)} GB/s ${tf.toFixed(2).padStart(6)} TFLOPS`);
   }

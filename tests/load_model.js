@@ -61,9 +61,22 @@ export async function gpuDevice() {
   const adapter = await navigator.gpu.requestAdapter();
   const device = await adapter.requestDevice({ requiredLimits: {
     maxBufferSize: adapter.limits.maxBufferSize,
-    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, ...wideLimits(adapter),
     ...(Qwen35Engine.defaults.attnPrefillTK >= 16 ? { maxComputeWorkgroupStorageSize: adapter.limits.maxComputeWorkgroupStorageSize } : {}) } });
   return { adapter, device };
+}
+
+// Wide prefill A/B for any Deno test or bench (engine option prefillUbatch, off by default):
+//   PREFILL_UBATCH=256 [PREFILL_TILE='{"BM":64,"BN":64,"TM":4,"TN":4}'] [WGMEM=0: keep the 16 KB default]
+// wideOpts() -> engine options; wideLimits(adapter) -> device limits (the adapter's workgroup memory,
+// so the tile can take two quant blocks per K stage).
+export function wideOpts() {
+  const U = +(Deno.env.get("PREFILL_UBATCH") || 0), T = Deno.env.get("PREFILL_TILE");
+  return U ? { prefillUbatch: U, ...(T ? { prefillTile: JSON.parse(T) } : {}) } : {};
+}
+export function wideLimits(adapter) {
+  return +(Deno.env.get("PREFILL_UBATCH") || 0) && Deno.env.get("WGMEM") !== "0"
+    ? { maxComputeWorkgroupStorageSize: adapter.limits.maxComputeWorkgroupStorageSize } : {};
 }
 
 // Count (and print the first few) uncaptured GPU errors; tests read errors.count.
