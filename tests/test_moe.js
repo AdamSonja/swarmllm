@@ -1,29 +1,30 @@
 // Qwen3.6-35B-A3B (MoE, 256 experts, top-8) on the engine: full model, greedy output vs llama.cpp, tok/s.
 // Goldens: llama.cpp b10840 CUDA, same Q4_0 file (bartowski), --temp 0.
 import { Qwen35Engine } from "../engine/qwen35.js";
-import { makeTokenizer, argmax } from "../engine/engine.js";
-import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
+import { argmax } from "../engine/engine.js";
+import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, MOE_PATH, wideOpts } from "./load_model.js";
 const N = +(Deno.env.get("TOKENS") || 40), K = +(Deno.env.get("K") || 3);
 const MOEK = Deno.env.get("MOE_KERNEL") ? (Deno.env.get("MOE_KERNEL").startsWith("{") ? JSON.parse(Deno.env.get("MOE_KERNEL")) : Deno.env.get("MOE_KERNEL")) : undefined;   // moeKernel: legacy | default | JSON
-const PATH = Deno.env.get("MOE") || "../models/q36moe/Qwen_Qwen3.6-35B-A3B-Q4_0.gguf";
-const openFile = async (path) => { const fh = await Deno.open(path);
-  return async (off, len) => { await fh.seek(off, Deno.SeekMode.Start); const out = new Uint8Array(len); let got = 0;
-    while (got < len) { const n = await fh.read(out.subarray(got)); if (n === null) break; got += n; } return out; }; };
-const adapter = await navigator.gpu.requestAdapter();
-const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
-device.addEventListener?.("uncapturederror", (e) => console.error("GPU ERROR:", e.error?.message));
-const readAt = await openFile(PATH);
-const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer);
-const arch = G.meta["general.architecture"], nBlk = G.meta[arch + ".block_count"], nextn = G.meta[arch + ".nextn_predict_layers"] || 0;
+const PATH = Deno.env.get("MOE") || MOE_PATH;
+const { device } = await gpuDevice();
+watchGpuErrors(device);
+const model = openGGUF(PATH);   // converted-weights cache: tests/weight_cache.js (WEIGHT_CACHE=0 disables)
+const G = model.G;
+const arch = G.meta["general.architecture"], nBlk = G.meta[arch + ".block_count"];
 const hasMtp = G.tensors ? Object.keys(G.tensors).some((k) => k.startsWith(`blk.${nBlk - 1}.`)) : false;
-const L = nBlk - nextn;
-const tok = makeTokenizer(tokenizerFromGGUF(G.meta));
+const L = trunkLayers(G);
+const tok = model.tokenizer();
 let t0 = performance.now();
-const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
+const weights = await model.weights({ lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
 const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,
   // DRAFTCHAIN=0 / SPECFUSE=0: per-submit drafts / separate verify submits (A/B; same output)
   draftChain: Deno.env.get("DRAFTCHAIN") !== "0", specFuse: Deno.env.get("SPECFUSE") !== "0",
-  moeFuse: Deno.env.get("MOE_FUSE") !== "0", moeDnRows: +(Deno.env.get("MOE_DN_ROWS") || 1), moeKernel: MOEK });   // MOE_FUSE=0: unfused MoE kernels (A/B)
+  moeFuse: Deno.env.get("MOE_FUSE") !== "0", moeDnRows: +(Deno.env.get("MOE_DN_ROWS") || 1), moeKernel: MOEK,   // MOE_FUSE=0: unfused MoE kernels (A/B)
+  // MOEGROUP=U (unset: the engine default, 256 tiled; 0: off): expert-grouped prefill in ubatches of up to U tokens (U a multiple of BCOLS; these prompts are ~25 tokens:
+  // with the default BCOLS=4, MOEGROUP=16 puts all but the last 0..7 prompt tokens through it), MOEGROUP_UC: pairs per chunk
+  ...(Deno.env.get("BCOLS") ? { batchCols: +Deno.env.get("BCOLS"), coopRowsB: +Deno.env.get("BCOLS") >= 16 ? 1 : 4 } : {}),
+  moeGroupPrefill: Deno.env.get("MOEGROUP") === undefined ? undefined : +Deno.env.get("MOEGROUP"), moeGroupUC: +(Deno.env.get("MOEGROUP_UC") || 8), moeGroupTiled: Deno.env.get("MOEGROUP_TILED") === undefined ? undefined : Deno.env.get("MOEGROUP_TILED") === "1", ...wideOpts() });   // PREFILL_UBATCH: wide prefill (these prompts are < 64 tokens: test_prefill_wide.js exercises it)
+console.log(`moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC}, batchCols ${eng.NC}` : ""}`);
 console.log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}`);
 console.log(`${arch}: ${L} layers, mtp tensors ${hasMtp}, engine mtp ${!!eng.mtp}, moeFuse ${eng.moeFuse}; loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s`);
 if (eng.moeK) console.log("moeKernel", JSON.stringify(eng.moeK));

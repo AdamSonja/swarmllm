@@ -221,3 +221,238 @@ Notes from getting it to run: with every device as a tab of one Playwright conte
 device with an on-disk profile fixed it. With the weight store disabled instead, the MoE load stalled at about
 460 MB per device in this harness (cause not found). `tests/e2e/room.mjs` uses the one-context setup and would
 likely hit the same crash on the MoE (it has no MoE entry in its local-weights map today).
+
+## 2026-09-26: load time for tests and benches (CPU side; GPU not yet measured)
+
+Loader CPU cost, with the GPU upload stubbed (`tests/bench/load_profile.js`): the 27B took 43.8 s (6.5 s reading, 37.2 s converting, 20.1 s of that the Q4_0 repack) and the MoE 46.0 s (8.4 s reading, 37.6 s converting). The repack is now 3x faster (u16 copies). With the new converted-weights cache (`tests/weight_cache.js`), a warm load is 4 to 6 s for the 27B and about 9 s for the MoE. The Chrome bench's static server read ranges at 0.27 GB/s; 8 MB reads bring that to 2 GB/s, and pre-converted tensors (`bench.html?wcache=1`) take the MoE tab load path from 74.7 s to 17 s on the CPU side. `tests/run_q38_once.js` runs the 27B suite over one upload. Details, and the commands still to run for GPU validation, are in [testing-fast.md](testing-fast.md).
+
+## 2026-09-27: kernel pass on decode (27B) and the dense engine (Qwen3 1.7B), branch kopt/combined, GB10
+
+Everything here is exact: the 27B's outputs are bit-identical to kopt/base (`tests/test_q38_bits.js`: same
+logits hash 85b12667 and trunk-hidden hash eba0b8d5 over a 16-column prefill, 13 plain tokens and 3 spec
+steps; `tests/run.sh q38once` passes; `tests/test_moe.js` 3x MATCH llama.cpp, spec == plain), and the dense
+engine's logits are bit-identical to kopt/base at 2,600 tokens of context (`tests/test_dense_exact.js`,
+hashes 445aa938 / 6aef0553 on both branches; `tests/run.sh quick` passes). Changes that were not exact are
+off by default (the one-kernel dense glue).
+
+What changed (branches, each from kopt/base = feat/engine-opt + opt/load-cache):
+- `kopt/dense-attn` dense attention that is not latency-bound: `attn_scores_d` (G heads per thread share
+  each K row), `attn_softmax_d` (parallel max and exp, then ONE thread adds the exponentials in position
+  order with 8 loads in flight), `attn_out_d` (the per-(head, dim) chains read V / p tiles staged in shared
+  memory by the whole workgroup, next tile prefetched into registers). Same operations in the same order
+  as attn_scores / attn_softmax (a one-thread-per-head kernel before) / attn_out. Switch: `attnFast`.
+- `kopt/dense-fuse` (on dense-attn): residual adds folded into the o / down GEMVs (`_acc`), one rmsnorm
+  dispatch for all batch columns, the qk-norm + rope + K/V cache writes as three reference-shaped
+  multi-column kernels (`head_norm_dmc`, `rope_dmc`, `kv_store_d`): no cache copies, one compute pass per
+  layer. A single fused glue kernel was measured too (`fuseGlue`, off): the same rope expression compiles
+  to differently rounded code inside a bigger kernel on NVIDIA Vulkan, so it is not exact.
+- `kopt/dense-qkv` (on dense-fuse): q, k, v from one GEMV over the row-concatenated weights (`mergeQKV`).
+  Dawn (Chrome) rejects two writable bindings of one buffer in a dispatch where wgpu (Deno) does not, so
+  the glue kernels bind the merged buffer once; the Chrome bench now logs uncaptured GPU errors.
+- `kopt/encode-ahead` both engines: while the GPU runs token N, the command buffer of position N + 1 is
+  recorded (a token's commands depend only on the position and the switches); logits copy in the same
+  submit. Switch: `encodeAhead`.
+- `kopt/rmsnorm` rmsnorm and the dn_pre q/k L2 norms with 4 / 8 loads in flight, same in-order sums.
+- `kopt/head-rows` LM head GEMV with 8 rows per workgroup (rows per workgroup never enter a row's
+  arithmetic): on for the dense engine, off for the hybrid (no gain on the 27B head).
+- `kopt/wide-loads` opt/wide-loads (16-byte weight loads) re-based and GPU-validated: bit-identical in the
+  model (COOPWIDE=4,2 gives the same 27B hashes) but no faster (GPU 90.0 -> 91.0 ms/token), not merged.
+
+### Qwen3 1.7B Q8 (dense engine), before (kopt/base) -> after (kopt/combined)
+
+Chrome (tests/bench/chrome_bench.mjs, `prefill=512,4096`; plain decode = 40 tokens after a short chat
+prompt; the dense model has no draft head, so no speculative number):
+
+| | base run 1 | base run 2 | combined run 1 | combined run 2 | |
+|---|---|---|---|---|---|
+| decode, short chat (two-sum / hash-map) | 52.6 / 52.6 | 51.3 / 51.1 | 61.1 / 63.7 | 58.7 / 61.8 | +17% |
+| prefill to 512 tokens | 83.9 | 84.2 | 261.1 | 259.4 | 3.1x |
+| prefill to 4096 tokens | 22.2 | 22.3 | 176.3 | 176.6 | 7.9x |
+| decode at 512 | 35.4 | 35.1 | 58.4 | 58.6 | +66% |
+| decode at 4096 | 10.45 | 10.43 | 32.9 | 32.8 | 3.1x |
+
+Deno (tests/bench_dense.js, FILLS=512,4096): prefill 82.2 / 82.4 -> 219.4 / 221.2 at 512 and 19.2 / 19.3 ->
+158.9 / 159.6 at 4096; decode 22.9 / 24.0 -> 36.5 / 36.7 at 512 and 7.49 / 7.42 -> 25.3 / 24.9 at 4096.
+Per token at 4k context (tests/prof_dense.js): 219 ms -> 41 ms wall; the old softmax was one thread per
+head walking 4k positions three times in global memory.
+
+### Qwen 3.8 27B Q4_0, before (kopt/base) -> after (kopt/combined)
+
+Chrome (`batchcols=16&prefill=512,4096`, 40 tokens, K=3):
+
+| | base run 1 | base run 2 | combined run 1 | combined run 2 | combined run 3 |
+|---|---|---|---|---|---|
+| plain (two-sum / hash-map) | 10.62 / 10.56 | 10.56 / 10.48 | 11.11 / 11.09 | 11.03 / 11.11 | 11.11 / 11.08 |
+| spec K=3 (two-sum / hash-map) | 24.01 / 20.19 | 23.69 / 20.12 | 23.99 / 20.12 | 23.96 / 20.28 | 24.08 / 20.30 |
+| prefill to 512 / 4096 | 72.7 / 66.4 | 72.5 / 66.3 | 72.7 / 66.1 | 73.0 / 66.3 | 73.0 / 66.3 |
+| decode at 4096 | 9.46 | 9.42 | 9.90 | 9.84 | 9.89 |
+
+Plain decode +5%, speculative and prefill unchanged (the verify pass and prefill use the batched kernels,
+which this pass did not touch; prefill is the prefill workflow's). Deno (tests/bench_ctx.js MODEL=27b,
+FILLS=512,4096): plain 8.77 / 8.80 -> 9.28 / 9.29 at 512 and 8.59 / 8.60 -> 9.08 / 9.08 at 4096; spec at 512
+16.98 / 16.97 -> 16.92 / 16.93; prefill 66.2 / 65.9 -> 66.0 / 66.0. (The spec number at 4096 is not
+comparable: bench_ctx builds its prompt from engine/qwen35.js, whose text changed, and acceptance went
+17/42 -> 14/51.) tests/prof_ts.js: wall 106.1 -> 101.3 ms/token from encode-ahead (GPU time unchanged),
+then GPU 90.9 -> 88.7 ms from rmsnorm (3.18 -> 1.64 ms, 129 dispatches) and dn_pre (2.10 -> 1.35 ms).
+
+Where the 27B token still goes (GPU 88.7 ms): the GEMVs are ~79 ms at 200-215 GB/s (gate/up 469 us x 64,
+LM head 5.8 ms at 228 GB/s); exact knobs tried per shape (tests/bench_wide.js: 16-byte loads, 1-16 rows
+per workgroup) are all bit-identical and within +-5% of today's kernel, so the remaining gap to llama.cpp
+(13.8 tok/s) is load efficiency that an exact kernel cannot reorder its way out of.
+
+## 2026-09-27: tiled prefill attention (attnPrefillTile, candidate E), on by default for dense models (MoE opt-in since prefill/combined)
+
+`attn_flash_tile` (engine/wgsl/attn_tile.js) replaces attn_flash / attn_flash_t2 on full-width prefill passes: one
+workgroup per (split, KV head, 64 query rows) shares each K/V tile across the whole pass. GB10, Deno,
+`bench_ctx.js` CTX=16640 TOKENS=8, prefill tok/s over the segment ending at each fill, off → on:
+
+| | 512 | 4096 | 16384 |
+|---|---|---|---|
+| 27B | 65.9 → 69.8 | 57.4 → 74.3 | 30.2 → 66.1 |
+| MoE | 151.3 → 159.7 | 133.3 → 166.0 | 80.8 → 117.2 |
+
+Whole 16000-token prompt: 27B 39.7 → 69.1, MoE 99.5 → 153.9. Attention kernel time at 4096 (`prof_prefill.js`):
+27B 14.5 → 2.2 s, MoE 4.8 → 1.0 s. Decode never uses the kernel. Every golden passes with it on; logit relDiff vs
+attn_flash and the MoE router caveat are in docs/research/prefill-profile-2026-09.md (candidate E).
+`ATTN_PREFILL_TILE=0` / `?attnptile=0` restores attn_flash.
+
+## 2026-09-27 · MoE expert-grouped prefill (candidate D, branch prefill/moe-group), GB10 Deno
+
+- Exact grouped kernels (`moeGroupPrefill: 256`): bit-identical on GPU (logits, greedy, spec, draft acceptance) but
+  slower than per-pass at every chunk size: 2048 tok 160 -> 147/151/117/111 tok/s (UC 2/4/8/16). Each pair still does
+  its own 256-lane reduction; a collapsed exact tree (2 barriers) was slower still. Verdict: drop as a speed path.
+- Tiled grouped kernels (`moeGroupPrefill: 256, moeGroupTiled: true`, UC 8): experts 3x faster (4096 tok: gate/up
+  6733 -> 2155 ms, down 4547 -> 1385 ms, sort 337 ms). bench_ctx prefill tok/s off -> on: 512 151.8 -> 208.5,
+  4096 140.3 -> 193.1, 16384 89.1 -> 109.3; decode unchanged (24.6/22.3/20.6 vs 24.1/23.5/21.2), same greedy text,
+  spec identical. test_moe.js (MOEGROUP=16 MOEGROUP_TILED=1): 3/3 MATCH llama.cpp, spec == plain.
+  Next-token logits relDiff vs per-pass: 5.3e-4 (300 tok), 1.7e-2 (700 tok; the per-pass path itself is 2.2e-3 off
+  token-by-token there, both argmax-equal): routing flips compound, so it stays off by default.
+
+## 2026-09-27 · prefill/combined: E + B + D + C merged, vs prefill/base (GB10)
+
+Merged into `prefill/combined`: flash-attn (E), moe-group (D), gemm-tiles (B), f16-subgroup (C). Not merged:
+deltanet-chunked (2.6x slower kernel, verdict drop) and prebaked-state (a TTFT feature, not prefill throughput; its
+reviews found room-path bugs, a restored hit can drop its own staged slot after any DROP_ALL and a worker can persist
+a stale slot under the prefix key, and its v2 state signature silently invalidates saved sessions on the default path).
+
+**Defaults.** Only the tiled prefill attention is on by default, and only for dense models: on the MoE it lands
+4e-3..1.6e-2 from attn_flash (over the 2e-3 prefill tolerance), so it is opt-in there. It no longer runs on
+speculative verify passes at any batchCols (review must-fix: gate is now `nCols === NC && !_snapNow`). Wide GEMM
+(`prefillUbatch`), expert-grouped MoE (`moeGroupPrefill`, tiled kernels by default when on) and `prefillMath` stay
+off. With wide + grouped both on, each wide chunk's MoE layers run the grouped expert kernels over the whole chunk.
+
+**Goldens on the combined branch (defaults):** `run.sh quick` 8/8, `run.sh q38` 9/9 (MATCH, test_batch_q38 relDiff
+1.74e-7, twins bit-identical, spec == plain, GEMM worst 1.61e-6), `test_moe.js` 3/3 MATCH llama.cpp, spec identical,
+acceptance 28/33, 28/39, 25/45.
+
+**All options on vs all off** (`tests/test_prefill_opts.js`, SEQ_ALL=1; argmax, 24 greedy tokens and spec == plain
+identical at every length):
+
+| | 150 | 700 | 2100 |
+|---|---|---|---|
+| 27B relDiff on vs off (vs one-at-a-time: off / on) | 2.7e-5 (2.9e-5 / 1.9e-5) | 9.0e-5 (6.4e-5 / 1.2e-4) | 7.3e-5 (5.5e-5 / 9.0e-5) |
+| MoE relDiff on vs off (vs one-at-a-time: off / on) | 2.7e-5 (1.4e-5 / 2.5e-5) | 6.7e-4 (1.2e-4 / 6.7e-4) | 1.5e-3 (6.3e-4 / 1.7e-3) |
+
+On this prompt the MoE all-on path stays under 2e-3, but D and E alone exceeded it on other prompts/lengths (up to
+1.7e-2), so the MoE options stay off until a MoE tolerance is decided.
+
+**bench_ctx**, Deno, CTX=16640 TOKENS=32, same tokens on both branches (`CTX_SRC` = prefill/base checkout), one run
+each, GPU idle (waited for other jobs). Prefill tok/s over the segment ending at each fill; decode plain / spec tok/s.
+"all opts" = 27B `PREFILL_UBATCH=256`; MoE `ATTN_PREFILL_TILE=1 PREFILL_UBATCH=256 MOEGROUP=256`.
+
+| | prefill 512 | 4096 | 16384 | plain decode 512 / 4k / 16k | spec decode 512 / 4k / 16k |
+|---|---|---|---|---|---|
+| 27B prefill/base | 65.9 | 59.0 | 34.9 | 8.78 / 8.55 / 7.58 | 16.92 / 11.27 / 12.70 |
+| 27B combined default | 70.0 | 74.4 | 66.1 | 8.80 / 8.54 / 7.60 | 16.91 / 11.35 / 12.81 |
+| 27B combined all opts | 85.9 | 94.5 | 78.4 | 8.77 / 8.50 / 7.59 | 16.78 / 10.53 / 12.75 |
+| MoE prefill/base | 152.9 | 139.2 | 88.9 | 22.67 / 22.39 / 20.47 | 31.80 / 39.24 / 28.42 |
+| MoE combined default | 153.2 | 139.5 | 88.9 | 24.20 / 22.39 / 21.84 | 33.65 / 39.51 / 28.86 |
+| MoE combined all opts | 300.2 | 370.6 | 296.4 | 23.93 / 23.77 / 21.62 | 32.28 / 41.66 / 29.50 |
+
+Spec output identical to plain at every fill in every run. The 27B all-opts spec dip at 4k (10.53) comes with
+16/45 accepted drafts instead of 17/42 (the draft cache is filled from the wide prefill's hiddens); plain decode is
+unchanged. llama.cpp CUDA (b749f688, -fa 1) for scale: 27B pp512 879 / pp4096 893 / pp16384 847, MoE 2356 / 2374 /
+2271. Gap now: 27B 12.6x / 12.0x / 12.8x by default (10.2x / 9.4x / 10.8x all opts); MoE 7.8x / 6.4x / 7.7x all opts.
+
+**Chrome** (`chrome_bench.mjs`, batchcols=16, 40 tokens, Chromium 131; decode plain / spec on two-sum, hash-map):
+
+| | 27B plain | 27B spec | MoE plain | MoE spec | prefill 2048 tok |
+|---|---|---|---|---|---|
+| prefill/base | 10.61 / 10.49 | 23.99 / 20.15 | 43.48 / 44.07 | 73.31 / 64.75 | not measured (no ?prefill on base) |
+| combined default | 10.63 / 10.62 | 24.08 / 20.14 | 42.20 / 43.83 | 71.98 / 64.79 | 27B 81.0, MoE 165.3 |
+| combined all opts | 10.52 / 10.56 | 23.99 / 20.23 | 44.69 / 42.53 | 73.18 / 63.95 | 27B 102.0, MoE 432.9 |
+
+Decode does not regress (all within about 3%, single runs; acceptance identical: 28/33, 26/39 and 28/33, 28/39).
+Logs: scratchpad `pc/` (bc_*, cr_*, opts_*, g_*).
+
+## 2026-09-27: test_q38_bits fingerprint drift after the merge (branch integ/kernels), GB10
+
+After merging research/overnight and kopt/combined, `tests/test_q38_bits.js` with the tiled prefill attention off
+gave `BITS plain 7ab40f4 hidden bbe1f08c` instead of kopt/combined's `85b12667 / eba0b8d5`. It was not a kernel
+change. The test built its prompt from the first 300 tokens of `engine/gguf.js`, read live from disk, and the audit
+commit b3f50e1 (comment-only) rewrote the header comment of that file. So the input changed, not the math. Bisect:
+kopt/combined's `engine/wgsl` alone did not move the hash, its whole `engine/` did (it carries the old gguf.js),
+and `WEIGHT_CACHE=0` and kopt's qwen35.js alone did not. gguf.js differs between the two only in comments.
+
+Fix: the prompt is now a frozen fixture, `tests/golden/q38_bits_prompt.txt` (the first 150 lines of gguf.js as of
+kopt/combined), and the test reads that. Same prompt everywhere, same bits:
+
+| Branch | ATTN_PREFILL_TILE | BITS plain | hidden | spec vs plain |
+|---|---|---|---|---|
+| feat/engine-opt (f615846) | n/a (no tile) | 85b12667 | eba0b8d5 | == plain |
+| kopt/combined | n/a | 85b12667 | eba0b8d5 | == plain |
+| integ/kernels | 0 | 85b12667 | eba0b8d5 | == plain |
+| integ/kernels | default (on for dense) | 8a532ef5 | 52f2ae10 | == plain, same 13 tokens |
+
+The only deviation is the tiled prefill attention (prefill summation order), which is the accepted one.
+
+## 2026-09-27: MoE prefill options on by default (branch integ/kernels), GB10
+
+The Qwen 3.6 35B-A3B now gets the tiled prefill attention (`attnPrefillTile`), the wide prefill GEMM
+(`prefillUbatch` 256) and the expert-grouped tiled FFN (`moeGroupPrefill` 256) by default. Wide and grouped run only
+on an engine that holds the embedding (solo `prefillTokens`); a room's split prefill keeps its 16-column frames, and
+workers turn both off without a warning. An option that cannot be built on a device turns itself off. Dense defaults are
+unchanged: tiled attention on, wide GEMM opt-in. `false` / `0` still turns each one off (`ATTN_PREFILL_TILE=0`,
+`PREFILL_UBATCH=0`, `MOEGROUP=0`; Chrome `?attnptile=0&ubatch=0&moegroup=0`).
+
+MoE prefill tolerance in the tests is now 2e-2 (`tests/load_model.js` `prefillTol`; dense stays 2e-3). The baseline
+is the MoE's own 16-column batched prefill: with the old kernels it is already 2e-3..2.3e-2 from token-by-token decode
+in Deno, and 0.16..0.17 in Chrome on the bench page's HTML. The options sit inside that band.
+
+Prefill tok/s, options off -> on:
+
+| Where | 512 | 700 | 2048/2100 | 4k | 16k |
+|---|---|---|---|---|---|
+| Deno `bench_ctx.js` (fills 512 / 4096 / 16384) | 142 -> 263 | | | 140 -> 372 | 89 -> 306 |
+| Deno `test_prefill_opts.js` | | 165 -> 367 | 160 -> 420 | 149 -> 411 | |
+| Chrome `chrome_bench.mjs ...&prefillall=1` | | 171 -> 367 | 168 -> 402 | | |
+
+Decode does not change (plain 26.7 / spec 33.7..37.4 at 512..4k, same acceptance and spec == plain both ways).
+
+Checks, options on:
+
+- `test_moe.js`: MATCH llama.cpp 3/3, spec == plain.
+- `test_moe_split.js`: host and worker both use the engine defaults, as room.js does (room.js passes no prefill
+  option). Solo, split plain == solo and spec == split plain on 5 prompts, including the 3674-token Code-mode tool
+  prompt. 0 GPU errors. Same result with `OPTS=0`. On that tool prompt the greedy text with the options on differs
+  from the text with them off at one token (`state.ines` vs `state.lines`, in a synthetic prompt). Solo and split
+  agree within each setting.
+- `test_prefill_opts.js` MoE, relDiff on vs off at 150 / 700 / 2100 / 4000: 3.3e-5 / 1.5e-3 / 1.6e-3 / 1.4e-2.
+  Argmax is equal, greedy 24 is identical, and spec == plain. With `PROMPT_FILE=bench/bench.html` (raw HTML) at 700 /
+  2048 it is 3.4e-3 / 3.0e-3, while all-off is 2.3e-2 / 2.3e-3 from token-by-token. 27B: 7.3e-5, pass.
+- Phone / Mac-class device (`LIMITS=default`: WebGPU default limits, so 16 KB workgroup memory, 256 invocations and 8
+  storage buffers per stage). Full MoE with adapter buffer sizes: all three on (attention TK 8, 64x64 wide tile in
+  16 KB), pass, 0 GPU errors. Layers [0,10) + embedding with 256 MiB buffers and bindings (a phone in room.js): pass,
+  hidden relDiff 2e-6, 0 GPU errors. The 128 MiB default binding cannot hold the MoE's 151 MB expert tensors with the
+  options on or off, so the MoE cannot run at that limit either way.
+- Chrome (`chrome_bench.mjs`, 16 KB workgroup memory, tile smem 16384): 0 GPU errors, golden two-sum / hash-map,
+  spec == plain. relDiff on vs off at 2048 tokens is 5.7e-2 with argmax equal, but the old batched path is itself
+  0.17 from token-by-token there. At 700: 2.3e-3, and both batched paths are 0.16 from token-by-token, with a
+  different argmax than token-by-token (198 vs 19455). That gap already exists with the options off. It is worth
+  its own look (Chrome's per-token path vs its batched path).
+- Code mode end to end (`tests/eval/run.mjs --model engine`, MoE, calculator / fix-bug / logic / todo). Defaults and
+  `--engine-opts '{"attnPrefillTile":false,"moeGroupPrefill":0,"prefillUbatch":0}'` give the same 2/4 with the same
+  failures (calculator's "12 + 719" check and todo's missing #new). fix-bug is identical token for token, 0 GPU
+  errors, 100 s vs 169 s.
+- Unchanged: `test_q38_bits.js` `ATTN_PREFILL_TILE=0` -> 85b12667 / eba0b8d5, `run.sh q38once` and `quick` pass,
+  `deno test tests/unit` 210 passed, `npm run check`.

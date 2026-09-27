@@ -126,7 +126,13 @@ var<workgroup> rn_partial: array<f32, 256>;
 fn rmsnorm(@builtin(local_invocation_id) lid: vec3<u32>) {
   let t = lid.x;
   var ss: f32 = 0.0;
-  for (var i: u32 = t; i < rn_n; i += 256u) { let v = rn_x[i]; ss += v * v; }
+  // four loads in flight, then the same in-order sum (bit-identical to the one-at-a-time loop)
+  var i: u32 = t;
+  for (; i + 768u < rn_n; i += 1024u) {
+    let v0 = rn_x[i]; let v1 = rn_x[i + 256u]; let v2 = rn_x[i + 512u]; let v3 = rn_x[i + 768u];
+    ss += v0 * v0; ss += v1 * v1; ss += v2 * v2; ss += v3 * v3;
+  }
+  for (; i < rn_n; i += 256u) { let v = rn_x[i]; ss += v * v; }
   rn_partial[t] = ss;
   workgroupBarrier();
   var stride: u32 = 128u;
@@ -136,7 +142,13 @@ fn rmsnorm(@builtin(local_invocation_id) lid: vec3<u32>) {
     stride = stride / 2u;
   }
   let inv = inverseSqrt(rn_partial[0] / f32(rn_n) + cfg.eps);
-  for (var i: u32 = t; i < rn_n; i += 256u) { rn_y[i] = rn_x[i] * inv * rn_w[i]; }
+  var j: u32 = t;
+  for (; j + 768u < rn_n; j += 1024u) {
+    let x0 = rn_x[j]; let x1 = rn_x[j + 256u]; let x2 = rn_x[j + 512u]; let x3 = rn_x[j + 768u];
+    let w0 = rn_w[j]; let w1 = rn_w[j + 256u]; let w2 = rn_w[j + 512u]; let w3 = rn_w[j + 768u];
+    rn_y[j] = x0 * inv * w0; rn_y[j + 256u] = x1 * inv * w1; rn_y[j + 512u] = x2 * inv * w2; rn_y[j + 768u] = x3 * inv * w3;
+  }
+  for (; j < rn_n; j += 256u) { rn_y[j] = rn_x[j] * inv * rn_w[j]; }
 }
 
 // --- rope: rotate pairs (i, i+half) in each head, at frame.pos ---

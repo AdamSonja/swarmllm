@@ -1434,6 +1434,11 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
       // MoE bits, so every device of a room should run the same setting; ?moednrows=1|2|4 tunes it
       moeFuse: new URLSearchParams(location.search).get("moefuse") !== "0",
       moeDnRows: parseInt(new URLSearchParams(location.search).get("moednrows"), 10) || 1,
+      // Prefill options (attnPrefillTile, prefillUbatch, moeGroupPrefill) are deliberately not passed: every
+      // device takes the engine's defaults, so host and workers agree. Tiled prefill attention runs on the
+      // 16-column prefill frames of every device; wide GEMM + expert-grouped MoE only in solo prefillTokens
+      // (the device holding the embedding; a split prefill sends 16-column frames). ?kv=q8 turns the tiled
+      // attention off and ?moefuse=0 the grouped MoE on that device only.
     });
   } else if (M.kind === "gguf") {
     aiStatus("reading model index\u2026");
@@ -1739,8 +1744,12 @@ function resetState() {
   try { ai.engine.reset?.(); } catch {}
   ai.pos = 0;
   ai.fed = [];
-  const { sv, dp } = ai.pendingCtl || {};
-  ai.pendingCtl = ai.chain.length ? { ...(sv != null ? { sv } : {}), ...(dp != null ? { dp } : {}), reset: 1 } : {};
+  // a pending rollback (the last answer's final verify rejected drafts) must still reach the chain:
+  // the save that rides with it records that answer's end state, and without the rollback a
+  // worker would save its state with the rejected columns in it (the host saved its rolled-back
+  // state), so a later resume of that checkpoint would run the worker's layers on a corrupt state
+  const { sv, dp, rb } = ai.pendingCtl || {};
+  ai.pendingCtl = ai.chain.length ? { ...(rb != null ? { rb } : {}), ...(sv != null ? { sv } : {}), ...(dp != null ? { dp } : {}), reset: 1 } : {};
 }
 // ---- checkpoints (?ckpt): the room's state after an answer, saved on every device ----
 function ckptClear(tellChain = false) {   // engines rebuilt or in an unknown state: nothing saved is usable
@@ -2443,7 +2452,9 @@ async function workerFrame(d) {
   const ctl = {};
   // order matters: a pending rollback belongs to the answer that just ended, the save records
   // that answer's final state, and only then may the state be reset or replaced by a checkpoint
-  if (d.rb != null && !d.reset) { ai.engine.restoreDN?.(d.rb); ctl.rb = d.rb; }
+  // (also before a reset: the save may record the state first, and the host saved its own after
+  // its rollback)
+  if (d.rb != null) { ai.engine.restoreDN?.(d.rb); ctl.rb = d.rb; }
   if (d.sv != null) { ai.engine.saveSlot?.(d.sv); ctl.sv = d.sv; }
   if (d.dp != null) { for (const k of [].concat(d.dp)) k === DROP_ALL ? ai.engine.dropAllSlots?.() : ai.engine.dropSlot?.(k); ctl.dp = d.dp; }
   if (d.reset) { ai.engine.reset?.(); ctl.reset = 1; }

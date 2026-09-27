@@ -1,13 +1,14 @@
 // Benchmark harness: end-to-end tok/s for prefill and decode, plus output sanity.
 // Usage (GB10 / Deno):
-//   deno run --unstable-webgpu --allow-read --allow-env benchmarks/bench.js
+//   deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights benchmarks/bench.js
 // Env:
 //   MODEL=qwen|q38     (default qwen: 0.6B Q8_0; q38: 27B Q4_0, full 64 layers)
 //   TOKENS=<n>         decode tokens to time (default 32)
-//   VARIANT=coop|legacy  matvec kernel variant (default coop)
+//   VARIANT=coop|legacy  matvec kernel variant (default coop once it exists)
 import { DenseEngine, makeTokenizer, argmax } from "../engine/engine.js";
 import { Qwen35Engine } from "../engine/qwen35.js";
-import { parseGGUFHeader, ggufWeights, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
+import { parseGGUFHeader, ggufWeights } from "../engine/gguf.js";
+import { openGGUF } from "../tests/load_model.js";
 
 const MODEL = Deno.env.get("MODEL") || "qwen";
 const TOKENS = +(Deno.env.get("TOKENS") || 32);
@@ -34,20 +35,20 @@ const device = await adapter.requestDevice({ requiredLimits: {
 let eng, tok, promptIds;
 const t0 = performance.now();
 if (MODEL === "q38") {
-  const readAt = await openFile(Deno.env.get("GGUF") || new URL("../models/q38/model.gguf", import.meta.url).pathname);
-  const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer);
-  tok = makeTokenizer(tokenizerFromGGUF(G.meta));
+  // converted-weights cache (tests/weight_cache.js): needs --allow-write to fill, WEIGHT_CACHE=0 disables
+  const model = openGGUF(Deno.env.get("GGUF") || new URL("../models/q38/model.gguf", import.meta.url).pathname);
+  const G = model.G;
+  tok = model.tokenizer();
   const L = +(Deno.env.get("LAYERS") || (G.meta["qwen35.block_count"] - (G.meta["qwen35.nextn_predict_layers"] || 0)));
-  const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength),
-    { lo: 0, hi: L, hasEmbed: true, hasHead: true });
+  const weights = await model.weights({ lo: 0, hi: L, hasEmbed: true, hasHead: true });
   eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L],
     hasEmbed: true, hasHead: true, maxSeq: 512, matvecVariant: VARIANT, coopWG: WG, coopRows: ROWS,
     batchCols: +(Deno.env.get("BCOLS") || 4), coopRowsB: +(Deno.env.get("ROWSB") || ROWS) });
 } else {
-  const readAt = await openFile(Deno.env.get("GGUF") || new URL("../models/qwen/model.gguf", import.meta.url).pathname);
+  const readAt = await openFile(Deno.env.get("GGUF") || "../models/qwen/model.gguf");
   const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer, { skipTokenizer: true });
-  tok = makeTokenizer(JSON.parse(await Deno.readTextFile(new URL("../models/qwen/tokenizer.json", import.meta.url).pathname)));
-  const cfg = JSON.parse(await Deno.readTextFile(new URL("../models/qwen/config.json", import.meta.url).pathname));
+  tok = makeTokenizer(JSON.parse(await Deno.readTextFile("../models/qwen/tokenizer.json")));
+  const cfg = JSON.parse(await Deno.readTextFile("../models/qwen/config.json"));
   const L = cfg.num_hidden_layers;
   const weights = await ggufWeights(G, (i) => readAt(i.byteOffset, i.byteLength),
     { lo: 0, hi: L, hasEmbed: true, hasHead: true });
@@ -58,7 +59,7 @@ console.log(`load: ${((performance.now() - t0) / 1000).toFixed(1)}s  model=${MOD
 
 const REP = +(Deno.env.get("REP") || 1);
 promptIds = tok.encode("The quick brown fox jumps over the lazy dog. ".repeat(REP) + "In a distant future, ");
-// prefill: batched (BCOLS tokens per pass, default 4; the room uses 16) for all but the last prompt token
+// prefill: batched (4 tokens/pass) for all but the last prompt token
 const tp0 = performance.now();
 let logits = null;
 await eng.prefillTokens(promptIds.slice(0, -1));

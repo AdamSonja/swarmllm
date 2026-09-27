@@ -157,6 +157,15 @@ export function q8Repack(info, bytes) {
   const qs = new Uint8Array(n);
   const scales = new Uint32Array(Math.ceil(nb / 2));   // raw f16 scales, 2 per word
   const sc16 = new Uint16Array(scales.buffer);
+  if ((bytes.byteOffset & 1) === 0) {
+    // 34-byte blocks keep 2-byte alignment: move u16 words (3x faster than subarray+set per block)
+    const src = new Uint16Array(bytes.buffer, bytes.byteOffset, nb * 17), dst = new Uint16Array(qs.buffer);
+    for (let b = 0, s = 0, d = 0; b < nb; b++, s += 17, d += 16) {
+      sc16[b] = src[s];
+      for (let j = 0; j < 16; j++) dst[d + j] = src[s + 1 + j];
+    }
+    return { qs, scales };
+  }
   for (let b = 0; b < nb; b++) {
     const base = b * Q8_0_BLOCK_BYTES;
     sc16[b] = bytes[base] | (bytes[base + 1] << 8);
@@ -192,6 +201,12 @@ export async function ggufEntry(G, bytesOf, name, optional, onBytes = () => {}) 
   }
   // stacked MoE experts [nExp][dOut][dIn] are an ordinary matrix of nExp * dOut rows
   const info = info0.shape.length === 3 ? { ...info0, shape: [info0.shape[0] * info0.shape[1], info0.shape[2]] } : info0;
+  // converted-weights cache (tests/weight_cache.js, Deno/Node only): a hit returns the exact
+  // bytes the conversion below would produce, without reading or converting the tensor
+  if (G.entryCache) {
+    const hit = await G.entryCache.get(info);
+    if (hit) { onBytes(info.byteLength); return hit; }
+  }
   // the embedding stays on the CPU too (per-token row lookups), so it takes the normal path
   if (G.streamEntry && name !== GGML_EMBED && info.shape.length === 2 && (info.ggmlType === GGML_Q8_0 || info.ggmlType === GGML_Q4_0)) {
     const e = await G.streamEntry(info);
@@ -199,6 +214,15 @@ export async function ggufEntry(G, bytesOf, name, optional, onBytes = () => {}) 
   }
   const bytes = await bytesOf(info);
   onBytes(info.byteLength);
+  const e = convertEntry(info, bytes);
+  if (G.entryCache) await G.entryCache.put(info, e);
+  return e;
+}
+
+// The CPU conversion from a tensor's GGUF bytes to the entry the engine uploads: Q4_0/Q8_0
+// repacked (nibbles/int8 + split f16 scales), other quants requantized to Q8, the rest f32.
+// Pure and deterministic: the weight cache stores exactly what this returns.
+export function convertEntry(info, bytes) {
   if (info.shape.length === 2) {
     if (info.ggmlType === GGML_Q8_0) {
       const { qs, scales } = q8Repack(info, bytes);
@@ -424,6 +448,17 @@ export function q4Repack(info, bytes) {
   const qs = new Uint8Array(n / 2);
   const scales = new Uint32Array(Math.ceil(nb / 2));   // raw f16 scales, 2 per word
   const sc16 = new Uint16Array(scales.buffer);
+  if ((bytes.byteOffset & 1) === 0) {
+    // 18-byte blocks keep 2-byte alignment: move u16 words (3x faster than subarray+set per block;
+    // this loop is most of a cold 27B load)
+    const src = new Uint16Array(bytes.buffer, bytes.byteOffset, nb * 9), dst = new Uint16Array(qs.buffer);
+    for (let b = 0, s = 0, d = 0; b < nb; b++, s += 9, d += 8) {
+      sc16[b] = src[s];
+      dst[d] = src[s + 1]; dst[d + 1] = src[s + 2]; dst[d + 2] = src[s + 3]; dst[d + 3] = src[s + 4];
+      dst[d + 4] = src[s + 5]; dst[d + 5] = src[s + 6]; dst[d + 6] = src[s + 7]; dst[d + 7] = src[s + 8];
+    }
+    return { qs, scales };
+  }
   for (let b = 0; b < nb; b++) {
     const base = b * 18;
     sc16[b] = bytes[base] | (bytes[base + 1] << 8);
@@ -616,7 +651,7 @@ export async function streamEntryToGPU(device, info, openRange, { pace = 0, stag
   const oom = await device.popErrorScope();
   if (oom) throw new Error(`GPU out of memory while allocating ${info.name} (${(info.byteLength / 2 ** 20).toFixed(0)} MB): this device pledged more than its GPU can hold`);
   const blocksPerFlush = Math.max(1, Math.floor(staging / QSB));
-  const qsStage = new Uint8Array(blocksPerFlush * QSB);
+  const qsStage = new Uint8Array(blocksPerFlush * QSB), qsStage16 = new Uint16Array(qsStage.buffer);
   const scStage = new Uint16Array(blocksPerFlush);   // raw f16 scales
   let staged = 0, block = 0;
   const flush = async () => {
@@ -638,10 +673,18 @@ export async function streamEntryToGPU(device, info, openRange, { pace = 0, stag
     let buf = value;
     if (carry.length) { const m = new Uint8Array(carry.length + value.length); m.set(carry); m.set(value, carry.length); buf = m; carry = new Uint8Array(0); }
     const whole = Math.floor(buf.length / BLK);
+    // blocks are an even number of bytes: when the chunk starts 2-aligned, move u16 words
+    const src16 = (buf.byteOffset & 1) === 0 ? new Uint16Array(buf.buffer, buf.byteOffset, whole * BLK / 2) : null;
     for (let b = 0; b < whole; b++) {
       const base = b * BLK;
-      scStage[staged] = buf[base] | (buf[base + 1] << 8);
-      qsStage.set(buf.subarray(base + 2, base + BLK), staged * QSB);
+      if (src16) {
+        const s = base >> 1, d = staged * QSB / 2;
+        scStage[staged] = src16[s];
+        for (let j = 0; j < QSB / 2; j++) qsStage16[d + j] = src16[s + 1 + j];
+      } else {
+        scStage[staged] = buf[base] | (buf[base + 1] << 8);
+        qsStage.set(buf.subarray(base + 2, base + BLK), staged * QSB);
+      }
       staged++; block++;
       if (staged === blocksPerFlush) await flush();
     }

@@ -2,12 +2,13 @@
 // while skipping; only the timing matters). Also counts dispatches per token by pipeline.
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { makeTokenizer } from "../engine/engine.js";
-import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
-const PATH = Deno.env.get("MOE") || "../models/q36moe/Qwen_Qwen3.6-35B-A3B-Q4_0.gguf";
-const fh = await Deno.open(PATH);
-const readAt = async (off, len) => { await fh.seek(off, 0); const o = new Uint8Array(len); let g = 0; while (g < len) { const n = await fh.read(o.subarray(g)); if (n === null) break; g += n; } return o; };
+import { qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
+import { openGGUF, MOE_PATH } from "./load_model.js";
+const PATH = Deno.env.get("MOE") || MOE_PATH;
+const model = openGGUF(PATH);   // converted-weights cache (tests/weight_cache.js)
+const readAt = model.readAt;
 const ad = await navigator.gpu.requestAdapter(); const device = await ad.requestDevice({ requiredLimits: { maxBufferSize: ad.limits.maxBufferSize, maxStorageBufferBindingSize: ad.limits.maxStorageBufferBindingSize } });
-const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer); const tok = makeTokenizer(tokenizerFromGGUF(G.meta));
+const G = model.G; const tok = makeTokenizer(tokenizerFromGGUF(G.meta));
 const arch = G.meta["general.architecture"], L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
 const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true });
 const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,

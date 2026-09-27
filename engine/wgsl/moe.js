@@ -178,7 +178,14 @@ const ROWS = 4;
 const q4lo = (w) => `vec4<f32>(unpack4xU8(${w} & 0x0F0F0F0Fu)) - vec4<f32>(8.0)`;
 const q4hi = (w) => `vec4<f32>(unpack4xU8((${w} >> 4u) & 0x0F0F0F0Fu)) - vec4<f32>(8.0)`;
 const i8x4 = (w) => `vec4<f32>(unpack4xI8(${w}))`;
-const tree = (WG, n, red) => `
+// Op spellings for the fused (and expert-grouped, engine/wgsl/moe_group.js) kernels: WGSL, or JavaScript for the
+// CPU tests (tests/unit/moe_group_test.js runs the kernel bodies with one generator per thread). The WGSL
+// spellings are the ones the fused kernels always had, so their generated code does not change.
+// (div parenthesizes a compound dividend: "c + 7u" / "8u" must not become c + 7u / 8u)
+export const FOPS = Object.freeze({ q4lo, q4hi, i8x4, div: (a, b) => `${/[^\w.]/.test(a) ? `(${a})` : a} / ${b}` });
+export const FOPS_JS = Object.freeze({ q4lo: (w) => `q4lo(${w})`, q4hi: (w) => `q4hi(${w})`, i8x4: (w) => `i8x4(${w})`,
+  div: (a, b) => `Math.floor((${a}) / (${b}))` });
+export const tree = (WG, n, red) => `
   workgroupBarrier();
   for (var st: u32 = ${WG / 2}u; st > 0u; st >>= 1u) {
     if (t < st) {
@@ -199,12 +206,21 @@ ${Array.from({ length: n }, (_, r) => `      ${red}[${r * WG}u + t] += ${red}[${
 // shOff (unused; the engine writes 1), oUq / oGs / oUs (word offsets of the shared up qs, gate scales, up scales in the
 // packed shared gate/up buffer, whose gate qs start at 0), pad.
 
+// The arithmetic of one fused-kernel term from its scale sc and weight words w0 (Q4: the word; Q8: the first
+// word) and w1 (Q8: the second word), x from vec4 array X at vec4 offset xc. termOff (the fused per-pair
+// kernels, loads inline) and the expert-grouped kernels (loads hoisted, shared by the chunk's pairs) both
+// build their terms from this one template, so a pair's expression tree is the same in both.
+export function termW(fmt, sc, w0, w1, X, xc, b = "b", O = FOPS) {
+  if (fmt === "q4") return `${sc} * (dot(${O.q4lo(w0)}, ${X}[${xc} + ${b} * 8u + qt]) + dot(${O.q4hi(w0)}, ${X}[${xc} + ${b} * 8u + qt + 4u]))`;
+  return `${sc} * (dot(${O.i8x4(w0)}, ${X}[${xc} + ${b} * 8u + qt * 2u]) + dot(${O.i8x4(w1)}, ${X}[${xc} + ${b} * 8u + qt * 2u + 1u]))`;
+}
+// the scale and weight-word loads of termOff's term (block index bi = er * nb + b)
+export const scOff = (SC, so, er, nb = "nb", b = "b") => { const bi = `(${er} * ${nb} + ${b})`; return `unpack2x16float(${SC}[${so} + (${bi} >> 1u)])[${bi} & 1u]`; };
+export const wOff = (fmt, Q, qo, er, nb = "nb", b = "b") => { const bi = `(${er} * ${nb} + ${b})`;
+  return fmt === "q4" ? [`${Q}[${qo} + ${bi} * 4u + qt]`, ""] : [`${Q}[${qo} + ${bi} * 8u + qt * 2u]`, `${Q}[${qo} + ${bi} * 8u + qt * 2u + 1u]`]; };
 // termOff: like term(), with word offsets into Q / SC and explicit block count / index names
-function termOff(fmt, Q, qo, SC, so, X, er, xc, nb = "nb", b = "b") {
-  const bi = `(${er} * ${nb} + ${b})`;
-  const sc = `unpack2x16float(${SC}[${so} + (${bi} >> 1u)])[${bi} & 1u]`;
-  if (fmt === "q4") return `${sc} * (dot(${q4lo(`${Q}[${qo} + ${bi} * 4u + qt]`)}, ${X}[${xc} + ${b} * 8u + qt]) + dot(${q4hi(`${Q}[${qo} + ${bi} * 4u + qt]`)}, ${X}[${xc} + ${b} * 8u + qt + 4u]))`;
-  return `${sc} * (dot(${i8x4(`${Q}[${qo} + ${bi} * 8u + qt * 2u]`)}, ${X}[${xc} + ${b} * 8u + qt * 2u]) + dot(${i8x4(`${Q}[${qo} + ${bi} * 8u + qt * 2u + 1u]`)}, ${X}[${xc} + ${b} * 8u + qt * 2u + 1u]))`;
+function termOff(fmt, Q, qo, SC, so, X, er, xc, nb = "nb", b = "b", O = FOPS) {
+  return termW(fmt, scOff(SC, so, er, nb, b), ...wOff(fmt, Q, qo, er, nb, b), X, xc, b, O);
 }
 
 // Router: same softmax as moe_router (max and sum trees, same order), then top-K by rank: thread i counts
@@ -212,7 +228,7 @@ function termOff(fmt, Q, qo, SC, so, X, er, xc, nb = "nb", b = "b") {
 // it is below K. That is exactly the order of moe_router's K argmax rounds (ties to the lower index), so
 // the ids and weights are the same bits, without the 8 x 8 barrier rounds. Slot K gets the shared gate
 // sigmoid(logit[nExp]) with moe_combine's expression.
-function routeKernel(K) {
+export function routeKernel(K) {
   const KS = K + 1;
   return `
 @group(1) @binding(0) var<storage, read> rt_l: array<f32>;
@@ -266,8 +282,9 @@ fn moe_route(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id)
 
 // gate/up for K routed slots + the shared expert (slot K). Grid: x = ceil(max(dOut, sDim) / ROWS),
 // y = column * KS + slot. Same per-thread layout and reduction as moe_gu.
-function gusKernel(fmt, sfmt, K, WG = 256) {
-  const KS = K + 1, P = `gs${fmt}${sfmt}`, LANES = WG / 4;
+// O = FOPS_JS: the same kernel with JavaScript op spellings (CPU tests: tests/unit/moe_group_test.js).
+export function gusKernel(fmt, sfmt, K, WG = 256, O = FOPS) {
+  const KS = K + 1, P = `gs${fmt}${sfmt}`, LANES = WG / 4, D = O.div;
   const rows = (f) => Array.from({ length: ROWS }, (_, r) => f(r)).join("\n");
   return `
 @group(1) @binding(0) var<storage, read> ${P}_gq: array<u32>;
@@ -282,21 +299,21 @@ function gusKernel(fmt, sfmt, K, WG = 256) {
 var<workgroup> ${P}_red: array<f32, ${2 * ROWS * WG}>;
 @compute @workgroup_size(${WG})
 fn moe_gus_${fmt}_${sfmt}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
-  let S = ${P}_s; let t = lid.x; let cs = wg.y; let col = cs / ${KS}u; let slot = cs - col * ${KS}u;
-  let qt = t & 3u; let bl = t >> 2u; let nb = S.dIn / 32u; let row0 = wg.x * ${ROWS}u; let xc = col * (S.xs / 4u);
+  let S = ${P}_s; let t = lid.x; let cs = wg.y; let col = ${D("cs", `${KS}u`)}; let slot = cs - col * ${KS}u;
+  let qt = t & 3u; let bl = t >> 2u; let nb = ${D("S.dIn", "32u")}; let row0 = wg.x * ${ROWS}u; let xc = col * (${D("S.xs", "4u")});
 ${rows((r) => `  var g${r}: f32 = 0.0; var u${r}: f32 = 0.0;`)}
   var dOut = S.dOut;
   if (slot < ${K}u) {
     let e = ${P}_sel[cs];
 ${rows((r) => `    let er${r} = e * S.dOut + min(row0 + ${r}u, S.dOut - 1u);`)}
     for (var b: u32 = bl; b < nb; b += ${LANES}u) {
-${rows((r) => `      g${r} += ${termOff(fmt, `${P}_gq`, "0u", `${P}_gs`, "0u", `${P}_x`, `er${r}`, "xc")};\n      u${r} += ${termOff(fmt, `${P}_uq`, "0u", `${P}_us`, "0u", `${P}_x`, `er${r}`, "xc")};`)}
+${rows((r) => `      g${r} += ${termOff(fmt, `${P}_gq`, "0u", `${P}_gs`, "0u", `${P}_x`, `er${r}`, "xc", "nb", "b", O)};\n      u${r} += ${termOff(fmt, `${P}_uq`, "0u", `${P}_us`, "0u", `${P}_x`, `er${r}`, "xc", "nb", "b", O)};`)}
     }
   } else {
     dOut = S.sDim;
 ${rows((r) => `    let sr${r} = min(row0 + ${r}u, S.sDim - 1u);`)}
     for (var b: u32 = bl; b < nb; b += ${LANES}u) {
-${rows((r) => `      g${r} += ${termOff(sfmt, `${P}_sh`, "0u", `${P}_sh`, "S.oGs", `${P}_x`, `sr${r}`, "xc")};\n      u${r} += ${termOff(sfmt, `${P}_sh`, "S.oUq", `${P}_sh`, "S.oUs", `${P}_x`, `sr${r}`, "xc")};`)}
+${rows((r) => `      g${r} += ${termOff(sfmt, `${P}_sh`, "0u", `${P}_sh`, "S.oGs", `${P}_x`, `sr${r}`, "xc", "nb", "b", O)};\n      u${r} += ${termOff(sfmt, `${P}_sh`, "S.oUq", `${P}_sh`, "S.oUs", `${P}_x`, `sr${r}`, "xc", "nb", "b", O)};`)}
     }
   }
 ${rows((r) => `  ${P}_red[${r * WG}u + t] = g${r}; ${P}_red[${(ROWS + r) * WG}u + t] = u${r};`)}
@@ -311,8 +328,8 @@ ${tree(WG, 2 * ROWS, `${P}_red`)}
 // down for all KS slots of one column + combine + residual: workgroup (row block, column) runs every
 // slot's GEMV rows (the same per-thread terms and one tree for all slots), then thread r writes
 // x[row] += sum_k w_k y_k (k = 0 .. K - 1 in order) + w_K y_shared, moe_combine's expression and order.
-function dncKernel(fmt, sfmt, K, R, WG = 64) {
-  const KS = K + 1, P = `dc${fmt}${sfmt}`, LANES = WG / 4;
+export function dncKernel(fmt, sfmt, K, R, WG = 64, O = FOPS) {
+  const KS = K + 1, P = `dc${fmt}${sfmt}`, LANES = WG / 4, D = O.div;
   const ks = Array.from({ length: K }, (_, k) => k), rs = Array.from({ length: R }, (_, r) => r);
   const acc = (k, r) => `y${k}_${r}`;
   return `
@@ -329,17 +346,17 @@ var<workgroup> ${P}_red: array<f32, ${KS * R * WG}>;
 @compute @workgroup_size(${WG})
 fn moe_dnc_${fmt}_${sfmt}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
   let S = ${P}_s; let t = lid.x; let col = wg.y; let qt = t & 3u; let bl = t >> 2u;
-  let nb = S.dIn / 32u; let nbs = S.sDim / 32u; let row0 = wg.x * ${R}u; let hs4 = S.ys / 4u;
+  let nb = ${D("S.dIn", "32u")}; let nbs = ${D("S.sDim", "32u")}; let row0 = wg.x * ${R}u; let hs4 = ${D("S.ys", "4u")};
 ${rs.map((r) => `  let rr${r} = min(row0 + ${r}u, S.dOut - 1u);`).join("\n")}
 ${ks.map((k) => `  let e${k} = ${P}_sel[col * ${KS}u + ${k}u]; let xc${k} = (col * ${KS}u + ${k}u) * hs4;
   ${rs.map((r) => `var ${acc(k, r)}: f32 = 0.0; let er${k}_${r} = e${k} * S.dOut + rr${r};`).join(" ")}`).join("\n")}
   ${rs.map((r) => `var ${acc(K, r)}: f32 = 0.0;`).join(" ")}
   let xcs = (col * ${KS}u + ${K}u) * hs4;
   for (var b: u32 = bl; b < nb; b += ${LANES}u) {
-${ks.map((k) => rs.map((r) => `    ${acc(k, r)} += ${termOff(fmt, `${P}_q`, "0u", `${P}_sc`, "0u", `${P}_h`, `er${k}_${r}`, `xc${k}`)};`).join("\n")).join("\n")}
+${ks.map((k) => rs.map((r) => `    ${acc(k, r)} += ${termOff(fmt, `${P}_q`, "0u", `${P}_sc`, "0u", `${P}_h`, `er${k}_${r}`, `xc${k}`, "nb", "b", O)};`).join("\n")).join("\n")}
   }
   for (var b: u32 = bl; b < nbs; b += ${LANES}u) {
-${rs.map((r) => `    ${acc(K, r)} += ${termOff(sfmt, `${P}_sq`, "0u", `${P}_ss`, "0u", `${P}_h`, `rr${r}`, "xcs", "nbs")};`).join("\n")}
+${rs.map((r) => `    ${acc(K, r)} += ${termOff(sfmt, `${P}_sq`, "0u", `${P}_ss`, "0u", `${P}_h`, `rr${r}`, "xcs", "nbs", "b", O)};`).join("\n")}
   }
 ${Array.from({ length: KS }, (_, k) => rs.map((r) => `  ${P}_red[${(k * R + r) * WG}u + t] = ${acc(k, r)};`).join("\n")).join("\n")}
 ${tree(WG, KS * R, `${P}_red`)}
