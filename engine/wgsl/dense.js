@@ -134,3 +134,85 @@ fn attn_out_d(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id
 }
 `;
 }
+
+// Dense-engine glue kernels, bit-identical to the dispatches they replace (engine/dense.js fuse):
+//   attn_glue_d: per head, the Qwen3 q/k head_norm (one thread's in-order sum of squares, then
+//     x = x * (inv * w)), rope on (i, i + hd/2) at frame.pos + column, and for the K heads the store
+//     of the rotated K row and of the V row into the caches (replaces 2 head_norm + 2 rope dispatches
+//     and the two cache copies, which also split the layer into two compute passes).
+//   rmsnorm_dmc: base.js rmsnorm for column wg.y (strided x / y), one dispatch for every column.
+export const DENSE_GLUE_WGSL = /* wgsl */ `
+struct DGL { qs: u32, ks: u32, vs: u32, norm: u32 };   // column strides (f32s) of q, k, v; norm: 1 = QK-norm
+@group(1) @binding(0) var<storage, read_write> dgl_q: array<f32>;
+@group(1) @binding(1) var<storage, read> dgl_k: array<f32>;
+@group(1) @binding(2) var<storage, read> dgl_v: array<f32>;
+@group(1) @binding(3) var<storage, read> dgl_qw: array<f32>;
+@group(1) @binding(4) var<storage, read> dgl_kw: array<f32>;
+@group(1) @binding(5) var<storage, read_write> dgl_kc: array<f32>;
+@group(1) @binding(6) var<storage, read_write> dgl_vc: array<f32>;
+@group(1) @binding(7) var<uniform> dgl: DGL;
+var<workgroup> dgl_inv: f32;
+@compute @workgroup_size(64)
+fn attn_glue_d(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let hh = wg.x; let col = wg.y; let j = lid.x;
+  let hd = cfg.headDim; let half = hd / 2u;
+  let isQ = hh < cfg.nH;
+  let h = select(hh - cfg.nH, hh, isQ);
+  let off = select(col * dgl.ks, col * dgl.qs, isQ) + h * hd;
+  let pos = frame.pos + col;
+  if (dgl.norm != 0u) {
+    if (j == 0u) {
+      var ss: f32 = 0.0;
+      if (isQ) { for (var i: u32 = 0u; i < hd; i++) { let v = dgl_q[off + i]; ss += v * v; } }
+      else { for (var i: u32 = 0u; i < hd; i++) { let v = dgl_k[off + i]; ss += v * v; } }
+      dgl_inv = inverseSqrt(ss / f32(cfg.headDim) + cfg.eps);
+    }
+    workgroupBarrier();
+  }
+  let inv = dgl_inv;
+  for (var i: u32 = j; i < half; i += 64u) {
+    var a: f32; var b: f32;
+    if (isQ) { a = dgl_q[off + i]; b = dgl_q[off + i + half]; } else { a = dgl_k[off + i]; b = dgl_k[off + i + half]; }
+    if (dgl.norm != 0u) {
+      if (isQ) { a *= inv * dgl_qw[i]; b *= inv * dgl_qw[i + half]; }
+      else { a *= inv * dgl_kw[i]; b *= inv * dgl_kw[i + half]; }
+    }
+    let freq = pow(cfg.theta, -f32(2u * i) / f32(cfg.headDim));
+    let ang = f32(pos) * freq;
+    let c = cos(ang); let s = sin(ang);
+    let ra = a * c - b * s;
+    let rb = b * c + a * s;
+    if (isQ) { dgl_q[off + i] = ra; dgl_q[off + i + half] = rb; }
+    else {
+      let cb = pos * cfg.kvDim + h * hd;
+      dgl_kc[cb + i] = ra; dgl_kc[cb + i + half] = rb;
+      let vo = col * dgl.vs + h * hd;
+      dgl_vc[cb + i] = dgl_v[vo + i]; dgl_vc[cb + i + half] = dgl_v[vo + i + half];
+    }
+  }
+}
+
+struct DRN { n: u32, xs: u32, ys: u32, pad: u32 };
+@group(1) @binding(0) var<storage, read> drn_x: array<f32>;
+@group(1) @binding(1) var<storage, read> drn_w: array<f32>;
+@group(1) @binding(2) var<storage, read_write> drn_y: array<f32>;
+@group(1) @binding(3) var<uniform> drn: DRN;
+var<workgroup> drn_partial: array<f32, 256>;
+@compute @workgroup_size(256)
+fn rmsnorm_dmc(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let t = lid.x; let n = drn.n;
+  let xo = wg.y * drn.xs; let yo = wg.y * drn.ys;
+  var ss: f32 = 0.0;
+  for (var i: u32 = t; i < n; i += 256u) { let v = drn_x[xo + i]; ss += v * v; }
+  drn_partial[t] = ss;
+  workgroupBarrier();
+  var stride: u32 = 128u;
+  while (stride > 0u) {
+    if (t < stride) { drn_partial[t] += drn_partial[t + stride]; }
+    workgroupBarrier();
+    stride = stride / 2u;
+  }
+  let inv = inverseSqrt(drn_partial[0] / f32(n) + cfg.eps);
+  for (var i: u32 = t; i < n; i += 256u) { drn_y[yo + i] = drn_x[xo + i] * inv * drn_w[i]; }
+}
+`;
