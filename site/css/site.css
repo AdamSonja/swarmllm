@@ -499,8 +499,13 @@ html:not(.js) .ldc{display:none}
 .lh .nm::before{content:"";display:inline-block;width:6px;height:6px;margin-right:6px;border-radius:50%;background:var(--blue);vertical-align:1px;animation:blink .9s ease-in-out infinite}
 .lh b{font-weight:500;color:var(--ink)}
 .lh .n{margin-left:auto;font-variant-numeric:tabular-nums}
-.wlive pre{height:calc(6 * 1.6em + 14px);overflow:hidden;margin:0;padding:7px 11px;font:400 var(--t-sm)/1.6 var(--mono);color:var(--ink);white-space:pre;display:flex;flex-direction:column;justify-content:flex-end}
-.wlive pre span{display:block;min-height:1.6em;animation:ln .2s var(--ease)}
+/* the live card, as the room's .cm-live: code never wraps (a soft fade at the right edge), pinned to the latest
+   lines; its height is set once for what it will show (at most 6 lines, 3 on a short screen) so it never grows */
+.wlive pre{--lvn:6;--lvmax:6;height:calc(min(var(--lvn),var(--lvmax)) * 1.55em + 16px);overflow:hidden;margin:0;padding:8px 10px;font:400 var(--t-sm)/1.55 var(--mono);color:var(--ink);white-space:pre;display:flex;flex-direction:column;justify-content:flex-end;
+  -webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 24px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 24px),transparent)}
+@media (max-height:820px){.wlive pre{--lvmax:3}.diff .rs .r:nth-child(n+4){display:none}}
+.demo.editing .app{transition:none}
+.wlive pre span{display:block;flex:none;min-height:1.55em;overflow:hidden;animation:ln .2s var(--ease)}
 @keyframes ln{from{opacity:0}}
 .wlive pre span:last-child::after{content:"";display:inline-block;width:6px;height:11px;margin-left:2px;vertical-align:-1px;background:var(--blue)}
 .diff{border-top:1px solid var(--rule-2);font-size:var(--t-sm);line-height:1.5;-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 20px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 20px),transparent)}

@@ -463,6 +463,7 @@
   const liveStart = (name, key, t0, t1) => {
     liveSrc = key === "edit" ? A.diff.filter(d => d[0] === "add").map(d => d[1]) : A.files[key];
     lvF.textContent = name; lvNm.textContent = key === "edit" ? "editing" : "writing"; liveShown = -1; liveTo(0);
+    lvPre.style.setProperty("--lvn", Math.min(6, liveSrc.length));
     lv.classList.remove("pending"); if (!RM) restart(lv, "enter");
     writing = [t0, t1, liveSrc.length, name, key, key === "edit" ? liveSrc.length : lineOut[key]];
     fileState(name, "w", key === "edit" ? null : 0);
@@ -541,8 +542,9 @@
     // the served app frosts over while the agent edits it, as the room's preview does
     [c(CHANGE + 1.4), () => { liveStart("game.js", "edit", c(CHANGE + 1.4), c(CHANGE + 1.8)); flag("editing", true); }],
     [c(CHANGE + 1.9), () => { liveEnd(); fileState("game.js", "mod"); tool("c-t4"); }],
-    [c(RELOAD), () => { flag("editing", false); pvRev.textContent = "rev 2"; app.classList.add("blank"); openPreview(); reload(); }],
-    [GAME, () => { app.classList.remove("blank"); runGame(.6, true); ask(true); }],
+    // the reload happens under the frost; the frost lifts as the changed app comes up (no dark flash between)
+    [c(RELOAD), () => { pvRev.textContent = "rev 2"; app.classList.add("blank"); openPreview(); reload(); }],
+    [GAME, () => { flag("editing", false); app.classList.remove("blank"); runGame(.6, true); ask(true); }],
     [GAME + .25, () => reveal(tool("c-s3"), .035)],
     [GAME + .9, () => { tool("c-st3"); codeComposer.classList.remove("run"); }],
     [GAME + 1.5 * SPEED, () => ask(false)],
