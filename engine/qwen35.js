@@ -301,7 +301,7 @@ export class Qwen35Engine {
     this.prefillMathReq = pm;
     this._pmAvail = { f32: true, f16: false, sgmatrix: false };
     this._pmR16 = this.gemmOn && pm === "f16";
-    this.sgmWhy = pm === "sgmatrix" && !this.gemmOn ? "no prefill GEMM on this engine (batchCols < 16 or gemm: false)" : "";
+    this.sgmWhy = pm !== "f32" && !this.gemmOn ? "no prefill GEMM on this engine (batchCols < 16, gemm: false, or no GEMM shapes)" : "";
 
     // ---- pipelines with explicit layouts ----
     const unpack = await probeUnpack(device);

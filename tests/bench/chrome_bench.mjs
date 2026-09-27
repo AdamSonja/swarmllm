@@ -8,6 +8,8 @@
 //     (tests/weight_cache.js, ~/.cache/swarmllm-weights) instead of repacking in JS; WCACHE=0 = old path.
 //   CHROME_PROFILE=<dir> (default ~/.cache/swarmllm-chrome-bench): a persistent Chrome profile, so
 //     Chrome's on-disk GPU/shader caches survive between runs; CHROME_PROFILE=0 = a fresh profile each run.
+// CHROME_BIN=<path>: run that Chrome/Chromium build instead of Playwright's bundled one (e.g. a newer
+//   build that exposes chromium-experimental-subgroup-matrix for PREFILL_MATH=sgmatrix).
 // Decode is untouched either way: same page, same engine, same kernels.
 import { chromium } from "playwright"; import { spawn } from "node:child_process"; import os from "node:os"; import path from "node:path";
 const root = new URL("../..", import.meta.url).pathname, model = process.argv[2], N = process.argv[3] || 40, EXTRA = process.argv[4] ? "&" + process.argv[4] : "", MOEK = process.env.MOE_KERNEL || "";
@@ -16,8 +18,9 @@ const wcache = process.env.WCACHE !== "0", prof = process.env.CHROME_PROFILE ?? 
 const srv = spawn("node", [root + "tests/bench/serve.mjs", root, "8791"], { stdio: "inherit" }); await new Promise((r) => setTimeout(r, 600));
 const args = ["--no-sandbox", "--headless=new", "--enable-unsafe-webgpu", "--use-gl=angle", "--use-angle=gl-egl", "--enable-features=Vulkan", "--ignore-gpu-blocklist", "--js-flags=--max-old-space-size=65536"];
 let b, ctx;
-if (prof && prof !== "0") { ctx = await chromium.launchPersistentContext(prof, { headless: false, args }); console.log("chrome profile:", prof); }
-else { b = await chromium.launch({ headless: false, args }); ctx = await b.newContext(); }
+const exe = process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {};
+if (prof && prof !== "0") { ctx = await chromium.launchPersistentContext(prof, { headless: false, args, ...exe }); console.log("chrome profile:", prof); }
+else { b = await chromium.launch({ headless: false, args, ...exe }); ctx = await b.newContext(); }
 const p = await ctx.newPage(); p.on("console", (m) => console.log("  tab:", m.text())); p.on("crash", () => console.log("TAB CRASHED"));
 const gold = GOLD[Object.keys(GOLD).find((k) => model.includes(k))] || [];
 await p.goto(`http://127.0.0.1:8791/tests/bench/bench.html?model=/${model}&tokens=${N}&wcache=${wcache ? 1 : 0}&gold=${encodeURIComponent(JSON.stringify(gold))}${EXTRA}${process.env.MOE_FUSE === "0" ? "&moefuse=0" : ""}${process.env.MOE_DN_ROWS ? "&moednrows=" + process.env.MOE_DN_ROWS : ""}${MOEK ? "&moe=" + encodeURIComponent(MOEK) : ""}${process.env.PREFILL_MATH ? "&prefillmath=" + process.env.PREFILL_MATH : ""}${process.env.PREFILL ? "&prefill=" + process.env.PREFILL : ""}${process.env.SGM ? "&sgm=" + encodeURIComponent(process.env.SGM) : ""}`);

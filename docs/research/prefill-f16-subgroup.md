@@ -144,6 +144,59 @@ PREFILL_MATH=f16 PREFILL=512 node tests/bench/chrome_bench.mjs models/q38/model.
   everything runs f32. Use a current Chrome (for example with `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`
   or `channel: "chrome"`).
 
+## GPU validation results (2026-09-27, GB10)
+
+**Verdict: keep behind the flag, no speedup on this machine.** The default path is unchanged and every
+golden passes. `"f16"` keeps the goldens but runs about 1% slower. `"sgmatrix"` can never turn on here:
+Chrome on the GB10 exposes the extension, but only with integer matrix shapes, and without `shader-f16`.
+
+**Goldens**
+
+| check | default (f32) | `PREFILL_MATH=f16` |
+|---|---|---|
+| `tests/run.sh quick` | 8/8 pass | (no prefill GEMM on the small models) |
+| `tests/run.sh q38` | 9/9 pass | 9/9 pass, same text; only `test_ctx` uses 16-column passes |
+| `test_gemm` | worst 1.63e-6 (gate 5e-6) | f16 twin: 2.56e-4 vs GEMV, 3e-7..8.5e-7 vs the f16-operand CPU reference |
+| `test_batch_q38` BCOLS=16 ROWSB=1 | relDiff 1.74e-7, argmax 220 | relDiff **2.70e-5**, argmax 220 (gate 2e-3) |
+| `test_mtp` BCOLS=16 ROWSB=1 | 28/33, spec == plain | 28/33, spec == plain, same text |
+| `test_moe.js` | 3/3 MATCH llama.cpp, spec == plain, 28/33 28/39 25/45 | identical (f16 cannot run: the MoE has no prefill GEMM) |
+
+**27B speed, Deno** (`bench_ctx`, TOKENS=8)
+
+| fill | prefill f32 | prefill f16 | plain decode f32 / f16 | spec decode f32 / f16 |
+|---|---|---|---|---|
+| 512 | 66.3 | 65.7 | 8.73 / 8.70 | 12.61 / 12.59 |
+| 4096 | 59.4 | 59.1 | 8.52 / 8.47 | 17.82 / 17.91 |
+| 16384 | 35.1 | 35.0 | 7.41 / 7.59 | 7.23 / 7.24 |
+
+`prof_prefill` at 4096 tokens: 61.9 tok/s with f32 and 61.0 with f16. The FFN GEMMs take 29.8 s with
+f32 and 30.6 s with f16 (+2.5%), and the DeltaNet projections 11.0 s and 11.3 s. Every
+`_r16` kernel is 1–4% slower than its f32 twin.
+
+**Chrome.** Playwright's bundled full Chromium is build 1148 (Chrome 131). A newer headless shell
+(Chromium 145.0.7632.0) is in `~/.cache/ms-playwright/chromium_headless_shell-1208`. Both
+`chrome_bench.mjs` and `sgm_gemm.mjs` now take `CHROME_BIN=<path>` to use it. On the GB10 (NVIDIA
+Vulkan) with Chromium 145:
+- **Features.** The adapter has `chromium-experimental-subgroup-matrix` and `subgroups`, but not
+  `shader-f16`. `--enable-dawn-features=allow_unsafe_apis` does not change that.
+- **Matrix shapes.** `subgroupMatrixConfigs` lists only integer shapes: `u8`→`u32` and `i8`→`i32` at
+  16x16x32 and 16x8x32. There is no f16 shape at all, so the f16→f32 tensor-core GEMM cannot be built.
+- **Fallback works.** With the full 27B at `batchcols=16`, the engine logs "device lacks
+  shader-f16", runs f32 and stays correct: 79.1 tok/s prefill at 512 tokens, spec == plain.
+- **Builtin spelling.** Chromium 145 accepts only the older "bool" form
+  (`subgroupMatrixLoad<T>(p, off, colMajor, stride)`). The "template" form fails to compile. The
+  engine tries both, so this is harmless.
+- **Integer throughput.** A microbenchmark measured the i8 MMA at **134 TOPS** (4 subgroups per
+  workgroup, 8 accumulators each, operands in workgroup memory). Compare 16.7 TFLOPS for f32 FMA,
+  59.7 TOPS for `dot4I8Packed`, and 3–5.5 TFLOPS for today's prefill GEMM.
+
+**Follow-up worth doing: an int8 version of this kernel.** Keep the drop-in shape (same bindings,
+split-K and reduce). Unpack Q4_0/Q8_0 weights to i8 exactly. Quantize the activations to i8 per
+32-block and per column (Q8_1-style, as llama.cpp's MMQ does). Run one 16x16x32 MMA per block,
+then store the i32 tile to workgroup memory and apply w_scale x x_scale into f32 accumulators.
+Activation quantization changes the numbers more than f16 inputs do, so it stays behind a flag
+until the goldens say otherwise. It also only helps in Chrome.
+
 ## Risks
 
 - **Nothing has been compiled on a real GPU.** The WGSL of both new kernel families has only been
