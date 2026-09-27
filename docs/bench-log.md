@@ -384,3 +384,24 @@ unchanged. llama.cpp CUDA (b749f688, -fa 1) for scale: 27B pp512 879 / pp4096 89
 
 Decode does not regress (all within about 3%, single runs; acceptance identical: 28/33, 26/39 and 28/33, 28/39).
 Logs: scratchpad `pc/` (bc_*, cr_*, opts_*, g_*).
+
+## 2026-09-27: test_q38_bits fingerprint drift after the merge (branch integ/kernels), GB10
+
+After merging research/overnight and kopt/combined, `tests/test_q38_bits.js` with the tiled prefill attention off
+gave `BITS plain 7ab40f4 hidden bbe1f08c` instead of kopt/combined's `85b12667 / eba0b8d5`. It was not a kernel
+change. The test built its prompt from the first 300 tokens of `engine/gguf.js`, read live from disk, and the audit
+commit b3f50e1 (comment-only) rewrote the header comment of that file. So the input changed, not the math. Bisect:
+kopt/combined's `engine/wgsl` alone did not move the hash, its whole `engine/` did (it carries the old gguf.js),
+and `WEIGHT_CACHE=0` and kopt's qwen35.js alone did not. gguf.js differs between the two only in comments.
+
+Fix: the prompt is now a frozen fixture, `tests/golden/q38_bits_prompt.txt` (the first 150 lines of gguf.js as of
+kopt/combined), and the test reads that. Same prompt everywhere, same bits:
+
+| Branch | ATTN_PREFILL_TILE | BITS plain | hidden | spec vs plain |
+|---|---|---|---|---|
+| feat/engine-opt (f615846) | n/a (no tile) | 85b12667 | eba0b8d5 | == plain |
+| kopt/combined | n/a | 85b12667 | eba0b8d5 | == plain |
+| integ/kernels | 0 | 85b12667 | eba0b8d5 | == plain |
+| integ/kernels | default (on for dense) | 8a532ef5 | 52f2ae10 | == plain, same 13 tokens |
+
+The only deviation is the tiled prefill attention (prefill summation order), which is the accepted one.
