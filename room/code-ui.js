@@ -99,10 +99,12 @@ export function codeUI({ onMode = () => {} } = {}) {
   const add = (el) => { const stick = near(); empty?.remove(); empty = null; log.append(el); if (stick) log.scrollTop = log.scrollHeight; return el; };
   const key = (...a) => a.join(":");
   const find = (k) => log.querySelector(`[data-k="${CSS.escape(k)}"]`);
+  // the model picker lives in Chat now, not in a sidebar
+  const words = (t) => String(t).replace(/in the sidebar/g, "in Chat");
   function placeholder(text) {
     log.replaceChildren();
     empty = h("div", "cm-empty");
-    empty.innerHTML = text;
+    empty.innerHTML = words(text);
     log.append(empty);
   }
   function clear() { log.replaceChildren(); empty = null; viewFile(null); }
@@ -129,7 +131,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       }
       case "ai-code-live": liveCard(d); break;
       case "ai-code-tool": for (const l of log.querySelectorAll(".cm-live")) l.remove(); toolCard(d); break;
-      case "ai-code-note": add(h("div", "cm-note" + (d.err ? " err" : ""), d.text)); break;
+      case "ai-code-note": add(h("div", "cm-note" + (d.err ? " err" : ""), words(d.text))); break;
       case "ai-code-done": {
         for (const l of log.querySelectorAll(".cm-live")) l.remove();
         for (const t of log.querySelectorAll('.cm-text[aria-busy="true"]')) t.removeAttribute("aria-busy");
@@ -260,21 +262,21 @@ export function codeUI({ onMode = () => {} } = {}) {
   function tree(paths) {
     const t = $("code-tree");
     t.replaceChildren();
-    if (!paths?.length) { t.append(h("div", "none", "no files yet")); return; }
+    if (!paths?.length) { t.append(h("div", "none", "No files yet")); return; }
     let prev = [];
     for (const p of paths.slice(0, 500)) {
       const parts = p.split("/");
       for (let i = 0; i < parts.length - 1; i++) {
         if (prev[i] === parts[i]) continue;
-        const d = h("div", "d", parts[i] + "/"); d.style.paddingLeft = 12 + i * 14 + "px"; t.append(d);
+        const d = h("div", "d", parts[i]); d.style.paddingLeft = 8 + i * 14 + "px"; t.append(d);
         prev = parts.slice(0, i + 1);
       }
       prev = parts.slice(0, -1);
       const f = h("button", "f", parts[parts.length - 1]);
       f.type = "button";
-      f.style.paddingLeft = 12 + (parts.length - 1) * 14 + "px";
+      f.style.paddingLeft = 8 + (parts.length - 1) * 14 + "px";
       f.dataset.path = p;
-      f.onclick = () => { t.querySelectorAll(".f.on").forEach((x) => x.classList.remove("on")); f.classList.add("on"); fileClick(p); };
+      f.onclick = () => { t.querySelectorAll(".f.on").forEach((x) => x.classList.remove("on")); f.classList.add("on"); outTab("files"); fileClick(p); };
       t.append(f);
     }
     if (paths.length > 500) t.append(h("div", "none", `(+${paths.length - 500} more)`));

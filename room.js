@@ -154,42 +154,74 @@ const iconFor = (meta) => meta.phone || /iPhone|Android$/.test(meta.ua || "") ? 
 // "0–19" (what the deal sends) -> "1–20", the way people count layers
 const humanRange = (r) => { const m = /^(\d+)\D+(\d+)$/.exec(String(r || "")); return m ? `${+m[1] + 1}\u2013${+m[2] + 1}` : String(r || ""); };
 function peerCard(id, name, meta, self) {
+  // a chip in the room bar (the landing's: dot, icon, name, GB); a click opens the device's card
   const card = document.createElement("div");
   card.className = "peer-card" + (self ? " self" : "");
+  card.setAttribute("role", "listitem");
   card.dataset.name = name;
   card.innerHTML = `
-    <div class="peer-name"><span class="pic">${iconFor(meta)}</span><span class="pname"></span><span class="pst"></span></div>
-    <div class="peer-sub"><span class="dot ${self || meta.webgpu ? "ok" : "warn"}"></span><span class="pkind"></span><span aria-hidden="true">\u00b7</span><span class="buf">\u2014</span><span class="play"></span></div>
-    <div class="peer-gpu dev-only"></div>
-    <div class="peer-stats dev-only">
-      <span>rtt <b class="rtt">\u2014</b></span>
-      <span>bw <b class="bw">\u2014</b></span>
-    </div>
-    ${self ? '<button class="compute-btn" id="compute-btn-self" type="button"><span class="cdots" aria-hidden="true"><i></i><i></i><i></i></span>Just compute</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}`;
+    <button class="pchip" type="button" aria-expanded="false"><span class="dot ${self || meta.webgpu ? "ok" : "warn"}"></span><span class="pic">${iconFor(meta)}</span><span class="pname"></span><span class="cg"></span><span class="cst"></span></button>
+    <div class="pop" hidden>
+      <div class="pop-h"><span class="pic2">${iconFor(meta)}</span><span class="pn"></span><span class="pst"></span></div>
+      <div class="peer-sub"><span class="pkind"></span><span aria-hidden="true">\u00b7</span><span class="buf">\u2014</span><span class="play"></span></div>
+      <div class="peer-gpu dev-only"></div>
+      <div class="peer-stats dev-only">
+        <span>rtt <b class="rtt">\u2014</b></span>
+        <span>bw <b class="bw">\u2014</b></span>
+      </div>
+      ${self ? '<button class="compute-btn" id="compute-btn-self" type="button"><span class="cdots" aria-hidden="true"><i></i><i></i><i></i></span>Just compute on this device</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}
+    </div>`;
   paintCard(card, name, meta, self);
   $("peers").appendChild(card);
+  card.querySelector(".pchip").addEventListener("click", (e) => { e.stopPropagation(); chipPop(card); });
   if (!self) card.querySelector(".bw-btn").addEventListener("click", () => bwTest(id));
-  else card.querySelector(".compute-btn").addEventListener("click", () => compute.open());
+  else card.querySelector(".compute-btn").addEventListener("click", () => { chipPop(null); compute.open(); });
   return card;
 }
+// one device card open at a time, placed under its chip (fixed, so the scrolling chip row never clips it)
+function chipPop(card) {
+  for (const c of document.querySelectorAll("#peers .peer-card")) {
+    const open = c === card && c.querySelector(".pop").hidden;
+    c.querySelector(".pop").hidden = !open;
+    c.querySelector(".pchip").setAttribute("aria-expanded", String(open));
+    if (open) {
+      const r = c.querySelector(".pchip").getBoundingClientRect(), pop = c.querySelector(".pop");
+      const w = Math.min(272, innerWidth - 24);
+      pop.style.width = w + "px";
+      pop.style.left = Math.max(12, Math.min(r.left, innerWidth - w - 12)) + "px";
+      pop.style.top = r.bottom + 8 + "px";
+    }
+  }
+}
+document.addEventListener("click", (e) => { if (!e.target.closest?.(".pop")) chipPop(null); if (!e.target.closest?.("#room-menu")) $("room-menu").open = false; });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { chipPop(null); $("room-menu").open = false; } });
+addEventListener("resize", () => chipPop(null));
+$("peers").addEventListener("scroll", () => chipPop(null), { passive: true });
 // what a card says about its device (the sim hook repaints with made-up devices)
 function paintCard(card, name, meta, self) {
   card.querySelector(".pname").textContent = name;
-  if (self) card.querySelector(".pname").insertAdjacentHTML("beforeend", " <small>(you)</small>");
-  card.querySelector(".pic").innerHTML = iconFor(meta);
+  card.querySelector(".pn").textContent = name;
+  if (self) card.querySelector(".pn").insertAdjacentHTML("beforeend", " <small>(you)</small>");
+  card.querySelector(".pic").innerHTML = card.querySelector(".pic2").innerHTML = iconFor(meta);
   card.querySelector(".dot").className = "dot " + (self || meta.webgpu ? "ok" : "warn");
   card.querySelector(".pkind").textContent = !meta.ua || meta.ua === "Device" ? "Computer" : meta.ua;
   card.querySelector(".peer-gpu").textContent = meta.webgpu
     ? `${meta.ua} · ${meta.gpu}` : `${meta.ua} · no WebGPU`;
   const budget = meta.budgetGB || meta.maxBufGB;
   card.querySelector(".buf").textContent = meta.webgpu === false ? "no WebGPU" : meta.contribGB ? lends(meta.contribGB) : (budget ? budget + " GB" : "\u2014");
-  peerStatus(card, meta.webgpu === false ? "asks only" : self ? "" : "connected");
+  card.querySelector(".cg").textContent = meta.webgpu === false ? "asks" : meta.contribGB ? meta.contribGB + " GB" : "";
+  card.querySelector(".pchip").title = `${name}: ${card.querySelector(".buf").textContent}`;
+  peerStatus(card, meta.webgpu === false ? "asks only" : self ? "this device" : "connected");
 }
-// the status word on a device card: connected, loading N%, ready
+// the status word on a device card: connected, loading N%, ready. While it loads, its chip shows the %
 function peerStatus(card, text, ok = false) {
   const el = card?.querySelector(".pst"); if (!el) return;
   el.textContent = text; el.classList.toggle("ok", ok);
+  const pct = /(\d+)%$/.exec(text);
+  card.classList.toggle("loading", !!pct && +pct[1] < 100);
+  card.querySelector(".cst").textContent = pct ? pct[1] + "%" : "";
 }
+function setLends(card, gb) { card.querySelector(".buf").textContent = lends(gb); card.querySelector(".cg").textContent = gb + " GB"; }
 
 let wasReady = false;
 // The model ladder: every model with what this room still needs for it, smallest first. Until
@@ -266,10 +298,10 @@ function enterRoom() {
     const row = document.createElement("div");
     row.className = "pledge";
     row.innerHTML = `Lend <input type="number" min="1" max="64" step="1" value="${myMeta.contribGB}" aria-label="Gigabytes of memory to lend"> GB`;
-    selfCard.appendChild(row);
+    selfCard.querySelector(".pop").appendChild(row);
     row.querySelector("input").addEventListener("change", (e) => {
       const v = parseFloat(e.target.value);
-      if (v >= (myMeta.phone ? 0.5 : 1)) { myMeta.contribGB = v; selfCard.querySelector(".buf").textContent = lends(v); updateCluster(); broadcastAll({ t: "pledge", gb: v }); }
+      if (v >= (myMeta.phone ? 0.5 : 1)) { myMeta.contribGB = v; setLends(selfCard, v); updateCluster(); broadcastAll({ t: "pledge", gb: v }); }
     });
   }
 }
@@ -402,7 +434,7 @@ function onData(from, d) {
         seen.add(m.id);
         members.set(m.id, { name: m.name, meta: m.meta });
         const c = ensureCard(m.id, m.name, m.meta);
-        if (m.meta?.contribGB) c.querySelector(".buf").textContent = lends(m.meta.contribGB);
+        if (m.meta?.contribGB) setLends(c, m.meta.contribGB);
         const ce = conns.get(m.id); if (ce) ce.meta = m.meta;
       }
       for (const id of [...members.keys()]) if (!seen.has(id)) { members.delete(id); dropCard(id); }
@@ -416,7 +448,7 @@ function onData(from, d) {
       break;
     }
     case "pledge":
-      if (e) { e.meta = { ...e.meta, contribGB: d.gb }; if (e.card) e.card.querySelector(".buf").textContent = lends(d.gb); }
+      if (e) { e.meta = { ...e.meta, contribGB: d.gb }; if (e.card) setLends(e.card, d.gb); }
       if (members.has(from)) members.get(from).meta = { ...members.get(from).meta, contribGB: d.gb };
       if (isHost && roster.has(from)) { roster.get(from).meta = { ...roster.get(from).meta, contribGB: d.gb }; broadcastRoster(); }
       updateCluster();
@@ -649,6 +681,7 @@ function openShare() {
 }
 $("room-badge").addEventListener("click", openShare);
 $("share-btn").addEventListener("click", openShare);
+for (const b of document.querySelectorAll("[data-invite]")) b.addEventListener("click", openShare);
 $("share-close").addEventListener("click", () => { $("share").hidden = true; });
 $("share").addEventListener("click", (e) => { if (e.target === $("share")) $("share").hidden = true; });
 $("share-copy").addEventListener("click", copyRoomLink);
@@ -1792,8 +1825,8 @@ function mapStats(tps, acc) {
   return { tps, acc, lap: Math.round(lap), gpu: Math.round(gpu), net: Math.max(0, Math.round(lap - gpu)) };
 }
 let lastMap = null, bestTps = 0;
-// one colour per device in the chain, the landing's blues first
-const SWATCH = ["#3152FF", "#4A5FD0", "#9AA8F0", "#1F2FA8", "#6E86FF", "#C3CCF8", "#2B3A8F", "#8EA2FF"];
+// one colour per device in the chain: the landing's blue, then its near-black, then lighter blues
+const SWATCH = ["#3152FF", "#2B2F3C", "#8EA2FF", "#4A5FD0", "#5E616B", "#C3CCF8", "#1F2FA8", "#9AA8F0"];
 const swatch = (i) => i < 0 ? "var(--faint)" : SWATCH[i % SWATCH.length];
 function renderMap(nodes, st, live) {
   const el = $("swarm-map"); if (!el || !nodes?.length) return;
@@ -1810,19 +1843,27 @@ function renderMap(nodes, st, live) {
       <div class="sm-sub">${x.host ? "embed · " : ""}${x.layers ? "L" + esc(String(x.layers)) : ""}${x.host ? " · head" : ""}</div>
       <div class="sm-ms">${x.ms ? Math.round(x.ms) + " ms" : ""}${x.amax ? ` <span class="sm-amax" title="largest activation this device sent (f16 tops out at 65504)">|x|≤${Math.round(x.amax)}</span>` : ""}</div></div>`).join('<div class="sm-link"><i></i></div>')
     + (nodes.length > 1 ? '<div class="sm-link back"><i></i></div>' : "");
-  // the layer strip: one cell per layer (or per few, for deep models), coloured by the device holding it
+  // the layer band: one lane per device (its name, its layers), one cell per layer (or per few, for
+  // deep models) in the device's colour. The sweep runs across every cell, lane after lane.
   const spans = nodes.map((x, i) => { const m = /^(\d+)\D+(\d+)$/.exec(String(x.layers || "")); return m ? { i, name: x.name, lo: +m[1], hi: +m[2] + 1 } : null; }).filter(Boolean);
   const total = spans.reduce((t, x) => Math.max(t, x.hi), 0);
   const strip = el.querySelector(".sm-strip");
-  const sig = spans.map((x) => `${x.i}:${x.lo}-${x.hi}`).join(",");
+  const sig = spans.map((x) => `${x.i}:${x.name}:${x.lo}-${x.hi}`).join(",");
   if (strip.dataset.sig !== sig) {
     strip.dataset.sig = sig;
     const n = Math.min(total, 64), per = total / Math.max(1, n);
-    let html = "";
-    for (let c = 0; c < n; c++) { const L = c * per, sp = spans.find((x) => L >= x.lo && L < x.hi); const prev = c ? spans.find((x) => (c - 1) * per >= x.lo && (c - 1) * per < x.hi) : sp; html += `<i${prev !== sp ? ' class="b"' : ""} style="--c:${c};background:${swatch(sp ? sp.i : -1)}"${sp ? ` title="${esc(String(sp.name))}: layers ${sp.lo + 1}\u2013${sp.hi}"` : ""}></i>`; }
-    strip.innerHTML = html;
+    let c = 0;
+    strip.innerHTML = spans.sort((x, y) => x.lo - y.lo).map((sp) => {
+      let cells = "";
+      for (; c < n && c * per < sp.hi; c++) cells += `<i style="--c:${c}"></i>`;
+      const dev = [...conns.values()].find((e) => e.name === sp.name)?.meta;
+      const icon = iconFor(sp.name === myName ? myMeta : dev || {});
+      return `<div class="sm-half" style="--sw:${swatch(sp.i)};--n:${Math.max(1, sp.hi - sp.lo)}" title="${esc(String(sp.name))}: layers ${sp.lo + 1}\u2013${sp.hi}"><p class="hl">${icon}<b>${esc(String(sp.name))}</b><span>layers ${sp.lo + 1}-${sp.hi}</span></p><div class="cells">${cells}</div></div>`;
+    }).join('<span class="sm-gap"></span>');
     strip.style.setProperty("--cells", n);
   }
+  const agm = $("ag-m");
+  if (agm) agm.textContent = `${shortName(ai.model || $("ai-model").value)} on ${nodes.length} device${nodes.length > 1 ? "s" : ""}`;
   el.querySelector(".sm-model").textContent = shortName(ai.model || $("ai-model").value);
   // the device cards say which layers they hold, in the strip's colours
   for (const card of document.querySelectorAll("#peers .peer-card")) {
