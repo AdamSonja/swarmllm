@@ -86,11 +86,13 @@
           <div class="hd">
             <span class="hd-room"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#i-mark"/></svg><span class="hd-k">Room</span><b class="hd-code" id="hdCode" aria-label="K7QX"><span>K</span><span>7</span><span>Q</span><span>X</span></b></span>
             <ul class="chips" id="chips" aria-label="Devices in the room">
-              <li class="chip c0"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg><span class="cn" data-name="0">fox</span><span class="cg">10 GB</span></li>
-              <li class="chip c1"><svg width="14" height="14" aria-hidden="true"><use href="#i-desk"/></svg><span class="cn" data-name="1">heron</span><span class="cg">12 GB</span></li>
-              <li class="chip c2"><svg width="14" height="14" aria-hidden="true"><use href="#i-phone"/></svg><span class="cn" data-name="2">lynx</span><span class="cg">2 GB</span></li>
+              <li class="chip c0"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg><span class="cn" data-name="0">fox</span><span class="cg">10 GB</span><span class="cst"></span></li>
+              <li class="chip c1"><svg width="14" height="14" aria-hidden="true"><use href="#i-desk"/></svg><span class="cn" data-name="1">heron</span><span class="cg">12 GB</span><span class="cst"></span></li>
+              <li class="chip c2"><svg width="14" height="14" aria-hidden="true"><use href="#i-phone"/></svg><span class="cn" data-name="2">lynx</span><span class="cg">2 GB</span><span class="cst"></span></li>
             </ul>
             <span class="hd-sum"><b id="gbSum">24 GB</b> pooled</span>
+            <span class="hd-inv" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>Invite</span>
+            <span class="hd-me" id="hdMe" aria-hidden="true"><svg class="hm" width="16" height="16" viewBox="0 0 24 24"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:2"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:3"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:2"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:3"/><circle class="lit" cx="18.5" cy="18.5" r="3.9" style="--rc:4"/></svg></span>
           </div>
 
           <div class="body" id="body">
@@ -152,6 +154,7 @@
                     <li class="ok" data-need="17"><span class="rn">Qwen3.8 27B</span><span class="fig"><span class="nd">17 GB</span><b>fits</b><span class="more"></span></span></li>
                     <li class="ok sel" data-need="22.5"><span class="rn">Qwen3.6 35B MoE</span><span class="fig"><span class="nd">22.5 GB</span><b>fits</b><span class="more"></span></span></li>
                   </ul>
+                  <p class="cd-note">Each device downloads only its own layers, once. They stay cached for next time.</p>
                   <span class="mbtn blue" id="startBtn">Start the model</span>
                 </div>
                 <div class="cd-pool">
@@ -159,34 +162,35 @@
                     <p class="ap-k"><span>The room pools</span><b id="poolGB">24 GB</b></p>
                     <div class="meter" id="meter" aria-hidden="true">
                       <div class="mt-fill"><i class="c0" style="width:39.3%"></i><i class="c1" style="width:47.2%"></i><i class="c2" style="width:7.9%"></i></div>
-                      <div class="mt-ticks"><span class="ok" style="left:15.7%"></span><span class="ok" style="left:66.8%"></span><span class="ok sel r" id="tick" style="left:88.4%"><b>Qwen3.6 35B MoE needs 22.5 GB</b></span></div>
+                      <div class="mt-ticks"><span class="ok" style="left:15.7%"></span><span class="ok" style="left:66.8%"></span><span class="ok sel r" id="tick" style="left:88.4%"></span></div>
                     </div>
+                    <p class="need ok" id="need">Qwen3.6 35B MoE needs <b>22.5 GB</b><span>fits</span></p>
                     <ul class="devs" id="devs" aria-label="What each device lends">
-                      <li class="c0"><i></i><svg width="13" height="13" aria-hidden="true"><use href="#i-laptop"/></svg><span><span data-name="0">fox</span> <small>(this device)</small></span><b>10 GB</b></li>
-                      <li class="c1"><i></i><svg width="13" height="13" aria-hidden="true"><use href="#i-desk"/></svg><span data-name="1">heron</span><b>12 GB</b></li>
-                      <li class="c2"><i></i><svg width="13" height="13" aria-hidden="true"><use href="#i-phone"/></svg><span><span data-name="2">lynx</span> <small>(phone)</small></span><b>2 GB</b></li>
+                      <li class="c0"><i></i><span><span data-name="0">fox</span> <small>(this device)</small></span><b>10 GB</b></li>
+                      <li class="c1"><i></i><span data-name="1">heron</span><b>12 GB</b></li>
+                      <li class="c2"><i></i><span><span data-name="2">lynx</span> <small>(phone)</small></span><b>2 GB</b></li>
                     </ul>
                   </section>
                   <section class="cd-sec cd-me">
-                    <p class="ap-k"><span>This device lends</span></p>
+                    <p class="ap-k"><span>This device gives</span></p>
                     <span class="ap-step"><span class="step" id="lendMinus">&minus;</span><b id="lendGB">10</b><span class="u">GB</span><span class="step" id="lendPlus">+</span></span>
                   </section>
                 </div>
               </div>
 
               <div class="band" id="band">
-                <p class="bd-h"><span class="bd-n">Qwen3.6 35B MoE</span><span class="bd-live" aria-hidden="true"><i></i><span id="bdLive">Ready</span></span><span class="bd-s" id="mdS">Ready on 3 devices · 40 layers, split by memory</span></p>
+                <p class="bd-h"><span class="bd-n">Qwen3.6 35B MoE</span><span class="bd-live" aria-hidden="true"><i></i><span id="bdLive">Ready</span></span><span class="bd-mini" aria-hidden="true"><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c2"></i><i class="c2"></i><i class="c2"></i></span><span class="bd-s" id="mdS">Ready on 3 devices · 40 layers, split by memory</span><span class="bd-stats" aria-hidden="true"><span><b>21.4</b>tok/s</span><span><b>64</b>ms per word</span><span><b id="bdTok">31</b>tokens</span><span><b>1.8k / 32k</b>context</span></span><span class="bd-tog" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m4 10 4-4 4 4"/></svg></span></p>
                 <div class="rows" id="rows">
                   <div class="row c0">
-                    <p class="hl"><i class="act" aria-hidden="true"></i><svg width="13" height="13" aria-hidden="true"><use href="#i-laptop"/></svg><b data-name="0">fox</b><span class="hs"><span class="lr">layers 1-17</span><span class="hg" id="hg0">9.6 GB, from cache</span></span></p>
+                    <p class="hl"><i class="act" aria-hidden="true"></i><svg width="13" height="13" aria-hidden="true"><use href="#i-laptop"/></svg><b data-name="0">fox</b><span class="hs"><span class="lr">layers 1-17</span><span class="lms">18 ms</span><span class="hg" id="hg0">9.6 GB, from cache</span></span></p>
                     <div class="cells" id="cells0"><i style="grid-column-start:1"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
                   </div>
                   <div class="row c1">
-                    <p class="hl"><i class="act" aria-hidden="true"></i><svg width="13" height="13" aria-hidden="true"><use href="#i-desk"/></svg><b data-name="1">heron</b><span class="hs"><span class="lr">layers 18-37</span><span class="hg" id="hg1">11.2 GB, ready</span></span></p>
+                    <p class="hl"><i class="act" aria-hidden="true"></i><svg width="13" height="13" aria-hidden="true"><use href="#i-desk"/></svg><b data-name="1">heron</b><span class="hs"><span class="lr">layers 18-37</span><span class="lms">27 ms</span><span class="hg" id="hg1">11.2 GB, ready</span></span></p>
                     <div class="cells" id="cells1"><i style="grid-column-start:18"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
                   </div>
                   <div class="row c2">
-                    <p class="hl"><i class="act" aria-hidden="true"></i><svg width="13" height="13" aria-hidden="true"><use href="#i-phone"/></svg><b data-name="2">lynx</b><span class="hs"><span class="lr">layers 38-40</span><span class="hg" id="hg2">1.7 GB, ready</span></span></p>
+                    <p class="hl"><i class="act" aria-hidden="true"></i><svg width="13" height="13" aria-hidden="true"><use href="#i-phone"/></svg><b data-name="2">lynx</b><span class="hs"><span class="lr">layers 38-40</span><span class="lms">36 ms</span><span class="hg" id="hg2">1.7 GB, ready</span></span></p>
                     <div class="cells" id="cells2"><i style="grid-column-start:38"></i><i></i><i></i></div>
                   </div>
                   <span class="pkt" id="pkt" aria-hidden="true"></span>
@@ -211,9 +215,11 @@
 
             <div class="scene s-chat">
               <ol class="msgs" id="msgs">
+                <li class="sys"><svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8"/><circle cx="10.2" cy="3.4" r="1.99"/><circle cx="18.5" cy="3.4" r="2.38"/><circle cx="3.4" cy="10.2" r="1.99"/><circle cx="10.2" cy="10.2" r="2.38"/><circle cx="18.5" cy="10.2" r="2.94"/><circle cx="3.4" cy="18.5" r="2.38"/><circle cx="10.2" cy="18.5" r="2.94"/><circle cx="18.5" cy="18.5" r="3.9"/></svg><span>Model ready on 3 devices</span></li>
                 <li class="q" data-at="q1"><span class="who" data-name="0">fox</span><p>what is Pooled?</p></li>
-                <li class="a" data-at="a1"><span class="who">Qwen3.6 35B MoE</span><p class="say" id="a1">Pooled splits one open model across this room. fox runs layers 1 to 17, heron 18 to 37, lynx 38 to 40. Every word passes through all three. It can write code too.</p></li>
+                <li class="a" data-at="a1"><span class="who"><span class="wn">Qwen3.6 35B MoE</span><span class="wd" aria-hidden="true"><i></i><i></i><i></i></span></span><p class="wkb" aria-hidden="true"><span class="working"><svg class="wk-mk" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:3"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:4"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:3"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:4"/><circle class="lit" cx="18.5" cy="18.5" r="3.9" style="--rc:5"/></svg><span>Pondering…</span></span></p><p class="say" id="a1">Pooled splits one open model across this room. fox runs layers 1 to 17, heron 18 to 37, lynx 38 to 40. Every word passes through all three. It can write code too.</p><div class="m-acts" aria-hidden="true"><span class="icon-act"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8.5" rx="1.8"/><path d="M10.5 5.5V3.8c0-1-.8-1.8-1.8-1.8H4.3c-1 0-1.8.8-1.8 1.8v4.4c0 1 .8 1.8 1.8 1.8h1.2"/></svg></span><span class="stats">21.4 tok/s · 3 devices</span></div></li>
               </ol>
+              <div class="ctools" aria-hidden="true"><span class="ct-b">Show drafts</span><span class="ctx"><i style="--p:1"></i>1% of context</span></div>
               <div class="composer" id="chatComposer" aria-hidden="true">
                 <span class="field"><span class="typed" id="chatTyped"></span><span class="ph">Message the room</span></span>
                 <span class="send">Send</span>
@@ -223,7 +229,8 @@
             <!-- 6 to 8: Code. Files on the left, the agent, then the app it serves -->
             <div class="scene s-code">
               <div class="files">
-                <p class="fh"><svg width="14" height="14" aria-hidden="true"><use href="#i-dir"/></svg><span id="fDir">tetris</span></p>
+                <div class="cf-proj" aria-hidden="true"><span class="cf-sel"><span id="fDir">tetris</span><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m4 6 4 4 4-4"/></svg></span><span class="cf-btn">New</span><span class="cf-btn">Open folder…</span><span class="cf-kind">saved in this browser</span></div>
+                <p class="fh"><svg width="14" height="14" aria-hidden="true"><use href="#i-dir"/></svg><span>Files</span></p>
                 <ul class="ftree" id="ftree">
                   <li data-f="index.html"><svg width="13" height="13" aria-hidden="true"><use href="#i-file"/></svg><span class="fn">index.html</span><span class="fm">24</span></li>
                   <li data-f="style.css"><svg width="13" height="13" aria-hidden="true"><use href="#i-file"/></svg><span class="fn">style.css</span><span class="fm">60</span></li>
@@ -235,28 +242,32 @@
               <div class="agent">
                 <p class="ag-h"><span>Agent</span><span class="ag-m">Qwen3.6 35B MoE on 3 devices</span></p>
                 <ol class="log" id="log">
-                  <li class="cu" data-at="c-q"><p>build me a tetris game</p></li>
+                  <li class="cu" data-at="c-q"><span class="who" data-name="0">fox</span><p>build me a tetris game</p></li>
                   <li class="ct" data-at="c-s1"><p class="say">I'll write three files and serve them on :5173.</p></li>
-                  <li class="tool" data-at="c-t0"><p class="tl"><span class="nm">write_file</span><span class="br">index.html</span><span class="st">done</span></p></li>
-                  <li class="tool" data-at="c-t1"><p class="tl"><span class="nm">write_file</span><span class="br">style.css</span><span class="st">done</span></p></li>
-                  <li class="tool" data-at="c-t2"><p class="tl"><span class="nm">write_file</span><span class="br">game.js</span><span class="st">done</span></p></li>
+                  <li class="tool" data-at="c-t0"><p class="tl"><span class="nm">write_file</span><span class="br">index.html</span><span class="ms">21 ms</span><span class="st">done</span></p><div class="diff new"><p class="dh"><b>index.html</b><span class="nf">new file · <span class="nl">0</span> lines</span></p><div class="rs"></div></div></li>
+                  <li class="tool" data-at="c-t1"><p class="tl"><span class="nm">write_file</span><span class="br">style.css</span><span class="ms">13 ms</span><span class="st">done</span></p><div class="diff new"><p class="dh"><b>style.css</b><span class="nf">new file · <span class="nl">0</span> lines</span></p><div class="rs"></div></div></li>
+                  <li class="tool" data-at="c-t2"><p class="tl"><span class="nm">write_file</span><span class="br">game.js</span><span class="ms">20 ms</span><span class="st">done</span></p><div class="diff new"><p class="dh"><b>game.js</b><span class="nf">new file · <span class="nl">0</span> lines</span></p><div class="rs"></div></div></li>
                   <li class="wlive pending" id="lv"><p class="lh"><span class="nm">writing</span><b id="lvF">game.js</b><span class="n" id="lvN">0 lines</span></p><pre id="lvPre"></pre></li>
-                  <li class="tool" data-at="c-t3"><p class="tl"><span class="nm">serve</span><span class="br">:5173</span><span class="st">done</span></p></li>
+                  <li class="tool" data-at="c-t3"><p class="tl"><span class="nm">serve</span><span class="br">5173</span><span class="ms">552 ms</span><span class="st">done</span></p></li>
                   <li class="ct" data-at="c-s2"><p class="say">Tetris is running on :5173.</p></li>
-                  <li class="cu" data-at="c-q2"><p>make the pieces blue and add a next-piece preview</p></li>
-                  <li class="tool" data-at="c-t4"><p class="tl"><span class="nm">edit_file</span><span class="br">game.js</span><span class="dn"><span class="add">+4</span><span class="del">-1</span></span><span class="st">done</span></p>
-                    <div class="diff" id="diff"><span class="r del">const COLORS = ["#F08A6C", "#F2C14E", "#6CC5A1", ...];</span><span class="r add">const COLORS = ["#2A45E0", "#6E86FF", "#A5B4FC", ...];</span><span class="r add">const next = document.getElementById("next");</span><span class="r add">function drawNext() { paint(next, queue[0]); }</span><span class="r add">// called after each spawn()</span></div></li>
+                  <li class="cstats" data-at="c-st2"><p>5 steps · 4 tool calls · 3 devices · 8.4 s</p></li>
+                  <li class="cu" data-at="c-q2"><span class="who" data-name="0">fox</span><p>make the pieces blue and add a next-piece preview</p></li>
+                  <li class="tool" data-at="c-t4"><p class="tl"><span class="nm">edit_file</span><span class="br">game.js</span><span class="ms">16 ms</span><span class="st">done</span></p>
+                    <div class="diff"><p class="dh"><b>game.js</b><span class="dn"><span class="add">+4</span><span class="del">-1</span></span></p><div class="rs" id="diff"><span class="r del">const COLORS = ["#F08A6C", "#F2C14E", "#6CC5A1", ...];</span><span class="r add">const COLORS = ["#2A45E0", "#6E86FF", "#A5B4FC", ...];</span><span class="r add">const next = document.getElementById("next");</span><span class="r add">function drawNext() { paint(next, queue[0]); }</span><span class="r add">// called after each spawn()</span></div></div></li>
                   <li class="ct" data-at="c-s3"><p class="say">Done. The pieces are blue, and the next one shows beside the board.</p></li>
+                  <li class="cstats" data-at="c-st3"><p>3 steps · 2 tool calls · 3 devices · 3.1 s</p></li>
                 </ol>
+                <div class="cbar" aria-hidden="true"><span class="cb-auto"><i></i>Auto-approve edits</span><span class="cb-b">New task</span></div>
                 <div class="composer" id="codeComposer" aria-hidden="true">
-                  <span class="field"><span class="typed" id="codeTyped"></span><span class="ph">Ask the agent</span></span>
-                  <span class="send">Send</span>
+                  <span class="field"><span class="typed" id="codeTyped"></span><span class="ph">Ask the agent to build or change something</span></span>
+                  <span class="send">Send</span><span class="stop">Stop</span>
                 </div>
               </div>
 
               <div class="pvcol" id="pvcol">
                 <div class="pv" id="pv">
-                  <div class="pv-bar"><svg class="pv-rl" width="12" height="12" aria-hidden="true"><use href="#i-reload"/></svg><span class="pv-addr"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>localhost:5173</span><button type="button" class="pv-back" id="pvBack">Back to the demo</button><span class="br-load" aria-hidden="true"><i id="brLoad"></i></span></div>
+                  <div class="pv-h" aria-hidden="true"><span class="pv-tabs"><span class="on">Preview</span><span>Editor</span></span></div>
+                  <div class="pv-bar"><svg class="pv-rl" width="12" height="12" aria-hidden="true"><use href="#i-reload"/></svg><span class="pv-addr"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg><span class="host">localhost:5173</span><span class="pth">/index.html</span></span><span class="pv-rev" id="pvRev">rev 1</span><span class="pv-sb">sandbox</span><span class="pv-open">Open <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M3 7l4-4M3.5 3H7v3.5"/></svg></span><button type="button" class="pv-back" id="pvBack">Back to the demo</button><span class="br-load" aria-hidden="true"><i id="brLoad"></i></span></div>
                   <div class="pv-frame" id="pvFrame">
                     <div class="app" id="app">
                       <div class="game" id="game" tabindex="0" role="application" aria-label="The Tetris game the agent wrote, playing itself. Play it with the arrow keys and space; Escape hands it back.">
@@ -264,6 +275,8 @@
                         <canvas id="appc" aria-hidden="true"></canvas>
                       </div>
                     </div>
+                    <!-- while the agent edits the served app the preview frosts over, as in the room (room/code-ui.js editWin) -->
+                    <div class="ew" id="ew" aria-hidden="true"><div class="ew-box"><svg class="wk-mk" width="28" height="28" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:3"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:4"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:3"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:4"/><circle class="lit" cx="18.5" cy="18.5" r="3.9" style="--rc:5"/></svg><span class="ew-t">Editing <span id="ewF">game.js</span></span></div></div>
                     <!-- the visitor can take the game over: a moment's offer during the story, always once it ends -->
                     <button type="button" class="pv-play" id="pvPlay"><span class="pv-pill"><svg width="14" height="14" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 1.6v6.8L8.4 5z" fill="currentColor"/></svg><span id="pvPlayT">Click to play</span></span></button>
                     <!-- touch: the arrow keys and space, under the thumb -->
@@ -272,6 +285,7 @@
                       <span class="pad-r"><button type="button" tabindex="-1" data-key="ArrowUp" aria-label="Up"><svg width="16" height="16" viewBox="0 0 16 16"><path d="m3 10 5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button type="button" tabindex="-1" data-key="ArrowDown" aria-label="Down"><svg width="16" height="16" viewBox="0 0 16 16"><path d="m3 6 5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button type="button" tabindex="-1" data-key=" " class="pad-a" aria-label="Space">space</button></span>
                     </div>
                   </div>
+                  <div class="pv-con" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="m3.5 2 3 3-3 3"/></svg><span class="k">Console</span><span class="n">1 log</span><span class="c">Clear</span></div>
                 </div>
               </div>
             </div>

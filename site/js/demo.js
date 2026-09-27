@@ -201,7 +201,7 @@
   const model = $("model"), card = $("card"), band = $("band"), rowsEl = $("rows"), mdS = $("mdS");
   const gbSum = $("gbSum"), hdSum = gbSum.parentNode, poolGB = $("poolGB");
   const fills = [...$("meter").querySelectorAll(".mt-fill i")], ticks = [...$("meter").querySelectorAll(".mt-ticks span")];
-  const rungs = [...$("rungs").children], startBtn = $("startBtn");
+  const rungs = [...$("rungs").children], startBtn = $("startBtn"), need = $("need");
   const lendGB = $("lendGB"), lendPlus = $("lendPlus");
   let lent = [0, 0, 0], joining = -1;
   const paintPool = (animate, who) => {
@@ -212,6 +212,8 @@
     if (animate && !RM) restart(hdSum, "bump");
     fills.forEach((f, k) => { f.style.width = (100 * lent[k] / TOP).toFixed(2) + "%"; });
     ticks.forEach((tk, k) => tk.classList.toggle("ok", sum >= NEEDS[k]));
+    const short = Math.round((NEEDS[2] - sum) * 10) / 10;
+    need.lastChild.textContent = short > 0 ? `${short} GB short` : "fits"; need.classList.toggle("ok", short <= 0);
     chips.forEach((ch, k) => { ch.querySelector(".cg").textContent = lent[k] ? gbs(lent[k]) : ""; });
     devRows.forEach((li, k) => {
       const b = li.querySelector("b"), t = k === joining ? "joined" : lent[k] ? gbs(lent[k]) : "";
@@ -277,6 +279,7 @@
       rw.classList.toggle("done", done);
       rw.querySelector(".fill").style.width = pct + "%";
       rw.querySelector(".pct").innerHTML = done ? `<span class="lw">layers </span>${LC_RANGE[k]}` : pct + "%";
+      chips[k].querySelector(".cst").textContent = done || gb == null ? "" : pct + "%";
     });
     // before the bytes flow the room says what this device is doing; then the bytes, the total and the time left
     const b = +gb >= 1 ? gb + " GB" : Math.round(gb * 1024) + " MB";
@@ -310,7 +313,8 @@
   const LEGS = [["seg", 0, 17], ["hop", 0, 3], ["seg", 1, 20], ["hop", 1, 3], ["seg", 2, 3], ["end", 2, 4]];
   const LW = LEGS.reduce((a, l) => a + l[2], 0);
   let hotI = -1;
-  const setHot = i => { if (i === hotI) return; if (hotI >= 0) cells[hotI].classList.remove("hot"); if (i >= 0) cells[i].classList.add("hot"); hotI = i; };
+  const mini = [...demo.querySelectorAll(".bd-mini i")], bdTok = $("bdTok");
+  const setHot = i => { if (i === hotI) return; if (hotI >= 0) { cells[hotI].classList.remove("hot"); mini[hotI].classList.remove("hot"); } if (i >= 0) { cells[i].classList.add("hot"); mini[i].classList.add("hot"); } hotI = i; };
   const tok = d => { chips.forEach((ch, j) => ch.classList.toggle("tok", j === d)); rows.forEach((rw, j) => rw.classList.toggle("tok", j === d)); };
   const trip = u => {
     if (!geo) measure();
@@ -323,16 +327,20 @@
     const a = ends[2][1]; return { x: a.x, y: a.y, i: -1, d: -1, end: true };
   };
   let words = -1, flowing = false;
+  const aLi = a1.parentNode;
   const flow = t => {
+    aLi.classList.toggle("streaming", t >= A0 && t < A1); aLi.classList.toggle("done", t >= A1);
+    const wait = t >= A0 && t < A1 && t < WT[1];
+    if (wait !== aLi.classList.contains("wait")) { aLi.classList.toggle("wait", wait); toBottom(); }
     if (t < A0 || t >= A1) {
       if (flowing) { flowing = false; pkt.classList.remove("on"); band.classList.remove("hop", "writing"); bdLive.textContent = "Ready"; setHot(-1); tok(-1); a1.classList.remove("cursor"); }
       const n = t < A0 ? 0 : WORDS.length;
-      if (n !== words) { words = n; a1.textContent = n ? ANSWER : ""; }
+      if (n !== words) { words = n; a1.textContent = n ? ANSWER : ""; bdTok.textContent = n ? WORDS.length : 0; }
       return;
     }
     if (!flowing) { flowing = true; band.classList.add("writing"); bdLive.textContent = "Writing"; }
     let w = 0; while (w < WORDS.length - 1 && t >= WT[w + 1]) w++;
-    if (w !== words) { words = w; a1.textContent = WORDS.slice(0, w).join(" "); a1.classList.add("cursor"); toBottom(); }
+    if (w !== words) { words = w; a1.textContent = WORDS.slice(0, w).join(" "); a1.classList.add("cursor"); bdTok.textContent = w + 1; toBottom(); }
     const p = trip((t - WT[w]) / DUR(w));
     pkt.style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px)`;
     pkt.classList.toggle("on", !p.end);
@@ -357,7 +365,7 @@
   const log = $("log"), codeTyped = $("codeTyped"), codeComposer = $("codeComposer");
   const files = demo.querySelector(".files"), ftree = $("ftree");
   const fItems = Object.fromEntries([...ftree.children].map(li => [li.dataset.f, li]));
-  const lv = $("lv"), lvPre = $("lvPre"), lvF = $("lvF"), lvN = $("lvN");
+  const lv = $("lv"), lvPre = $("lvPre"), lvF = $("lvF"), lvN = $("lvN"), lvNm = lv.querySelector(".nm"), pvRev = $("pvRev");
   const app = $("app"), brLoad = $("brLoad"), game = $("game"), canvas = $("appc");
   const at = k => demo.querySelector(`[data-at="${k}"]`);
   const saysText = new Map();
@@ -376,6 +384,12 @@
     saysText.set(at("c-s2"), A.done); saysText.set(at("c-s3"), A.done2);
     const t4 = at("c-t4");
     t4.querySelector(".add").textContent = "+" + add; t4.querySelector(".del").textContent = "-" + del; t4.querySelector(".del").hidden = !del;
+    // each write_file card shows the new file's first lines, as the room's diff does
+    ["c-t0", "c-t1", "c-t2"].forEach(k => {
+      const card = at(k), f = card.querySelector(".br").textContent, rs = card.querySelector(".rs");
+      card.querySelector(".nl").textContent = lineOut[f]; rs.textContent = "";
+      A.files[f].filter(Boolean).slice(0, 3).forEach(txt => { const sp = document.createElement("span"); sp.className = "r add"; sp.textContent = txt; rs.append(sp); });
+    });
     const diff = $("diff"); diff.textContent = "";
     A.diff.forEach(([k, txt]) => { const sp = document.createElement("span"); sp.className = "r " + k; sp.textContent = txt; diff.append(sp); });
     game.setAttribute("aria-label", A.aria);
@@ -404,7 +418,7 @@
   };
   const liveStart = (name, key, t0, t1) => {
     liveSrc = key === "edit" ? A.diff.filter(d => d[0] === "add").map(d => d[1]) : A.files[key];
-    lvF.textContent = name; liveShown = -1; liveTo(0);
+    lvF.textContent = name; lvNm.textContent = key === "edit" ? "editing" : "writing"; liveShown = -1; liveTo(0);
     lv.classList.remove("pending"); if (!RM) restart(lv, "enter");
     writing = [t0, t1, liveSrc.length, name, key, key === "edit" ? liveSrc.length : lineOut[key]];
     fileState(name, "w", key === "edit" ? null : 0);
@@ -463,7 +477,7 @@
     [C, () => mode("code")],
     [c(.2), () => scene("code")],
     [c(.55), () => codeComposer.classList.add("hot")],
-    [c(ASK), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q"); }],
+    [c(ASK), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); codeComposer.classList.add("run"); tool("c-q"); }],
     [c(ASK + .2), () => reveal(tool("c-s1"), .035)],
     // 7: it writes three files and serves them; the preview opens on the running app
     [c(FILES), () => liveStart("index.html", "index.html", c(FILES), c(FILES + .35))],
@@ -475,15 +489,18 @@
     [c(FILES + 2.4), () => { setRun("c-t3", true); tool("c-t3"); }],
     [c(SERVED), () => { setRun("c-t3", false); app.classList.remove("blank"); openPreview(); reload(); runGame(.6, false); }],
     [c(SERVED + .15), () => reveal(tool("c-s2"), .035)],
+    [c(SERVED + .6), () => { tool("c-st2"); codeComposer.classList.remove("run"); }],
     // 8: a change, an edit, a reload: the app, with the change, for a moment, and an offer to play it.
     //    (on a phone the preview covers the agent, so it steps aside while the change is asked for and made)
     [c(CHANGE), () => { flag("app-on", false); codeComposer.classList.add("hot"); }],
-    [c(CHANGE + 1.25), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q2"); }],
-    [c(CHANGE + 1.4), () => liveStart("game.js", "edit", c(CHANGE + 1.4), c(CHANGE + 1.8))],
+    [c(CHANGE + 1.25), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); codeComposer.classList.add("run"); tool("c-q2"); }],
+    // the served app frosts over while the agent edits it, as the room's preview does
+    [c(CHANGE + 1.4), () => { liveStart("game.js", "edit", c(CHANGE + 1.4), c(CHANGE + 1.8)); flag("editing", true); }],
     [c(CHANGE + 1.9), () => { liveEnd(); fileState("game.js", "mod"); tool("c-t4"); }],
-    [c(RELOAD), () => { app.classList.add("blank"); openPreview(); reload(); }],
+    [c(RELOAD), () => { flag("editing", false); pvRev.textContent = "rev 2"; app.classList.add("blank"); openPreview(); reload(); }],
     [GAME, () => { app.classList.remove("blank"); runGame(.6, true); ask(true); }],
     [GAME + .25, () => reveal(tool("c-s3"), .035)],
+    [GAME + .9, () => { tool("c-st3"); codeComposer.classList.remove("run"); }],
     [GAME + 1.5 * SPEED, () => ask(false)],
   ].sort((a, b) => a[0] - b[0]);
   let EV = EVENTS();
@@ -492,6 +509,8 @@
     if (t >= DL) loadAt(t);
     if (t > CH + .3 && t < CH + .95) typeInto(chatTyped, Q1, CH + .35, CH + .8, t);
     if (t >= CH) flow(t);
+    // Code: the room's band says Writing while the agent writes
+    if (t >= C) { const on = !!writing || streams.length > 0; if (on !== band.classList.contains("writing")) { band.classList.toggle("writing", on); bdLive.textContent = on ? "Writing" : "Ready"; } }
     if (t > c(.55) && t < c(ASK)) typeInto(codeTyped, A.prompt, c(.65), c(1.85), t);
     if (t > c(CHANGE) && t < c(CHANGE + 1.25)) typeInto(codeTyped, A.prompt2, c(CHANGE + .1), c(CHANGE + 1.1), t);
     if (writing) {
@@ -509,10 +528,11 @@
     });
   };
 
-  const LOGKEYS = ["c-q", "c-s1", "c-t0", "c-t1", "c-t2", "c-t3", "c-s2", "c-q2", "c-t4", "c-s3"];
+  const LOGKEYS = ["c-q", "c-s1", "c-t0", "c-t1", "c-t2", "c-t3", "c-s2", "c-st2", "c-q2", "c-t4", "c-s3", "c-st3"];
   tl.reset = () => {
     tl.t = 0; tl.fired = 0; tl.done = false; streams = []; writing = null;
-    scene("tabs"); mode("chat"); ["merge", "served", "app-on", "ask", "done"].forEach(k => flag(k, false));
+    scene("tabs"); mode("chat"); ["merge", "served", "app-on", "ask", "done", "editing"].forEach(k => flag(k, false));
+    codeComposer.classList.remove("run"); pvRev.textContent = "rev 1";
     tabA.classList.remove("done", "met"); tabB.classList.remove("done"); tabB.classList.add("idle"); letters(0);
     nmA.classList.remove("fresh"); nmB.classList.remove("fresh");
     setSlots(0, -1); bBtn.classList.remove("ready", "press"); aGo.classList.remove("press");
@@ -536,6 +556,7 @@
   tl.final = () => {
     streams = []; writing = null; tl.done = true; tl.t = END; tl.fired = EV.length;
     scene("code"); mode("code"); flag("merge", true); flag("served", true); flag("app-on", true); flag("ask", false); flag("done", true);
+    flag("editing", false); codeComposer.classList.remove("run"); pvRev.textContent = "rev 2";
     tabA.classList.add("done", "met"); tabB.classList.add("done"); tabB.classList.remove("idle"); letters(4); setSlots(4, -1);
     setDevices(3); joining = -1; lent = LEND.slice(); rungHover(-1); rungSelect(2); card.dataset.face = "pick";
     model.classList.add("dl"); rowsEl.classList.add("dealt"); loadAt(FILL1 + 1);
