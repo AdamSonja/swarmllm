@@ -124,14 +124,20 @@ Deno.test("preflight: device kinds (an iPad is not a Mac)", () => {
 });
 Deno.test("preflight: every browser without WebGPU gets a specific remedy", () => {
   const no = (ua, extra = {}) => verdict({ ua, secure: true, hasGpuApi: false, adapter: null, ...extra });
-  ok(/Chrome or Edge/.test(no(UA.firefox).line), "firefox");
-  ok(/enable-unsafe-webgpu/.test(no(UA.linux).line), "linux chrome flag");
-  ok(/Safari 26/.test(no(UA.iphone).line), "ios update");
-  ok(/https/.test(no(UA.mac, { secure: false }).line), "insecure page");
-  ok(/blocklisted/.test(no(UA.mac, { hasGpuApi: true }).line), "api but no adapter");
+  ok(/Chrome or Edge/.test(no(UA.firefox).detail), "firefox");
+  ok(/enable-unsafe-webgpu/.test(no(UA.linux).detail), "linux chrome flag");
+  ok(/Safari 26/.test(no(UA.iphone).detail), "ios update");
+  ok(/https/.test(no(UA.mac, { secure: false }).detail), "insecure page");
+  ok(/blocklisted/.test(no(UA.mac, { hasGpuApi: true }).detail), "api but no adapter");
   const yes = verdict({ ua: UA.mac, secure: true, hasGpuApi: true, adapter: { vendor: "apple", architecture: "metal-3" } });
   ok(yes.ok && /apple metal-3/.test(yes.line), "ok line names the GPU");
-  ok(!no(UA.firefox).ok && /ask questions/.test(no(UA.firefox).line), "guests are told they can still ask");
+  ok(!no(UA.firefox).ok && /can chat/.test(no(UA.firefox).line), "guests are told they can still chat");
+});
+Deno.test("preflight: phones are checked first and told in phone words", () => {
+  const no = (ua, extra = {}) => verdict({ ua, secure: true, hasGpuApi: false, adapter: null, ...extra });
+  for (const v of [no(UA.iphone), no(UA.iphone, { hasGpuApi: true }), no(UA.ipad, { touchPoints: 5 })]) ok(/^This phone's GPU/.test(v.line) && /join and chat/.test(v.line), v.line);
+  ok(/Chrome or Edge on a laptop/.test(no(UA.mac).line), "desktop line");
+  ok(!/chrome:\/\//.test(no(UA.linux).line), "the flag hint stays in the details");
 });
 Deno.test("conversation: an open assistant turn (Continue) extends the caches without an end token", () => {
   const t1 = [{ role: "user", text: "a" }];

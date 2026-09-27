@@ -150,7 +150,7 @@ export async function initCode(api, { mock = null } = {}) {
   // ---- projects
   async function refreshProjects() {
     const sel = $("code-proj-select"), list = await listProjects().catch(() => []);
-    sel.replaceChildren(new Option(list.length ? "open a project…" : "no projects yet", ""));
+    sel.replaceChildren(new Option(list.length ? "Open a project…" : "No projects yet", ""));
     for (const p of list) sel.add(new Option(p.name + (p.kind === "folder" ? " (folder)" : ""), p.id));
     sel.value = project?.id || "";
     $("code-proj-kind").textContent = project ? (project.kind === "folder" ? "folder on disk · edits ask first" : "saved in this browser") : "";

@@ -172,7 +172,7 @@ export function codeUI({ onMode = () => {} } = {}) {
   const near = () => log.scrollHeight - log.scrollTop - log.clientHeight < 80;
   // new output while the user reads further up: a pill offers the way down (nothing lands out of sight unannounced)
   const jump = h("button", "cm-jump"); jump.type = "button"; jump.hidden = true;
-  jump.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2v8M2.5 6.5L6 10l3.5-3.5"/></svg>New output';
+  jump.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2v8M2.5 6.5L6 10l3.5-3.5"/></svg>New output';
   log.after(jump);
   jump.onclick = () => { log.scrollTo({ top: log.scrollHeight, behavior: "smooth" }); jump.hidden = true; };
   log.addEventListener("scroll", () => { if (near()) jump.hidden = true; }, { passive: true });
@@ -298,6 +298,14 @@ export function codeUI({ onMode = () => {} } = {}) {
     if (d.state === "pending" && !host && !ap) { ap = h("div", "cm-approve"); ap.append(h("span", "wait", "waiting for the host's approval")); el.append(ap); }
     if (d.state !== "pending") ap?.remove();
     if (d.state === "error") det.open = true;
+    // declined: the diff is struck through, and the reason, if one was given, says why
+    if (d.state) el.classList.toggle("declined", d.state === "declined");
+    if (d.state === "declined" || (el.classList.contains("declined") && d.result != null)) {
+      const why = /^declined by the user: (.+)$/s.exec(String(d.result ?? ""))?.[1]?.trim();
+      let line = el.querySelector(".cm-declined");
+      if (!line) { line = h("div", "cm-declined"); el.append(line); }
+      line.textContent = why && why !== "stopped" ? `Declined: ${why}` : "Declined";
+    }
     follow(stick);
     return el;
   }
@@ -521,7 +529,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     tab.onclick = () => activate(port);
     wrap.append(tab);
     // its own button, so the keyboard reaches it and a click on the tab never stops the port
-    if (closable) { const x = h("button", "pv-x", "×"); x.type = "button"; x.title = `stop serving :${port}`; x.setAttribute("aria-label", x.title); x.onclick = () => onClose?.(port); wrap.append(x); }
+    if (closable) { const x = h("button", "pv-x"); x.innerHTML = '<svg width="10" height="10" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8"/></svg>'; x.type = "button"; x.title = `stop serving :${port}`; x.setAttribute("aria-label", x.title); x.onclick = () => onClose?.(port); wrap.append(x); }
     $("pv-tabs").append(wrap);
     const view = h("div", "pv-view"); view.hidden = true;
     $("pv-frame-wrap").append(view);
@@ -531,6 +539,8 @@ export function codeUI({ onMode = () => {} } = {}) {
     $("pv-empty").hidden = true;
     $("pv-console").hidden = false;
     grow();
+    // a phone stacks the columns: the app that just started is below the agent, so bring it up
+    if (closable && mode === "code" && innerWidth < 820) requestAnimationFrame(() => $("code-out").scrollIntoView({ behavior: "smooth", block: "start" }));
     return P;
   }
   function dropPort(port) {
@@ -550,9 +560,9 @@ export function codeUI({ onMode = () => {} } = {}) {
     const P = ports.get(active), a = $("pv-addr");
     a.replaceChildren();
     if (P) a.append(h("span", "host", "localhost"), `:${active}/${P.path || "index.html"}`);
-    else a.textContent = "no port served";
+    else a.textContent = "No port served";
     $("pv-open").hidden = !P || !P.rev;
-    $("pv-state").textContent = P ? (P.state === "ready" ? `rev ${P.rev}` : P.state === "loading" ? "loading…" : P.state === "waiting" ? "click to run" : P.state === "stopped" ? "stopped" : P.state === "hung" ? "hung" : "") : "";
+    $("pv-state").textContent = P ? (P.state === "ready" ? `rev ${P.rev}` : P.state === "loading" ? "loading…" : P.state === "waiting" ? "Click to run" : P.state === "stopped" ? "stopped" : P.state === "hung" ? "hung" : "") : "";
   }
   function status(port, s) {
     const P = ports.get(port);
@@ -602,7 +612,6 @@ export function codeUI({ onMode = () => {} } = {}) {
   }
   function conOpen(open) {
     $("pv-console").classList.toggle("closed", !open);
-    $("pv-con-toggle").textContent = open ? "console ▾" : "console ▸";
     $("pv-con-toggle").setAttribute("aria-expanded", String(open));
   }
   $("pv-con-toggle").onclick = () => conOpen($("pv-console").classList.contains("closed"));

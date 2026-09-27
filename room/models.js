@@ -18,10 +18,10 @@ export const MODELS = {
     gguf: "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q8_0.gguf",
     cfg: "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/config.json",
     tok: "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/tokenizer.json" },
-  "qwen3.8-27b": { label: "Qwen 3.8 27B \u00b7 Q4", kind: "qwen35",
+  "qwen3.8-27b": { label: "Qwen3.8 27B \u00b7 Q4", kind: "qwen35",
     gguf: "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q4_0.gguf" },
   // mixture of experts: 256 experts, 8 active per token (~3B of 35B), so decode reads far less than the 27B
-  "qwen3.6-35b-moe": { label: "Qwen 3.6 35B MoE \u00b7 Q4", kind: "qwen35",
+  "qwen3.6-35b-moe": { label: "Qwen3.6 35B MoE \u00b7 Q4", kind: "qwen35",
     gguf: "https://huggingface.co/bartowski/Qwen_Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen_Qwen3.6-35B-A3B-Q4_0.gguf" },
   "smollm-135m": { label: "SmolLM 135M · bf16", kind: "safetensors",
     st: "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct/resolve/main/model.safetensors",
