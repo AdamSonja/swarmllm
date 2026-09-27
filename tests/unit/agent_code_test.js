@@ -259,3 +259,13 @@ Deno.test("agent: the same failing call three steps in a row stops the run as st
   eq(r.reason, "stuck");
   eq(r.steps, 3);
 });
+
+Deno.test("agent: a known tool written as bare tags (no <tool_call>) runs", async () => {
+  const log = [];
+  const bare = "<write_file>\n<path>index.html</path>\n<content>\n<!DOCTYPE html>\n<h1>hello</h1>\n</content>\n</write_file>";
+  const A = new Agent({ generate: scripted([bare, "done"]), tools: tools(log) });
+  const r = await A.run("go");
+  eq(r.reason, "done");
+  eq(log, [["write", "index.html"]]);
+  ok(/hint: this ran/.test(A.turns[2].text), A.turns[2].text);
+});

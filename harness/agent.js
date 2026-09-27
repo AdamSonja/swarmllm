@@ -155,6 +155,12 @@ export class Agent {
       // many tokens forced by the call grammar: the logits were not the model's (a misbehaving engine)
       if (u?.forced > 8 && u.reason !== "garbage") for (const c of [...found, ...e.calls]) if (c.error) c.error += ` (${u.forced} tokens were forced by the call format: the room's engine may be misbehaving)`;
       shown += e.text; found.push(...e.calls);
+      // no <tool_call> at all, but the answer wrote a known tool as bare tags
+      // (<write_file><path>a</path><content>..</content></write_file>, seen from Qwen 3.6): run those
+      if (!found.length) {
+        const bare = bareCalls(shown, this.byName);
+        if (bare.length) { for (const c of bare) c.bare = true; found.push(...bare); }
+      }
       if (e.text) this.onEvent({ type: "text", text: e.text, step });
       this.turns.push({ role: "assistant", text: raw, req });
       if (u) this.onEvent({ type: "usage", step, prompt: u.prompt, reused: u.reused, generated: u.generated, tps: u.tps, forced: u.forced || 0 });
@@ -247,6 +253,7 @@ export class Agent {
         }
       }
     }
+    if (c.bare && this.style === "xml") result += "\nhint: this ran, but write tool calls as <tool_call>\n<function=NAME>\n<parameter=NAME>\nvalue\n</parameter>\n</function>\n</tool_call>";
     result = capResult(result, this.maxResultChars);
     this.onEvent({ type: "tool", call: c, result, step, ms: Date.now() - t0 });
     return result;
@@ -377,4 +384,29 @@ export function salvageWrite(raw, schemaFor = () => null) {
   const content = a.content.slice(0, cut + 1), lines = content.split("\n").length - 1;
   const last = content.slice(0, -1).split("\n").pop();
   return { name: "write_file", arguments: { path: a.path.trim(), content, append: a.append === true }, salvage: { lines, last } };
+}
+
+// Calls written as bare tags named after a known tool, children named after its parameters:
+// <write_file>\n<path>a.html</path>\n<content>\n...\n</content>\n</write_file>. Only known
+// tools and parameters count, so HTML the model merely quotes is left alone.
+export function bareCalls(text, byName) {
+  const out = [];
+  if (!text || !byName?.size) return out;
+  const names = [...byName.keys()].map((n) => n.replace(/[^\w-]/g, "")).join("|");
+  const re = new RegExp("<(" + names + ")>([\\s\\S]*?)</\\1>", "g");
+  let m;
+  while ((m = re.exec(text))) {
+    const t = byName.get(m[1]), props = t?.parameters?.properties || {}, args = {};
+    let found = 0;
+    for (const p of Object.keys(props)) {
+      const pm = new RegExp("<" + p + ">\\n?([\\s\\S]*?)\\n?</" + p + ">").exec(m[2]);
+      if (!pm) continue;
+      const ty = props[p]?.type;
+      args[p] = ty === "integer" || ty === "number" ? Number(pm[1].trim()) : ty === "boolean" ? pm[1].trim() === "true" : pm[1];
+      found++;
+    }
+    const req = t?.parameters?.required || [];
+    if (found && req.every((r) => r in args)) out.push({ name: m[1], arguments: args });
+  }
+  return out;
 }
