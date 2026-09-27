@@ -6,7 +6,7 @@
 // Everything that came from the model or the preview is untrusted text: it goes in with
 // textContent, and model prose through mdChat (room/markdown.js), which escapes first.
 import { mdChat } from "./markdown.js";
-import { working } from "./working.js";
+import { working, markSVG } from "./working.js";
 
 const $ = (id) => document.getElementById(id);
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -274,7 +274,7 @@ export function codeUI({ onMode = () => {} } = {}) {
   }
 
   // ---------------- the edit overlay: once an app is served, while the agent edits a file the preview
-  // frosts over with a small "Editing game.js" pill (no code: the code shows in the agent's card), then
+  // frosts over with the Pooled dots in their wave and "Editing game.js" (no code: the code shows in the agent's card), then
   // "Reloading" once the call is complete, and it lifts when the preview has reloaded (or after a moment).
   // Host and peers alike (it is drawn from the same ai-code-live messages).
   const editWin = (() => {
@@ -282,9 +282,10 @@ export function codeUI({ onMode = () => {} } = {}) {
     const served = () => { const P = ports.get(active); return P && P.rev > 0 ? P : null; };
     function build() {
       el = h("div", "ew"); el.setAttribute("role", "status");
-      const pill = h("div", "ew-pill");
-      pill.append(h("span", "ew-dots"), h("span", "ew-t", ""));
-      el.append(pill);
+      const box = h("div", "ew-box");
+      box.innerHTML = markSVG(40);
+      box.append(h("span", "ew-t", ""));
+      el.append(box);
     }
     function paint() {
       raf = 0;
