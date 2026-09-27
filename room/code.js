@@ -19,7 +19,7 @@
 // Everything the timeline shows is an ai-code-* message: the host renders it, keeps it for late
 // joiners and broadcasts it (visibility rules apply, room.js sendCode).
 // Peer: renders those messages, and mirrors the served ports through PreviewSubscriber; each
-// peer runs the preview itself, click-to-run the first time.
+// peer runs the preview itself, straight away (sandboxed as on the host; anyone in the room can drive the agent).
 import { codeUI } from "./code-ui.js";
 import { Agent, briefCall } from "../harness/agent.js";
 import { codingTools } from "../harness/codetools.js";
@@ -628,7 +628,7 @@ export async function initCode(api, { mock = null } = {}) {
       if (u.stopped) { ui.dropPort(u.port); return; }
       if (ui.ports.has(u.port)) return;
       const port = u.port;
-      ui.portTab(port, { closable: false, mount: (el) => mountPreview(el, sub, port, { autorun: false, onLog: (e) => ui.logRow(port, e), onStatus: (s) => ui.status(port, s) }) });
+      ui.portTab(port, { closable: false, mount: (el) => mountPreview(el, sub, port, { autorun: true, onLog: (e) => ui.logRow(port, e), onStatus: (s) => ui.status(port, s) }) });
       if (ui.activePort == null) ui.activate(port);
     });
     return sub;

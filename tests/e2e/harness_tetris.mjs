@@ -324,8 +324,7 @@ try {
   check("peer: timeline shows the 6 tool cards", P.tools.join(" ") === H.tools.join(" "), P.tools.join(" "));
   check("peer: can drive (prompt row and projects, no Open folder), told where the files live", P.drive && /host-e2e's device/.test(P.note) && !/driving/.test(P.note), JSON.stringify(P));
   check("peer: file tree", P.tree.join(",") === H.tree.join(","), P.tree);
-  check("peer: click-to-run button", P.run === "Run preview :5173", P.run);
-  await peer.click(".pv-run");
+  check("peer: the preview runs by itself (no click-to-run button)", !P.run, P.run);
   await peer.waitForFunction(() => /^rev \d+$/.test(document.getElementById("pv-state").textContent), null, { timeout: 10000 });
   await peer.waitForTimeout(700);
   const peerRev = +(/rev (\d+)/.exec(await peer.textContent("#pv-state"))?.[1] || 0);
