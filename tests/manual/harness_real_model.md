@@ -4,6 +4,11 @@ The automated test (`tests/e2e/harness_tetris.mjs`) drives Code mode with a scri
 checklist is the same flow on the real model, to measure what the design (docs/design/harness-app.md
 F, G.4) can only estimate. Run it when nothing else is using the GPU.
 
+For numbers rather than a checklist, run the eval suite (`tests/eval/README.md`): the same
+twelve tasks on one local engine (`node tests/eval/run.mjs --model engine`) or in this room
+(`p2p.html?eval=all`, then `/eval` in the Code prompt). Its `.jsonl` gives success, steps, tokens
+and time per task, and a trajectory per task to read the failures.
+
 ## Setup
 
 1. Serve the repo: `npm run serve` (http://localhost:8080). Use `localhost`, not a LAN IP: WebGPU
