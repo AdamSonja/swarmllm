@@ -25,6 +25,7 @@ import { qrSVG } from "./room/qr.js";
 import { lookupDrafts } from "./room/lookup.js";
 import { drawCard } from "./room/card.js";
 import { probe as preflight, deviceKind } from "./room/preflight.js";
+import { computeScreen } from "./room/compute.js";
 
 // Hidden-state transport (room/transport.js). ?wire=off falls back to PeerJS messages;
 // ?wire=slice uses one sliced channel; ?wire=stripeN spreads slices over N peer connections.
@@ -144,29 +145,45 @@ function log(from, text) {
 // A device card: name, what kind of device, the memory it lends, its status. The link numbers
 // (rtt, bandwidth, GPU) and the bandwidth test show with ?dev=1.
 const lends = (gb) => "lends " + gb + " GB";
+const ICONS = {
+  laptop: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M3 3.5h10v7H3zM1.2 12.5h13.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+  desk: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M1.8 2.8h12.4v8.4H1.8zM8 11.2v2.6M5.2 13.8h5.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+  phone: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="4.5" y="1.5" width="7" height="13" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 12.2h2" stroke="currentColor" stroke-width="1.3"/></svg>',
+};
+const iconFor = (meta) => meta.phone || /iPhone|Android$/.test(meta.ua || "") ? ICONS.phone : /Mac|iPad/.test(meta.ua || "") ? ICONS.laptop : ICONS.desk;
+// "0–19" (what the deal sends) -> "1–20", the way people count layers
+const humanRange = (r) => { const m = /^(\d+)\D+(\d+)$/.exec(String(r || "")); return m ? `${+m[1] + 1}\u2013${+m[2] + 1}` : String(r || ""); };
 function peerCard(id, name, meta, self) {
   const card = document.createElement("div");
   card.className = "peer-card" + (self ? " self" : "");
+  card.dataset.name = name;
   card.innerHTML = `
-    <div class="peer-name"><span class="dot ${self || meta.webgpu ? "ok" : "warn"}"></span><span class="pname"></span><span class="pst"></span></div>
-    <div class="peer-sub"><span class="pkind"></span><span aria-hidden="true">\u00b7</span><span class="buf">\u2014</span></div>
+    <div class="peer-name"><span class="pic">${iconFor(meta)}</span><span class="pname"></span><span class="pst"></span></div>
+    <div class="peer-sub"><span class="dot ${self || meta.webgpu ? "ok" : "warn"}"></span><span class="pkind"></span><span aria-hidden="true">\u00b7</span><span class="buf">\u2014</span><span class="play"></span></div>
     <div class="peer-gpu dev-only"></div>
     <div class="peer-stats dev-only">
       <span>rtt <b class="rtt">\u2014</b></span>
       <span>bw <b class="bw">\u2014</b></span>
     </div>
-    ${self ? "" : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}`;
+    ${self ? '<button class="compute-btn" id="compute-btn-self" type="button"><span class="cdots" aria-hidden="true"><i></i><i></i><i></i></span>Just compute</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}`;
+  paintCard(card, name, meta, self);
+  $("peers").appendChild(card);
+  if (!self) card.querySelector(".bw-btn").addEventListener("click", () => bwTest(id));
+  else card.querySelector(".compute-btn").addEventListener("click", () => compute.open());
+  return card;
+}
+// what a card says about its device (the sim hook repaints with made-up devices)
+function paintCard(card, name, meta, self) {
   card.querySelector(".pname").textContent = name;
   if (self) card.querySelector(".pname").insertAdjacentHTML("beforeend", " <small>(you)</small>");
+  card.querySelector(".pic").innerHTML = iconFor(meta);
+  card.querySelector(".dot").className = "dot " + (self || meta.webgpu ? "ok" : "warn");
   card.querySelector(".pkind").textContent = !meta.ua || meta.ua === "Device" ? "Computer" : meta.ua;
   card.querySelector(".peer-gpu").textContent = meta.webgpu
     ? `${meta.ua} · ${meta.gpu}` : `${meta.ua} · no WebGPU`;
   const budget = meta.budgetGB || meta.maxBufGB;
   card.querySelector(".buf").textContent = meta.webgpu === false ? "no WebGPU" : meta.contribGB ? lends(meta.contribGB) : (budget ? budget + " GB" : "\u2014");
   peerStatus(card, meta.webgpu === false ? "asks only" : self ? "" : "connected");
-  $("peers").appendChild(card);
-  if (!self) card.querySelector(".bw-btn").addEventListener("click", () => bwTest(id));
-  return card;
 }
 // the status word on a device card: connected, loading N%, ready
 function peerStatus(card, text, ok = false) {
@@ -192,7 +209,7 @@ if (DEV) Object.keys(MODELS).forEach(addModelOption);
 function setModelValue(key) { if (!MODELS[key]) return; addModelOption(key); $("ai-model").value = key; }
 function renderLadder(pledged) {
   const el = $("ai-ladder"); if (!el) return;
-  el.innerHTML = ladder(PICK_NEED, pledged).map((x) => `<button type="button" class="rung${x.ok ? " ok" : ""}${x.key === $("ai-model").value ? " sel" : ""}" data-k="${x.key}" aria-pressed="${x.key === $("ai-model").value}"><span>${esc(shortName(x.key))}</span> <b>${x.ok ? "fits" : x.short + " GB short"}</b></button>`).join("");
+  el.innerHTML = ladder(PICK_NEED, pledged).map((x) => `<button type="button" class="rung${x.ok ? " ok" : ""}${x.key === $("ai-model").value ? " sel" : ""}" data-k="${x.key}" aria-pressed="${x.key === $("ai-model").value}"><span class="rn">${esc(shortName(x.key))}</span><span class="nd">${NEED_GB[x.key] ?? ""} GB</span><b>${x.ok ? "fits" : x.short + " GB short"}</b></button>`).join("");
 }
 $("ai-ladder").addEventListener("click", (e) => {
   const b = e.target.closest(".rung"); if (!b || $("ai-model").disabled) return;
@@ -224,12 +241,16 @@ function updateCluster() {
   $("cluster-summary").textContent = DEV
     ? `${all.length} device${all.length > 1 ? "s" : ""} \u00b7 ${gpus} WebGPU \u00b7 ${pledged.toFixed(1)} GB pledged`
     : `${all.length} device${all.length > 1 ? "s" : ""} \u00b7 ${+pledged.toFixed(1)} GB pooled`;
+  $("hdr-sum").innerHTML = `<b>${+pledged.toFixed(1)} GB</b> pooled`;
+  $("peers-n").textContent = String(all.length);
 }
 
 function enterRoom() {
   $("join-screen").style.display = "none";
   $("room-screen").style.display = "flex";
-  $("room-badge").style.display = "block";
+  $("room-badge").style.display = "";
+  document.body.classList.add("in-room");
+  $("compute-open").hidden = false;
   $("room-badge").textContent = roomCode;
   $("side-code").textContent = roomCode;
   $("side-code").addEventListener("click", openShare);
@@ -292,6 +313,7 @@ function ensureCard(id, name, meta) {
     cards.set(id, card);
     updateCluster();
     log("swarm", `${name || id} joined`);
+    if ($("ai-output").style.display === "block") sysNote(`${name || id} joined${meta?.contribGB && meta?.webgpu ? `, lends ${meta.contribGB} GB` : ""}`, "join");
     mascot(`${name || id} joined! ${members.size + 1} devices in the room.`);
   }
   const e = conns.get(id);
@@ -563,6 +585,23 @@ async function keepAwake() {
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "Pooled \u00b7 room"; } });
 document.addEventListener("touchstart", keepAwake, { passive: true });
+// Just compute: this device as a full screen that shows its layers and the passes going through it
+function computeState() {
+  const by = ai.layersByName || {};
+  const spanMax = Object.values(by).reduce((t, r) => { const m = /(\d+)\D*$/.exec(String(r)); return m ? Math.max(t, +m[1] + 1) : t; }, 0);
+  const online = $("ai-panel").classList.contains("online");
+  const loading = $("ai-panel").classList.contains("loading");
+  return {
+    code: roomCode, devices: 1 + members.size, role: ai.role,
+    model: shortName(ai.model || $("ai-model").value),
+    lo: ai.range ? ai.range[0] : null, hi: ai.range ? ai.range[1] : null,
+    total: ai.cfg?.num_hidden_layers || spanMax || 0,
+    phase: online ? "serving" : loading ? "loading" : "idle",
+    pct: ai.myPct ?? (ai.prog || {})[myName] ?? null,
+  };
+}
+const compute = computeScreen({ state: computeState, keepAwake });
+$("compute-open").addEventListener("click", () => compute.open());
 $("create-btn").addEventListener("click", () => { keepAwake(); start(true); });
 // (auto-rejoin removed: the user prefers to see what happened)
 $("join-btn").addEventListener("click", () => { keepAwake(); start(false); });
@@ -862,12 +901,29 @@ function aiLoading(show, title) {
 function loadCardRender() {
   const rows = $("lc-rows"); if (!rows) return;
   const names = [myName, ...[...conns.values()].map((c) => c.name)];
-  const layersOf = (nm) => (ai.layersByName || {})[nm];
+  const by = ai.layersByName || {};
+  const order = Object.keys(by);
+  const idx = (nm) => { const k = order.indexOf(nm); return k < 0 ? names.indexOf(nm) : k; };
   rows.innerHTML = names.map((nm) => {
     const pct = Math.max(0, Math.min(100, (ai.prog || {})[nm] ?? 0));
-    const l = layersOf(nm);
-    return `<div class="lc-row${pct >= 100 ? " done" : ""}"><div class="n">${esc(String(nm))}${l ? `<small>layers ${esc(String(l))}</small>` : ""}</div><div class="bar"><div class="fill" style="width:${pct}%"></div></div><div class="pct">${pct >= 100 ? "ready" : pct + "%"}</div></div>`;
+    const l = by[nm];
+    return `<div class="lc-row${pct >= 100 ? " done" : ""}${l || !order.length ? "" : " out"}" style="--sw:${swatch(idx(nm))}"><i class="sw"></i><div class="n">${esc(String(nm))}</div><div class="bar"><div class="fill" style="width:${pct}%"></div></div><div class="pct">${pct >= 100 ? (l ? "layers " + esc(humanRange(l)) : "ready") : pct + "%"}</div></div>`;
   }).join("");
+  // the model as a strip of layers: each device's share fills in as its download goes
+  const spans = order.map((nm) => { const m = /^(\d+)\D+(\d+)$/.exec(by[nm]); return m ? { nm, lo: +m[1], hi: +m[2] + 1 } : null; }).filter(Boolean);
+  const total = spans.reduce((t, x) => Math.max(t, x.hi), 0);
+  const strip = $("lc-strip");
+  if (!total) { strip.innerHTML = ""; $("lc-sum").textContent = ""; return; }
+  const n = Math.min(total, 64), per = total / n;
+  let html = "";
+  for (let c = 0; c < n; c++) {
+    const L = c * per, sp = spans.find((x) => L >= x.lo && L < x.hi);
+    const pct = sp ? (ai.prog || {})[sp.nm] ?? 0 : 0;
+    const got = sp && (L - sp.lo) / Math.max(1, sp.hi - sp.lo) * 100 < pct;
+    html += `<i${got ? ` style="background:${swatch(spans.indexOf(sp))}"` : ""}></i>`;
+  }
+  strip.innerHTML = html;
+  $("lc-sum").textContent = `${total} layers, split ${spans.length} way${spans.length > 1 ? "s" : ""}`;
 }
 // download progress with a time-left estimate from the recent rate (EMA over ~5 s)
 const eta = { t: 0, done: 0, rate: 0 };
@@ -905,7 +961,9 @@ function chatBotStart(mid) {
   const m = document.createElement("div");
   m.className = "m bot";
   if (mid != null) m.dataset.mid = mid;
-  m.innerHTML = `<div class="who">swarm</div><div class="bubble"><span class="cursor"></span></div>`;
+  m.innerHTML = `<div class="who"><span class="wn"></span><span class="wd" aria-hidden="true"><i></i><i></i><i></i></span></div><div class="bubble"><span class="cursor"></span></div>`;
+  m.querySelector(".wn").textContent = shortName(ai.model || $("ai-model").value) || "swarm";
+  m.classList.add("live");
   m.pieces = [];
   o.appendChild(m); scrollChat();
   botEl = m;
@@ -935,6 +993,7 @@ function chatBotEnd(note, stats) {
   if (!botEl) chatBotStart();
   if (note) botEl.pieces = [{ t: note, d: 0 }];
   renderBot(botEl, false);
+  botEl.classList.remove("live");
   // a finished answer in a background tab: say so in the tab title until the tab is looked at
   if (!note && document.hidden) { document.title = "\u2713 answer ready \u00b7 Pooled"; }
   if (stats) { const s = document.createElement("div"); s.className = "stats"; s.textContent = stats; botEl.appendChild(s); }
@@ -1490,6 +1549,7 @@ function aiMaybeReady() {
   $("new-chat").hidden = false;
   setAfterAnswer(false, !!ai.conv.turns.length);
   $("ai-empty").textContent = "The model is ready. Ask anything.";
+  sysNote(`Model ready on ${n} device${n > 1 ? "s" : ""}`);
   $("ai-prompt").focus();
   broadcastAll({ t: "ai-ready-all", model: ai.model });
   pushMap(0, null, false, true);
@@ -1731,6 +1791,9 @@ function mapStats(tps, acc) {
   return { tps, acc, lap: Math.round(lap), gpu: Math.round(gpu), net: Math.max(0, Math.round(lap - gpu)) };
 }
 let lastMap = null, bestTps = 0;
+// one colour per device in the chain, the landing's blues first
+const SWATCH = ["#3152FF", "#4A5FD0", "#9AA8F0", "#1F2FA8", "#6E86FF", "#C3CCF8", "#2B3A8F", "#8EA2FF"];
+const swatch = (i) => i < 0 ? "var(--faint)" : SWATCH[i % SWATCH.length];
 function renderMap(nodes, st, live) {
   const el = $("swarm-map"); if (!el || !nodes?.length) return;
   lastMap = { nodes, st: { ...(lastMap?.st || {}), ...(st || {}) } };
@@ -1740,16 +1803,61 @@ function renderMap(nodes, st, live) {
   const lap = Math.max(120, Math.min(4000, st?.lap || 600));
   el.style.setProperty("--lap", lap + "ms");
   el.style.setProperty("--n", nodes.length);
+  $("room-screen").style.setProperty("--lap", lap + "ms");
   el.querySelector(".sm-track").innerHTML = nodes.map((x, i) => `<div class="sm-node${x.host ? " host" : ""}" style="--i:${i}">
       <div class="sm-dot"></div><div class="sm-name">${esc(String(x.name))}</div>
       <div class="sm-sub">${x.host ? "embed · " : ""}${x.layers ? "L" + esc(String(x.layers)) : ""}${x.host ? " · head" : ""}</div>
       <div class="sm-ms">${x.ms ? Math.round(x.ms) + " ms" : ""}${x.amax ? ` <span class="sm-amax" title="largest activation this device sent (f16 tops out at 65504)">|x|≤${Math.round(x.amax)}</span>` : ""}</div></div>`).join('<div class="sm-link"><i></i></div>')
     + (nodes.length > 1 ? '<div class="sm-link back"><i></i></div>' : "");
+  // the layer strip: one cell per layer (or per few, for deep models), coloured by the device holding it
+  const spans = nodes.map((x, i) => { const m = /^(\d+)\D+(\d+)$/.exec(String(x.layers || "")); return m ? { i, name: x.name, lo: +m[1], hi: +m[2] + 1 } : null; }).filter(Boolean);
+  const total = spans.reduce((t, x) => Math.max(t, x.hi), 0);
+  const strip = el.querySelector(".sm-strip");
+  const sig = spans.map((x) => `${x.i}:${x.lo}-${x.hi}`).join(",");
+  if (strip.dataset.sig !== sig) {
+    strip.dataset.sig = sig;
+    const n = Math.min(total, 64), per = total / Math.max(1, n);
+    let html = "";
+    for (let c = 0; c < n; c++) { const L = c * per, sp = spans.find((x) => L >= x.lo && L < x.hi); html += `<i style="--c:${c};background:${swatch(sp ? sp.i : -1)}"${sp ? ` title="${esc(String(sp.name))}: layers ${sp.lo + 1}\u2013${sp.hi}"` : ""}></i>`; }
+    strip.innerHTML = html;
+    strip.style.setProperty("--cells", n);
+  }
+  el.querySelector(".sm-model").textContent = shortName(ai.model || $("ai-model").value);
+  // the device cards say which layers they hold, in the strip's colours
+  for (const card of document.querySelectorAll("#peers .peer-card")) {
+    const k = nodes.findIndex((x) => x.name === card.dataset.name);
+    card.style.setProperty("--sw", swatch(k));
+    card.style.setProperty("--k", Math.max(0, k));
+    card.classList.toggle("holds", k >= 0 && !!nodes[k].layers);
+    card.querySelector(".play").textContent = k >= 0 && nodes[k].layers ? `layers ${humanRange(nodes[k].layers)}` : "";
+  }
   const bits = [];
   if (st?.tps) bits.push(`${st.tps.toFixed(1)} tok/s`);
-  if (st?.lap) bits.push(`lap ${st.lap} ms = GPUs ${st.gpu} + wire ${st.net}`);
-  if (st?.acc != null) bits.push(`${Math.round(st.acc * 100)}% of drafts accepted`);
-  el.querySelector(".sm-meta").textContent = bits.join(" · ") || `${nodes.length} device${nodes.length > 1 ? "s" : ""} · every token takes a lap through all of them`;
+  if (st?.lap) bits.push(DEV ? `lap ${st.lap} ms = GPUs ${st.gpu} + wire ${st.net}` : `${st.lap} ms a lap`);
+  if (st?.acc != null && DEV) bits.push(`${Math.round(st.acc * 100)}% of drafts accepted`);
+  el.querySelector(".sm-meta").textContent = bits.join(" · ") || `${nodes.length} device${nodes.length > 1 ? "s" : ""}`;
+  el.querySelector(".sm-meta").title = `${nodes.length} device${nodes.length > 1 ? "s" : ""}: every token takes a lap through all of them`;
+}
+// a token came out: a sweep runs along the layer strip and through the device cards. At most one
+// sweep per lap; tokens that come faster ride along with the one running.
+let pulseAt = 0;
+function mapPulse() {
+  const now = performance.now(), rs = $("room-screen");
+  const lap = parseFloat(rs.style.getPropertyValue("--lap")) || 600;
+  if (now - pulseAt < Math.min(lap, 900) || document.hidden || compute.isOpen) return;
+  pulseAt = now;
+  rs.classList.remove("sweep");
+  requestAnimationFrame(() => rs.classList.add("sweep"));
+}
+// a quiet line in the chat: the model is ready, someone joined
+function sysNote(text, kind = "") {
+  const o = $("ai-output"); if (!o) return;
+  const n = document.createElement("div");
+  n.className = "sys" + (kind ? " " + kind : "");
+  n.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8"/><circle cx="10.2" cy="3.4" r="1.99"/><circle cx="18.5" cy="3.4" r="2.38"/><circle cx="3.4" cy="10.2" r="1.99"/><circle cx="10.2" cy="10.2" r="2.38"/><circle cx="18.5" cy="10.2" r="2.94"/><circle cx="3.4" cy="18.5" r="2.38"/><circle cx="10.2" cy="18.5" r="2.94"/><circle cx="18.5" cy="18.5" r="3.9"/></svg><span></span>';
+  n.querySelector("span").textContent = text;
+  o.appendChild(n);
+  if (o.style.display === "block") scrollChat();
 }
 let mapAt = 0;
 function pushMap(tps, acc, live, force) {
@@ -1834,6 +1942,7 @@ async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, s
     ai.frames = 0;
     let logits = rest.length ? await aiPrefill(rest, { aborted, onStatus }) : null;
     tPre = performance.now() - t0Pre;
+    if (prefilled) compute.pass(prefilled);
     preFrames = ai.frames;
 
     const t0 = performance.now();
@@ -1841,6 +1950,7 @@ async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, s
       tokens.push(tok);
       count++;
       onToken(tok, drafted);
+      mapPulse(); compute.pass(1);
       const tps = count / ((performance.now() - t0) / 1000);
       onStatus(`generating… ${count} tok · ${tps.toFixed(1)} tok/s`);
     };
@@ -2134,6 +2244,7 @@ async function workerFrame(d) {
     }
     if (badF32(hb)) { aiStatus(`⚠ NaN in batched prefill on this device`); sendTo(ai.hostId, { t: "ai-error", message: "NaN in batched prefill" }); }
     teleNote(d.spec ? "spec" : "pre", performance.now() - t0);
+    compute.pass(nTok, performance.now() - t0);
     // the verify flag travels with the frame: every device snapshots its recurrent state per
     // column, or a later rollback on it restores a stale snapshot
     const bmsg = { basePos: d.basePos, n: nTok, ...(d.spec ? { spec: 1 } : {}), ...packWire(hb) };
@@ -2146,6 +2257,7 @@ async function workerFrame(d) {
     const h = await ai.engine.runHidden(hin, d.pos);
     if (badF32(h)) { aiStatus(`⚠ NaN PRODUCED by this device (pos ${d.pos}, layers ${ai.range[0]}–${ai.range[1] - 1}) — GPU kernel issue here`); sendTo(ai.hostId, { t: "ai-error", message: `NaN produced on worker layers ${ai.range[0]}–${ai.range[1] - 1}` }); }
     teleNote("one", performance.now() - t0);
+    compute.pass(1, performance.now() - t0);
     const msg = { pos: d.pos, ...packWire(h) };
     if (ai.next === "host") sendHidden(ai.hostId, { t: "ai-hiddenret", ...msg });
     else sendHidden(ai.next, { t: "ai-hidden", ...msg, ...ctl });
@@ -2369,7 +2481,7 @@ async function aiOnData(from, d) {
       setBusyUI(true, d.asker === peer.id);
       mascot(`${d.name} asked something. Thinking…`);
       break;
-    case "ai-token": chatBotPiece(d.text, d.d); break;
+    case "ai-token": chatBotPiece(d.text, d.d); mapPulse(); break;
     case "ai-gendone":
       chatBotEnd(d.hidden ? "answer hidden by the host" : null, d.stats);
       setBusyUI(false);
@@ -2394,6 +2506,7 @@ async function aiOnData(from, d) {
       $("ai-row").style.display = "flex";
       $("chat-tools").hidden = false;
       $("ai-empty").textContent = "The model is ready. Ask anything.";
+      sysNote("Model ready");
       aiStatus(ai.range ? `cluster online · serving layers ${ai.range[0]}–${ai.range[1] - 1}` : "cluster online · this device asks, the others think");
       mascot("Cluster online! Type a question, the whole room answers.");
       codeRoleChanged();
@@ -2612,3 +2725,79 @@ $("ai-prompt").addEventListener("keydown", (e) => {
 // (Code mode handles its own Esc: one in a field there backs out of the field, not the run)
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented && !e.target?.closest?.("#code-pane") && $("ai-send").classList.contains("stop")) aiStop(); });
 mascot("Hi! I'm Swarmy. Create a room, or type a friend's code to join one.");
+
+// ---- ?sim=1 on localhost: made-up devices, loading, chat and passes, for looking at the UI
+// without a GPU (the visual checks use it). It paints; it never loads or runs a model.
+if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "localhost"].includes(location.hostname)) {
+  const fake = { "MacBook Air": { ua: "Mac", webgpu: true, contribGB: 12 }, "Desktop PC": { ua: "Device", webgpu: true, contribGB: 12 }, "Pixel 8": { ua: "Android", webgpu: true, phone: true, contribGB: 2 } };
+  const names = () => [myName, ...[...conns.values()].map((c) => c.name)];
+  const deal = () => {
+    const rank = (nm) => { const k = Object.keys(fake).indexOf(nm); return k < 0 ? 9 : k; };
+    const ns = names().sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)), L = 40, by = {};
+    const gb = ns.map((nm) => fake[nm]?.contribGB || 4), sum = gb.reduce((a, b) => a + b, 0);
+    let lo = 0;
+    ns.forEach((nm, i) => { const hi = i === ns.length - 1 ? L : Math.max(lo + 1, Math.round(lo + L * gb[i] / sum)); by[nm] = `${lo}–${hi - 1}`; lo = hi; });
+    return by;
+  };
+  let passTimer = 0;
+  window.__pooledSim = {
+    devices() {
+      for (const card of document.querySelectorAll("#peers .peer-card")) {
+        const nm = card.dataset.name, m = fake[nm] || { ua: "Device", webgpu: true, contribGB: 8 };
+        if (card.classList.contains("self")) Object.assign(myMeta, m);
+        for (const [id, e] of conns) if (e.name === nm) { e.meta = { ...e.meta, ...m }; if (members.has(id)) members.get(id).meta = e.meta; }
+        paintCard(card, nm, m, card.classList.contains("self"));
+      }
+      updateCluster();
+    },
+    loading(p = 0.4) {
+      this.devices();
+      setModelValue("qwen3.6-35b-moe"); ai.model = "qwen3.6-35b-moe";
+      ai.layersByName = deal(); ai.cfg = { num_hidden_layers: 40 };
+      const by = ai.layersByName, mine = /^(\d+)\D+(\d+)$/.exec(by[myName]);
+      ai.range = mine ? [+mine[1], +mine[2] + 1] : null;
+      ai.prog = Object.fromEntries(names().map((nm, i) => [nm, Math.round(Math.min(100, p * 100 * (1 + i * 0.6)))]));
+      ai.myPct = ai.prog[myName];
+      aiLoading(true, `Loading Qwen 3.6 35B MoE`);
+      aiProgress(p * 9.4 * 2 ** 30, 9.4 * 2 ** 30);
+      for (const card of document.querySelectorAll("#peers .peer-card")) peerStatus(card, `${ai.prog[card.dataset.name] ?? 0}%`);
+      loadCardRender();
+    },
+    ready() {
+      if (!ai.layersByName) this.loading(1);
+      const mine = /^(\d+)\D+(\d+)$/.exec(ai.layersByName[myName] || "");
+      ai.range = mine ? [+mine[1], +mine[2] + 1] : null;
+      aiLoading(false);
+      $("ai-panel").classList.add("online");
+      $("ai-row").style.display = "flex"; $("chat-tools").hidden = false; $("mode-bar").hidden = false;
+      $("ai-empty").textContent = "The model is ready. Ask anything.";
+      for (const card of document.querySelectorAll("#peers .peer-card")) peerStatus(card, "ready", true);
+      const ns = names();
+      renderMap(Object.keys(ai.layersByName).map((nm, i) => ({ name: nm, layers: ai.layersByName[nm], host: i === 0 ? 1 : 0, ms: 18 + i * 9 })), { tps: 21.4, lap: 64 }, false);
+      aiStatus("cluster online");
+    },
+    chat() {
+      if (!$("ai-panel").classList.contains("online")) this.ready();
+      const ns = names();
+      clearChat();
+      sysNote(`Model ready on ${ns.length} devices`);
+      chatUser(ns[0], "what is Pooled?");
+      chatBotStart(1);
+      botEl.pieces = [{ t: "Pooled runs one open AI model across the devices in this room. Each one holds some of my layers, and **every word I write passes through all of them**, right here in your browser tabs.", d: 0 }];
+      chatBotEnd(null, "21.4 tok/s · 3 devices");
+      sysNote(`${ns[ns.length - 1]} joined, lends 2 GB`, "join");
+      chatUser(ns[ns.length - 1], "can it write code?");
+      chatBotStart(2);
+      chatBotPiece("Yes. Open **Code** and tell me what to build. I write the files, run them, and you watch it ", 0);
+      renderMap(lastMap.nodes, { tps: 21.4, lap: 64 }, true);
+      this.pulse(6);
+    },
+    pulse(n = 1) { for (let i = 0; i < n; i++) setTimeout(() => { pulseAt = 0; mapPulse(); }, i * 250); },
+    idle() { $("ai-panel").classList.remove("online", "loading"); ai.range = null; },
+    compute(on) { on ? compute.open() : compute.close(); },
+    passes(on) {
+      clearInterval(passTimer); passTimer = 0;
+      if (on) passTimer = setInterval(() => compute.pass(1, 14 + Math.random() * 8), 90);
+    },
+  };
+}
