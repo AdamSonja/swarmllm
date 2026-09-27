@@ -12,7 +12,7 @@ const DOTS = [[3.4, 3.4, 1.8], [10.2, 3.4, 1.99], [18.5, 3.4, 2.38], [3.4, 10.2,
 const PACKET = ["#2A45E0", "#7C8FFF", "#B9C6FF"];   // --blue-500, --blue-400, --blue-200
 // this device's colour in the room, for its layers here; the two dark neutrals read as light on the dark screen
 const onDark = (c) => (/^#(2B2F3C|5E616B)$/i.test(c || "") ? "#EEF0F6" : c || "");
-const THEME_LIGHT = "#F6F5F1", THEME_DARK = "#0B0F1F";
+const THEME_LIGHT = "#F6F5F1", THEME_DARK = "#000000";
 const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "k" : String(n);
 
 export function computeScreen({ state, keepAwake = () => {} }) {

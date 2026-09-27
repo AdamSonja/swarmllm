@@ -1,6 +1,6 @@
 // The "working" line for the wait before a model's first token, in Chat and in Code: the Pooled
-// dots in their loading wave, a verb that changes every two seconds, and the seconds since the
-// request went out. Presentation only: whoever shows it removes it when output arrives, and its
+// dots in their loading wave and a verb that changes every two seconds (no clock: the wait is not
+// counted out). Presentation only: whoever shows it removes it when output arrives, and its
 // timer stops by itself once it is off the page. With reduced motion the dots hold still and the
 // words change without the fade.
 
@@ -23,18 +23,12 @@ export function verbs(rand = Math.random) {
   };
 }
 
-// "4s", then "1m 05s" past a minute
-export function elapsed(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
-}
-
 // a <span class="working">; since: the performance.now() the wait started
 export function working({ since = performance.now(), label = "Working" } = {}) {
   const el = document.createElement("span");
   el.className = "working";
-  el.innerHTML = `${MARK}<span class="wk-v" aria-hidden="true"></span><span class="wk-s" aria-hidden="true"></span><span class="sr-only">${label}</span>`;
-  const v = el.querySelector(".wk-v"), s = el.querySelector(".wk-s"), next = verbs();
+  el.innerHTML = `${MARK}<span class="wk-v" aria-hidden="true"></span><span class="sr-only">${label}</span>`;
+  const v = el.querySelector(".wk-v"), next = verbs();
   let word = -1, seen = false;
   const born = performance.now();
   const tick = () => {
@@ -46,7 +40,6 @@ export function working({ since = performance.now(), label = "Working" } = {}) {
       v.textContent = next() + "…";
       if (w > 0 && !reduced() && v.animate) v.animate([{ opacity: 0, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], { duration: 260, easing: "cubic-bezier(.2,.7,.2,1)" });
     }
-    s.textContent = elapsed(t);
   };
   const timer = setInterval(tick, 250);
   tick();
