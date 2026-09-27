@@ -15,8 +15,12 @@ jobs:
         run: |
           for f in engine/*.js engine/wgsl/*.js room.js room/*.js harness/*.js site/js/*.js tests/*.js benchmarks/*.js; do node --check "$f"; done
       - name: Unit tests (no GPU)
+        # the unit tests import node: builtins via tests/weight_cache.js; without npm ci there is no local
+        # node_modules, so Deno must not read package.json (it would look for @types/node there)
+        env: { DENO_NO_PACKAGE_JSON: "1" }
         run: deno test --allow-read tests/unit
       - name: Kernel generator sanity
+        env: { DENO_NO_PACKAGE_JSON: "1" }
         run: deno run --allow-read tests/unit/generator_smoke.js
   browser:
     # Code mode's preview in headless Chromium, no GPU needed. Optional until it has a track record in CI.
