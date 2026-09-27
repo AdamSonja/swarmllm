@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>Pooled</title>
-<meta name="description" content="AI models like Qwen 3.6 35B are too big for one laptop or phone. Pooled runs them across all your devices, peer to peer, in the browser, to chat and to code. Open source, MIT.">
+<meta name="description" content="One laptop can't hold a big open AI model. Your devices together can. Pooled runs it right in your browser tab, for chat and for coding agents. Open source, MIT.">
 <meta name="theme-color" content="#F6F5F1">
 <link rel="icon" type="image/svg+xml" href="/site/logo/favicon-32.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -25,6 +25,8 @@
   <symbol id="i-dir" viewBox="0 0 14 14"><path d="M1.5 3.5h4l1.2 1.3h5.8v6.7h-11z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></symbol>
   <symbol id="i-down" viewBox="0 0 14 14"><path d="M7 2v7.2M3.8 6.4 7 9.6l3.2-3.2M2.5 12h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-reload" viewBox="0 0 12 12"><path d="M10 6a4 4 0 1 1-1.2-2.85M10 1.8v2.4H7.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 12 12"><path d="M7.6 2.4 9.6 4.4M2 10l.5-2.3 5.8-5.8a1 1 0 0 1 1.4 0l.4.4a1 1 0 0 1 0 1.4L4.3 9.5z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 10 10"><path d="M2 8 8 2M3.5 2H8v4.5" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
 </svg>
 
 <a class="skip" href="#main">Skip to content</a>
@@ -37,7 +39,7 @@
     </a>
     <div class="right">
       <a class="icon-btn" href="https://github.com/Nehanth/swarmllm" aria-label="Source on GitHub"><svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
-      <a class="btn btn-blue btn-sm" href="/room">Open a room</a>
+      <a class="btn btn-blue btn-sm" href="/room">Start a free room</a>
     </div>
   </div>
 </nav>
@@ -46,9 +48,8 @@
   <header class="hero" id="top">
     <canvas class="swarm" id="swarm" aria-hidden="true"></canvas>
     <div class="wrap hero-in">
-      <p class="kicker">peer-to-peer inference</p>
       <h1>Pool your devices. <span>Run AI together.</span></h1>
-      <p class="sub">AI models like Qwen 3.6 35B are too big for one laptop or phone. Pool your devices and run them together, to chat and to code.</p>
+      <p class="sub">One laptop can't hold a big open AI model. Your devices together can. Pooled runs it right in your browser tab, for chat and for coding agents.</p>
     </div>
   </header>
 
@@ -67,15 +68,16 @@
           <div class="hd">
             <span class="hd-room"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#i-mark"/></svg><span class="hd-k">Room</span><b class="hd-code" id="hdCode" aria-label="K7QX"><span>K</span><span>7</span><span>Q</span><span>X</span></b></span>
             <ul class="chips" id="chips" aria-label="Devices in the room">
-              <li class="chip c0"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg><span class="cn">MacBook Air</span><span class="cg">12 GB</span></li>
-              <li class="chip c1"><svg width="14" height="14" aria-hidden="true"><use href="#i-desk"/></svg><span class="cn">Desktop PC</span><span class="cg">12 GB</span></li>
+              <li class="chip c0"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg><span class="cn" data-name="0">Amber Fox</span><span class="cg">12 GB</span></li>
+              <li class="chip c1"><svg width="14" height="14" aria-hidden="true"><use href="#i-desk"/></svg><span class="cn" data-name="1">Calm Heron</span><span class="cg">12 GB</span></li>
+              <li class="chip c2"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg><span class="cn" data-name="2">Quiet Lynx</span><span class="cg">8 GB</span></li>
             </ul>
-            <span class="hd-sum"><b id="gbSum">24 GB</b> pooled</span>
+            <span class="hd-sum"><b id="gbSum">32 GB</b> pooled</span>
           </div>
 
           <div class="body" id="body">
 
-            <!-- 1, 2: two devices open pooled.run. One starts a room, the other joins with the code -->
+            <!-- 1, 2: a laptop starts a room (it already has a name), a desktop joins with the code -->
             <div class="scene s-tabs">
               <div class="tab" id="tabA">
                 <p class="tab-dev"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg>MacBook Air</p>
@@ -86,13 +88,15 @@
                       <div class="mpre">
                         <h3>Start a room</h3>
                         <p>You get a code for your other devices.</p>
+                        <p class="nm-k">This device</p>
+                        <span class="devname" id="nmA"><span class="nm-v" data-name="0">Amber Fox</span><svg width="12" height="12" aria-hidden="true"><use href="#i-pen"/></svg></span>
                         <span class="mbtn blue" id="aGo">Start a room</span>
                       </div>
                       <div class="mpost">
                         <p class="mk">Room code</p>
                         <p class="mcode" id="aCode" aria-label="K7QX"><span>K</span><span>7</span><span>Q</span><span>X</span></p>
                         <p class="mwait"><span class="live" aria-hidden="true"></span>Waiting for your other devices</p>
-                        <p class="mjoined"><svg width="12" height="12" aria-hidden="true"><use href="#i-check"/></svg>Desktop PC joined</p>
+                        <p class="mjoined"><svg width="12" height="12" aria-hidden="true"><use href="#i-check"/></svg><span><span data-name="1">Calm Heron</span> joined</span></p>
                       </div>
                     </div>
                   </div>
@@ -106,6 +110,8 @@
                     <div class="mcard">
                       <div class="mjoin">
                         <h3>Join a room</h3>
+                        <p class="nm-k">This device</p>
+                        <span class="devname" id="nmB"><span class="nm-v" data-name="1">Calm Heron</span><svg width="12" height="12" aria-hidden="true"><use href="#i-pen"/></svg></span>
                         <div class="slots" aria-label="Code typed: K7QX"><i>K</i><i>7</i><i>Q</i><i>X</i></div>
                         <span class="mbtn" id="bBtn">Join</span>
                         <p class="mok"><svg width="12" height="12" aria-hidden="true"><use href="#i-check"/></svg>Joined room K7QX</p>
@@ -116,36 +122,50 @@
               </div>
             </div>
 
-            <!-- 3 to 5: the model; the room presses Download, each device fetches its 20 layers; then every word passes through them -->
+            <!-- 3: pick a model; a friend joins; Download. 4: each device fetches only its own layers. Then every word passes through them -->
             <div class="model" id="model">
-              <p class="md-h"><span class="md-n">Qwen 3.6 35B MoE</span><span class="md-s" id="mdS">22.5 GB · 40 layers · split 2 ways</span></p>
-              <div class="md-b">
-                <div class="lane" id="lane">
-                  <div class="half h0">
-                    <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-laptop"/></svg><b>MacBook Air</b><span>layers 1-20</span></p>
-                    <div class="cells" id="cells0"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                    <p class="hg" id="hg0">11.2 GB</p>
-                  </div>
-                  <div class="link" aria-hidden="true"><span class="lk-sp"></span><span class="lk-c"><span class="lk-l"><b>hidden state</b> 10 KB</span><span class="lk-w"><i></i></span></span></div>
-                  <div class="half h1">
-                    <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-desk"/></svg><b>Desktop PC</b><span>layers 21-40</span></p>
-                    <div class="cells" id="cells1"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                    <p class="hg" id="hg1">11.2 GB</p>
-                  </div>
-                  <svg class="ret" id="ret" aria-hidden="true"><path id="retPath" d=""/></svg>
-                  <span class="pkt" id="pkt" aria-hidden="true"></span>
+              <div class="pick" id="pick">
+                <p class="pk-h"><span>Pick a model</span><span class="pk-room"><b id="pkGB">24 GB</b> in this room</span></p>
+                <ul class="pk-list" id="pkList">
+                  <li data-need="4"><span class="pk-r" aria-hidden="true"></span><span class="pk-n">Qwen3 1.7B</span><span class="pk-bar" aria-hidden="true"><i style="--w:16.7%"></i></span><span class="pk-g">4 GB</span></li>
+                  <li data-need="17"><span class="pk-r" aria-hidden="true"></span><span class="pk-n">Qwen 3.8 27B</span><span class="pk-bar" aria-hidden="true"><i style="--w:70.8%"></i></span><span class="pk-g">17 GB</span></li>
+                  <li data-need="22.5" class="sel"><span class="pk-r" aria-hidden="true"></span><span class="pk-n">Qwen 3.6 35B MoE</span><span class="pk-bar" aria-hidden="true"><i style="--w:93.8%"></i></span><span class="pk-g">22.5 GB</span></li>
+                </ul>
+                <span class="mbtn blue" id="dlBtn"><svg width="14" height="14" aria-hidden="true"><use href="#i-down"/></svg>Download model</span>
+              </div>
+
+              <p class="md-h"><span class="md-n">Qwen 3.6 35B MoE</span><span class="md-s" id="mdS">Ready on 3 devices · 40 layers, split by memory</span></p>
+              <div class="lane" id="lane">
+                <div class="seg g0">
+                  <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-laptop"/></svg><b data-name="0">Amber Fox</b><span>layers 1-15</span></p>
+                  <div class="cells" id="cells0"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  <p class="hg" id="hg0">8.4 GB, from cache</p>
                 </div>
-                <div class="md-go" aria-hidden="true">
-                  <span class="mbtn blue" id="dlBtn"><svg width="14" height="14" aria-hidden="true"><use href="#i-down"/></svg>Download model</span>
-                  <p class="md-fit"><b>24 GB</b> in this room. The model needs 22.5.</p>
+                <div class="link" aria-hidden="true"><span class="lk-sp"></span><span class="lk-c"><span class="lk-w"><i></i></span></span></div>
+                <div class="seg g1">
+                  <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-desk"/></svg><b data-name="1">Calm Heron</b><span>layers 16-30</span></p>
+                  <div class="cells" id="cells1"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  <p class="hg" id="hg1">8.4 GB, ready</p>
                 </div>
+                <div class="link" aria-hidden="true"><span class="lk-sp"></span><span class="lk-c"><span class="lk-w"><i></i></span></span></div>
+                <div class="seg g2">
+                  <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-laptop"/></svg><b data-name="2">Quiet Lynx</b><span>layers 31-40</span></p>
+                  <div class="cells" id="cells2"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  <p class="hg" id="hg2">5.6 GB, ready</p>
+                </div>
+                <p class="lk-l" aria-hidden="true"><b>hidden state</b> 10 KB per hop</p>
+                <svg class="ret" id="ret" aria-hidden="true"><path id="retPath" d=""/></svg>
+                <span class="pkt" id="pkt" aria-hidden="true"></span>
               </div>
             </div>
 
+            <!-- a friend's laptop joins, for a moment, on the side -->
+            <div class="toast" id="toast" aria-hidden="true"><span class="t-ic"><svg width="15" height="15"><use href="#i-laptop"/></svg></span><span class="t-tx"><b data-name="2">Quiet Lynx</b> joined<small>a friend's laptop · lends 8 GB</small></span></div>
+
             <div class="scene s-chat">
               <ol class="msgs" id="msgs">
-                <li class="q" data-at="q1"><span class="who">MacBook Air</span><p>what is Pooled?</p></li>
-                <li class="a" data-at="a1"><span class="who">Qwen 3.6 35B MoE</span><p class="say" id="a1">Pooled splits one open model across the devices in this room. Your laptop runs layers 1 to 20, the desktop runs 21 to 40, and every word passes through both.</p></li>
+                <li class="q" data-at="q1"><span class="who" data-name="0">Amber Fox</span><p>what is Pooled?</p></li>
+                <li class="a" data-at="a1"><span class="who">Qwen 3.6 35B MoE</span><p class="say" id="a1">Pooled splits one open model across this room. Amber Fox runs layers 1 to 15, Calm Heron 16 to 30, Quiet Lynx 31 to 40. Every word passes through all three.</p></li>
               </ol>
               <div class="composer" id="chatComposer" aria-hidden="true">
                 <span class="field"><span class="typed" id="chatTyped"></span><span class="ph">Message the room</span></span>
@@ -153,10 +173,10 @@
               </div>
             </div>
 
-            <!-- 5 to 7: Code. Files on the left, the agent, then the game it serves -->
+            <!-- 6 to 8: Code. Files on the left, the agent, then the app it serves -->
             <div class="scene s-code">
               <div class="files">
-                <p class="fh"><svg width="14" height="14" aria-hidden="true"><use href="#i-dir"/></svg>tetris</p>
+                <p class="fh"><svg width="14" height="14" aria-hidden="true"><use href="#i-dir"/></svg><span id="fDir">tetris</span></p>
                 <ul class="ftree" id="ftree">
                   <li data-f="index.html"><svg width="13" height="13" aria-hidden="true"><use href="#i-file"/></svg><span class="fn">index.html</span><span class="fm">12</span></li>
                   <li data-f="style.css"><svg width="13" height="13" aria-hidden="true"><use href="#i-file"/></svg><span class="fn">style.css</span><span class="fm">9</span></li>
@@ -166,7 +186,7 @@
               </div>
 
               <div class="agent">
-                <p class="ag-h"><span>Agent</span><span class="ag-m">Qwen 3.6 35B MoE on 2 devices</span></p>
+                <p class="ag-h"><span>Agent</span><span class="ag-m">Qwen 3.6 35B MoE on 3 devices</span></p>
                 <ol class="log" id="log">
                   <li class="cu" data-at="c-q"><p>build me a tetris game</p></li>
                   <li class="ct" data-at="c-s1"><p class="say">I'll write three files and serve them on :5173.</p></li>
@@ -175,10 +195,10 @@
                   <li class="tool" data-at="c-t2"><p class="tl"><span class="nm">write_file</span><span class="br">game.js</span><span class="st">done</span></p></li>
                   <li class="wlive pending" id="lv"><p class="lh"><span class="nm">writing</span><b id="lvF">game.js</b><span class="n" id="lvN">0 lines</span></p><pre id="lvPre"></pre></li>
                   <li class="tool" data-at="c-t3"><p class="tl"><span class="nm">serve</span><span class="br">:5173</span><span class="st">done</span></p></li>
-                  <li class="ct" data-at="c-s2"><p class="say">Tetris is running on :5173.</p></li>
+                  <li class="ct" data-at="c-s2"><p class="say">Tetris is running on :5173. Click the preview to play.</p></li>
                   <li class="cu" data-at="c-q2"><p>make the pieces blue and add a next-piece preview</p></li>
                   <li class="tool" data-at="c-t4"><p class="tl"><span class="nm">edit_file</span><span class="br">game.js</span><span class="dn"><span class="add">+4</span><span class="del">-1</span></span><span class="st">done</span></p>
-                    <div class="diff"><span class="r del">const COLORS = ["#F08A6C", "#F2C14E", "#6CC5A1", ...];</span><span class="r add">const COLORS = ["#2A45E0", "#6E86FF", "#A5B4FC", ...];</span><span class="r add">const next = document.getElementById("next");</span><span class="r add">function drawNext() { paint(next, queue[0]); }</span><span class="r add">// called after each spawn()</span></div></li>
+                    <div class="diff" id="diff"><span class="r del">const COLORS = ["#F08A6C", "#F2C14E", "#6CC5A1", ...];</span><span class="r add">const COLORS = ["#2A45E0", "#6E86FF", "#A5B4FC", ...];</span><span class="r add">const next = document.getElementById("next");</span><span class="r add">function drawNext() { paint(next, queue[0]); }</span><span class="r add">// called after each spawn()</span></div></li>
                   <li class="ct" data-at="c-s3"><p class="say">Done. The pieces are blue, and the next one shows beside the board.</p></li>
                 </ol>
                 <div class="composer" id="codeComposer" aria-hidden="true">
@@ -189,17 +209,12 @@
 
               <div class="pvcol" id="pvcol">
                 <div class="pv" id="pv">
-                  <div class="pv-bar"><svg class="pv-rl" width="12" height="12" aria-hidden="true"><use href="#i-reload"/></svg><span class="pv-addr"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>localhost:5173</span><span class="br-load" aria-hidden="true"><i id="brLoad"></i></span></div>
+                  <div class="pv-bar"><svg class="pv-rl" width="12" height="12" aria-hidden="true"><use href="#i-reload"/></svg><span class="pv-addr"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>localhost:5173</span><span class="pv-hint" id="pvHint">Click to play</span><span class="br-load" aria-hidden="true"><i id="brLoad"></i></span></div>
                   <div class="pv-frame" id="pvFrame">
                     <div class="app" id="app">
-                      <div class="game" id="game" tabindex="0" role="application" aria-label="The Tetris game the agent wrote, playing itself. Focus it and press an arrow key to take over; Escape hands it back.">
+                      <div class="game" id="game" tabindex="0" role="application" aria-label="The Tetris game the agent wrote, playing itself. Focus it and use the arrow keys and space to take over; Escape hands it back.">
                         <svg class="board-static" viewBox="0 0 200 400" aria-hidden="true"><rect width="200" height="400" fill="#0E1328"/><rect x="121" y="261" width="18" height="18" fill="#6E86FF"/><rect x="141" y="261" width="18" height="18" fill="#6E86FF"/><rect x="1" y="281" width="18" height="18" fill="#2A45E0"/><rect x="101" y="281" width="18" height="18" fill="#6E86FF"/><rect x="121" y="281" width="18" height="18" fill="#6E86FF"/><rect x="141" y="281" width="18" height="18" fill="#6E86FF"/><rect x="1" y="301" width="18" height="18" fill="#2A45E0"/><rect x="41" y="301" width="18" height="18" fill="#A5B4FC"/><rect x="61" y="301" width="18" height="18" fill="#A5B4FC"/><rect x="121" y="301" width="18" height="18" fill="#8EA2FF"/><rect x="141" y="301" width="18" height="18" fill="#8EA2FF"/><rect x="181" y="301" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="321" width="18" height="18" fill="#2A45E0"/><rect x="41" y="321" width="18" height="18" fill="#A5B4FC"/><rect x="61" y="321" width="18" height="18" fill="#A5B4FC"/><rect x="81" y="321" width="18" height="18" fill="#DCE2FF"/><rect x="101" y="321" width="18" height="18" fill="#8EA2FF"/><rect x="121" y="321" width="18" height="18" fill="#8EA2FF"/><rect x="181" y="321" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="341" width="18" height="18" fill="#2A45E0"/><rect x="21" y="341" width="18" height="18" fill="#4A5FD0"/><rect x="41" y="341" width="18" height="18" fill="#4A5FD0"/><rect x="81" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="101" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="121" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="161" y="341" width="18" height="18" fill="#C9D1F7"/><rect x="181" y="341" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="361" width="18" height="18" fill="#DCE2FF"/><rect x="21" y="361" width="18" height="18" fill="#4A5FD0"/><rect x="41" y="361" width="18" height="18" fill="#4A5FD0"/><rect x="61" y="361" width="18" height="18" fill="#6E86FF"/><rect x="81" y="361" width="18" height="18" fill="#6E86FF"/><rect x="101" y="361" width="18" height="18" fill="#6E86FF"/><rect x="141" y="361" width="18" height="18" fill="#A5B4FC"/><rect x="161" y="361" width="18" height="18" fill="#A5B4FC"/><rect x="181" y="361" width="18" height="18" fill="#8EA2FF"/><rect x="1" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="21" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="41" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="61" y="381" width="18" height="18" fill="#C9D1F7"/><rect x="81" y="381" width="18" height="18" fill="#6E86FF"/><rect x="101" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="121" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="141" y="381" width="18" height="18" fill="#A5B4FC"/><rect x="161" y="381" width="18" height="18" fill="#A5B4FC"/><rect x="181" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="81" y="61" width="18" height="18" fill="#6E86FF"/><rect x="101" y="61" width="18" height="18" fill="#6E86FF"/><rect x="121" y="61" width="18" height="18" fill="#6E86FF"/><rect x="101" y="81" width="18" height="18" fill="#6E86FF"/></svg>
-                        <canvas id="tetris" width="200" height="400" aria-hidden="true"></canvas>
-                      </div>
-                      <div class="side">
-                        <p class="stat"><span>Score</span><b id="score">1,300</b></p>
-                        <p class="stat"><span>Lines</span><b id="lines">9</b></p>
-                        <div class="nextbox" id="nextbox"><span>Next</span><canvas id="nextc" width="48" height="48" aria-hidden="true"></canvas></div>
+                        <canvas id="appc" aria-hidden="true"></canvas>
                       </div>
                     </div>
                   </div>
@@ -214,11 +229,11 @@
         <div class="stepbar" id="stepbar">
           <p class="sb-now"><span class="sb-n" id="sbN">8/8</span><span class="sb-t" id="sbT" aria-live="polite">Ask for a change. It edits the code and reloads.</span></p>
           <ol class="sb-dots" aria-label="Steps">
-            <li><button type="button" data-step="0"><i></i><span class="lbl">Start a room on your laptop</span></button></li>
+            <li><button type="button" data-step="0"><i></i><span class="lbl">Start a room. Your laptop already has a name.</span></button></li>
             <li><button type="button" data-step="1"><i></i><span class="lbl">Join from your desktop with the code</span></button></li>
-            <li><button type="button" data-step="2"><i></i><span class="lbl">Together they fit the model. Download it.</span></button></li>
-            <li><button type="button" data-step="3"><i></i><span class="lbl">Each device downloads its half: layers 1-20 and 21-40</span></button></li>
-            <li><button type="button" data-step="4"><i></i><span class="lbl">Every word passes through all 40 layers, on both devices</span></button></li>
+            <li><button type="button" data-step="2"><i></i><span class="lbl">Pick a model. A friend can join in too.</span></button></li>
+            <li><button type="button" data-step="3"><i></i><span class="lbl">Each device downloads only its own layers</span></button></li>
+            <li><button type="button" data-step="4"><i></i><span class="lbl">Every word passes through all 40 layers, on every device</span></button></li>
             <li class="gap"><button type="button" data-step="5"><i></i><span class="lbl">Switch to Code and ask for a game</span></button></li>
             <li><button type="button" data-step="6"><i></i><span class="lbl">It writes the files and serves them on :5173</span></button></li>
             <li><button type="button" data-step="7"><i></i><span class="lbl">Ask for a change. It edits the code and reloads.</span></button></li>
@@ -235,9 +250,10 @@
       <div class="logo-slot" id="logoSlot" aria-hidden="true"><svg width="96" height="96"><use href="#i-mark"/></svg></div>
       <h2 id="closer-h">Your devices are already a supercomputer. <span>Introduce them.</span></h2>
       <div class="ctas">
-        <a class="btn btn-blue" href="/room">Open a room <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 8 8 2M3.5 2H8v4.5"/></svg></a>
+        <a class="btn btn-blue" href="/room">Start a free room <svg width="11" height="11" aria-hidden="true"><use href="#i-arrow"/></svg></a>
         <a class="btn btn-line" href="https://github.com/Nehanth/swarmllm"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .67.42l1.88 3.8 4.2.61a.75.75 0 0 1 .42 1.28l-3.04 2.96.72 4.18a.75.75 0 0 1-1.09.79L8 12.33l-3.76 1.98a.75.75 0 0 1-1.09-.79l.72-4.18L.83 6.38a.75.75 0 0 1 .42-1.28l4.2-.61L7.33.67A.75.75 0 0 1 8 .25z"/></svg>Star on GitHub</a>
       </div>
+      <p class="cta-note">No account, nothing to install. Open source, MIT.</p>
     </div>
   </section>
 </main>
@@ -250,7 +266,7 @@
 </footer>
 
 <script src="/site/js/swarm.js"></script>
-<script src="/site/js/tetris.js"></script>
+<script src="/site/js/apps.js"></script>
 <script src="/site/js/demo.js"></script>
 </body>
 </html>
