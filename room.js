@@ -212,7 +212,7 @@ function enterRoom() {
   if (isHost) { $("host-controls").hidden = false; $("mode-bar").hidden = false; }   // Code tab: peers see it once the host starts a session
   peerCard("self", myName, myMeta, true);
   updateCluster();
-  log("swarm", `room ${roomCode} — share this code with your other devices`);
+  log("swarm", `room ${roomCode}: type this code on your other devices`);
   $("ai-panel").style.display = "flex";
   aiStatus("");
   $("ai-empty").textContent = "pick a model and press start, from any device";
@@ -504,7 +504,7 @@ async function start(create, resume = null) {
       return;
     }
     if (err.type === "unavailable-id")
-      $("join-status").textContent = "that code is already hosting — pick Join instead";
+      $("join-status").textContent = "that code is already hosting a room: press Join instead";
     else if (err.type === "peer-unavailable")
       $("join-status").textContent = "no room with that code";
     else
@@ -537,7 +537,7 @@ async function keepAwake() {
     if (!wakeLock) awakeStatus("screen stays awake (video) \u2713");
   } catch (e) { if (!wakeLock) awakeStatus("\u26a0 can\u2019t keep the screen awake: set Auto-Lock to Never"); }
 }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "SwarmLLM \u00b7 room"; } });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "pooled.sh \u00b7 room"; } });
 document.addEventListener("touchstart", keepAwake, { passive: true });
 $("create-btn").addEventListener("click", () => { keepAwake(); start(true); });
 // (auto-rejoin removed: the user prefers to see what happened)
@@ -589,7 +589,7 @@ $("share-btn").addEventListener("click", openShare);
 $("share-close").addEventListener("click", () => { $("share").hidden = true; });
 $("share").addEventListener("click", (e) => { if (e.target === $("share")) $("share").hidden = true; });
 $("share-copy").addEventListener("click", copyRoomLink);
-$("share-native").addEventListener("click", () => navigator.share?.({ title: "Join my SwarmLLM room", text: `Room ${roomCode}: lend this device's GPU to a model we run together`, url: roomLink() }).catch(() => {}));
+$("share-native").addEventListener("click", () => navigator.share?.({ title: "Join my pooled.sh room", text: `Room ${roomCode}: lend this device's GPU to a model we run together`, url: roomLink() }).catch(() => {}));
 $("room-over-new").addEventListener("click", () => { location.href = location.pathname.startsWith("/r/") ? "/room" : location.pathname.replace(/\?.*$/, ""); });
 // a host whose tab reloaded (or closed by accident) can pick its room back up for 15 minutes
 {
@@ -912,7 +912,7 @@ function chatBotEnd(note, stats) {
   if (note) botEl.pieces = [{ t: note, d: 0 }];
   renderBot(botEl, false);
   // a finished answer in a background tab: say so in the tab title until the tab is looked at
-  if (!note && document.hidden) { document.title = "\u2713 answer ready \u00b7 SwarmLLM"; }
+  if (!note && document.hidden) { document.title = "\u2713 answer ready \u00b7 pooled.sh"; }
   if (stats) { const s = document.createElement("div"); s.className = "stats"; s.textContent = stats; botEl.appendChild(s); }
   if (!note && botEl.dataset.mid) {
     const r = document.createElement("div");
@@ -1014,12 +1014,12 @@ $("card-save").addEventListener("click", async () => {
 });
 $("card-share").addEventListener("click", async () => {
   const file = new File([await cardBlob()], `swarm-${roomCode || "room"}.png`, { type: "image/png" });
-  if (navigator.canShare?.({ files: [file] })) navigator.share({ files: [file], title: "Our SwarmLLM room" }).catch(() => {});
+  if (navigator.canShare?.({ files: [file] })) navigator.share({ files: [file], title: "Our pooled.sh room" }).catch(() => {});
   else toast("this browser can't share images: use save");
 });
 let lastSoloTps = 0;
 function exportChat() {
-  const lines = [`# SwarmLLM room ${roomCode || ""}`, "", `_${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${MODELS[ai.model || $("ai-model").value]?.label || ""}_`, ""];
+  const lines = [`# pooled.sh room ${roomCode || ""}`, "", `_${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${MODELS[ai.model || $("ai-model").value]?.label || ""}_`, ""];
   for (const m of document.querySelectorAll("#ai-output .m")) {
     if (m.classList.contains("user")) lines.push(`**${m.dataset.name || "?"}:** ${m.dataset.text || ""}`, "");
     else if (m.pieces) {
