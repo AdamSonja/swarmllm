@@ -250,8 +250,9 @@ function paintCard(card, name, meta, self) {
   card.querySelector(".pic").innerHTML = card.querySelector(".pic2").innerHTML = iconFor(meta);
   card.querySelector(".dot").className = "dot " + (self || meta.webgpu ? "ok" : "warn");
   card.querySelector(".pkind").textContent = !meta.ua || meta.ua === "Device" ? "Computer" : meta.ua;
-  card.querySelector(".peer-gpu").textContent = meta.webgpu
-    ? `${meta.ua} · ${meta.gpu}` : `${meta.ua} · no WebGPU`;
+  // the GPU name is missing when the browser hides adapter info (and on sim devices): show only what we know
+  const kind = !meta.ua || meta.ua === "Device" ? "Computer" : meta.ua;
+  card.querySelector(".peer-gpu").textContent = meta.webgpu === false ? `${kind} · no WebGPU` : meta.gpu ? `${kind} · ${meta.gpu}` : kind;
   const budget = meta.budgetGB || meta.maxBufGB;
   setBuf(card, meta.webgpu === false ? "no WebGPU" : meta.contribGB ? lends(meta.contribGB) : (budget ? budget + " GB" : "-"));
   card.querySelector(".cg").textContent = meta.webgpu === false ? "chat only" : meta.contribGB ? meta.contribGB + " GB" : "";
