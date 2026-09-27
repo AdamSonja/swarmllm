@@ -405,3 +405,54 @@ kopt/combined), and the test reads that. Same prompt everywhere, same bits:
 | integ/kernels | default (on for dense) | 8a532ef5 | 52f2ae10 | == plain, same 13 tokens |
 
 The only deviation is the tiled prefill attention (prefill summation order), which is the accepted one.
+
+## 2026-09-27: MoE prefill options on by default (branch integ/kernels), GB10
+
+The Qwen 3.6 35B-A3B now gets the tiled prefill attention (`attnPrefillTile`), the wide prefill GEMM
+(`prefillUbatch` 256) and the expert-grouped tiled FFN (`moeGroupPrefill` 256) by default. Wide and grouped run only
+on an engine that holds the embedding (solo `prefillTokens`); a room's split prefill keeps its 16-column frames, and
+workers turn both off without a warning. An option that cannot be built on a device turns itself off. Dense defaults are
+unchanged: tiled attention on, wide GEMM opt-in. `false` / `0` still turns each one off (`ATTN_PREFILL_TILE=0`,
+`PREFILL_UBATCH=0`, `MOEGROUP=0`; Chrome `?attnptile=0&ubatch=0&moegroup=0`).
+
+MoE prefill tolerance in the tests is now 2e-2 (`tests/load_model.js` `prefillTol`; dense stays 2e-3). The baseline
+is the MoE's own 16-column batched prefill: with the old kernels it is already 2e-3..2.3e-2 from token-by-token decode
+in Deno, and 0.16..0.17 in Chrome on the bench page's HTML. The options sit inside that band.
+
+Prefill tok/s, options off -> on:
+
+| Where | 512 | 700 | 2048/2100 | 4k | 16k |
+|---|---|---|---|---|---|
+| Deno `bench_ctx.js` (fills 512 / 4096 / 16384) | 142 -> 263 | | | 140 -> 372 | 89 -> 306 |
+| Deno `test_prefill_opts.js` | | 165 -> 367 | 160 -> 420 | 149 -> 411 | |
+| Chrome `chrome_bench.mjs ...&prefillall=1` | | 171 -> 367 | 168 -> 402 | | |
+
+Decode does not change (plain 26.7 / spec 33.7..37.4 at 512..4k, same acceptance and spec == plain both ways).
+
+Checks, options on:
+
+- `test_moe.js`: MATCH llama.cpp 3/3, spec == plain.
+- `test_moe_split.js`: host and worker both use the engine defaults, as room.js does (room.js passes no prefill
+  option). Solo, split plain == solo and spec == split plain on 5 prompts, including the 3674-token Code-mode tool
+  prompt. 0 GPU errors. Same result with `OPTS=0`. On that tool prompt the greedy text with the options on differs
+  from the text with them off at one token (`state.ines` vs `state.lines`, in a synthetic prompt). Solo and split
+  agree within each setting.
+- `test_prefill_opts.js` MoE, relDiff on vs off at 150 / 700 / 2100 / 4000: 3.3e-5 / 1.5e-3 / 1.6e-3 / 1.4e-2.
+  Argmax is equal, greedy 24 is identical, and spec == plain. With `PROMPT_FILE=bench/bench.html` (raw HTML) at 700 /
+  2048 it is 3.4e-3 / 3.0e-3, while all-off is 2.3e-2 / 2.3e-3 from token-by-token. 27B: 7.3e-5, pass.
+- Phone / Mac-class device (`LIMITS=default`: WebGPU default limits, so 16 KB workgroup memory, 256 invocations and 8
+  storage buffers per stage). Full MoE with adapter buffer sizes: all three on (attention TK 8, 64x64 wide tile in
+  16 KB), pass, 0 GPU errors. Layers [0,10) + embedding with 256 MiB buffers and bindings (a phone in room.js): pass,
+  hidden relDiff 2e-6, 0 GPU errors. The 128 MiB default binding cannot hold the MoE's 151 MB expert tensors with the
+  options on or off, so the MoE cannot run at that limit either way.
+- Chrome (`chrome_bench.mjs`, 16 KB workgroup memory, tile smem 16384): 0 GPU errors, golden two-sum / hash-map,
+  spec == plain. relDiff on vs off at 2048 tokens is 5.7e-2 with argmax equal, but the old batched path is itself
+  0.17 from token-by-token there. At 700: 2.3e-3, and both batched paths are 0.16 from token-by-token, with a
+  different argmax than token-by-token (198 vs 19455). That gap already exists with the options off. It is worth
+  its own look (Chrome's per-token path vs its batched path).
+- Code mode end to end (`tests/eval/run.mjs --model engine`, MoE, calculator / fix-bug / logic / todo). Defaults and
+  `--engine-opts '{"attnPrefillTile":false,"moeGroupPrefill":0,"prefillUbatch":0}'` give the same 2/4 with the same
+  failures (calculator's "12 + 719" check and todo's missing #new). fix-bug is identical token for token, 0 GPU
+  errors, 100 s vs 169 s.
+- Unchanged: `test_q38_bits.js` `ATTN_PREFILL_TILE=0` -> 85b12667 / eba0b8d5, `run.sh q38once` and `quick` pass,
+  `deno test tests/unit` 210 passed, `npm run check`.

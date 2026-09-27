@@ -1434,6 +1434,11 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
       // MoE bits, so every device of a room should run the same setting; ?moednrows=1|2|4 tunes it
       moeFuse: new URLSearchParams(location.search).get("moefuse") !== "0",
       moeDnRows: parseInt(new URLSearchParams(location.search).get("moednrows"), 10) || 1,
+      // Prefill options (attnPrefillTile, prefillUbatch, moeGroupPrefill) are deliberately not passed: every
+      // device takes the engine's defaults, so host and workers agree. Tiled prefill attention runs on the
+      // 16-column prefill frames of every device; wide GEMM + expert-grouped MoE only in solo prefillTokens
+      // (the device holding the embedding; a split prefill sends 16-column frames). ?kv=q8 turns the tiled
+      // attention off and ?moefuse=0 the grouped MoE on that device only.
     });
   } else if (M.kind === "gguf") {
     aiStatus("reading model index\u2026");

@@ -18,7 +18,7 @@ import { Qwen35Engine, prefillMathFeatures } from "../engine/qwen35.js";
 
 // A/B switches for every test and bench that loads through this file (engine defaults, not per test):
 //   ATTN_PREFILL_TILE=0|1 tiled causal flash attention for full-width prefill passes (engine/wgsl/attn_tile.js;
-//                         default on for dense models, off for MoE; 0 forces attn_flash, 1 forces it on)
+//                         default on for every model; 0 forces attn_flash)
 //   ATTN_PREFILL_TK=4|8|16  its positions per tile (default: the largest that fits the workgroup memory;
 //                         16 needs 32 KB, which gpuDevice() then requests from the adapter)
 //   ATTN_PREFILL_SPLITS=N its target number of context splits per pass (default 32)
@@ -67,18 +67,29 @@ export async function gpuDevice() {
   return { adapter, device };
 }
 
-// Wide prefill A/B for any Deno test or bench (engine option prefillUbatch, off by default):
+// Wide prefill A/B for any Deno test or bench (engine option prefillUbatch; default 256 on the MoE, off on dense):
 //   PREFILL_UBATCH=256 [PREFILL_TILE='{"BM":64,"BN":64,"TM":4,"TN":4}'] [WGMEM=0: keep the 16 KB default]
+//   PREFILL_UBATCH=0 forces it off (unset: the engine default)
 // wideOpts() -> engine options; wideLimits(adapter) -> device limits (the adapter's workgroup memory,
 // so the tile can take two quant blocks per K stage).
 export function wideOpts() {
-  const U = +(Deno.env.get("PREFILL_UBATCH") || 0), T = Deno.env.get("PREFILL_TILE");
-  return U ? { prefillUbatch: U, ...(T ? { prefillTile: JSON.parse(T) } : {}) } : {};
+  const e = Deno.env.get("PREFILL_UBATCH"), T = Deno.env.get("PREFILL_TILE");
+  return e ? { prefillUbatch: +e, ...(T ? { prefillTile: JSON.parse(T) } : {}) } : T ? { prefillTile: JSON.parse(T) } : {};
 }
 export function wideLimits(adapter) {
   return +(Deno.env.get("PREFILL_UBATCH") || 0) && Deno.env.get("WGMEM") !== "0"
     ? { maxComputeWorkgroupStorageSize: adapter.limits.maxComputeWorkgroupStorageSize } : {};
 }
+
+// Prefill logits tolerance: relDiff (max |diff| / max |logit| of the next-token logits) allowed between two
+// prefill paths of the same prompt. Dense: 2e-3 (tests/test_batch_q38.js). MoE: 2e-2. Top-8 routing over 256
+// experts turns a last-bit summation-order change into a different expert for tokens whose router scores
+// nearly tie, and that compounds over 40 layers. The baseline is the MoE's own 16-column batched prefill with
+// the old kernels: it already sits 2e-3..2.3e-2 from token-by-token decode at 700+ tokens in Deno (0.16..0.17 in
+// Chrome on the bench page's HTML), with argmax, greedy text and spec == plain identical. The default MoE prefill
+// options (tiled attention, wide GEMM, expert-grouped FFN) land inside that band (up to 1.7e-2 in Deno, 5.7e-2 in
+// Chrome, docs/bench-log.md 2026-09-27), so 2e-2 is the baseline's width, not a loosening for them.
+export const prefillTol = (moe) => (moe ? 2e-2 : 2e-3);
 
 // Count (and print the first few) uncaptured GPU errors; tests read errors.count.
 export function watchGpuErrors(device, print = 3) {

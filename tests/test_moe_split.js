@@ -16,6 +16,7 @@
 //      HOST_TUNE / WORKER_TUNE=WG,ROWS  (per-device cooperative GEMV tuning, as autotune picks it)
 //      CKPT=0 (skip the checkpoint-after-rollback check)  CKPT_OLD=1 (also run it with the pre-fix protocol)
 //      WIRE=f16|f32  MOE_FUSE=0  SPECFUSE=0  DRAFTCHAIN=0  SOLO=0 (skip the solo engine)
+//      OPTS=0: tiled prefill attention, wide prefill GEMM and expert-grouped MoE prefill off (default: engine defaults)
 //      SYNTH=1: a synthetic file (tests/e2e/synth.mjs --moe), prompts are token ids
 // CPU-only check with a synthetic model (lavapipe):
 //   node tests/e2e/synth.mjs /tmp/m.gguf --moe --mtp random
@@ -45,7 +46,11 @@ const vocabRows = G.tensors["token_embd.weight"].shape[0];
 // the room's engine options (room.js aiLoadShard)
 const common = { device, meta: G.meta, maxSeq: CTX, batchCols: NC, coopRowsB: 1, vocab: vocabRows,
   draftVocab: SYNTH ? 0 : 65536, draftChain: env("DRAFTCHAIN", "1") !== "0", specFuse: env("SPECFUSE", "1") !== "0",
-  moeFuse: env("MOE_FUSE", "1") !== "0" };
+  moeFuse: env("MOE_FUSE", "1") !== "0",
+  // the prefill options come from the engine defaults, as in room.js (tiled prefill attention on every
+  // device; wide GEMM + expert-grouped MoE on the device that holds the embedding, used by solo
+  // prefillTokens only: the split prefill runs 16-column frames). OPTS=0: all three off everywhere (A/B).
+  ...(env("OPTS", "") === "0" ? { attnPrefillTile: false, moeGroupPrefill: 0, prefillUbatch: 0 } : {}) };
 const roomFlags = (e) => { e.mtpBatchFill = true; e.mtpBatchRefill = true; e.mtpPreDraft = true; return e; };
 // per-device kernel tuning (room.js autotuneCoop picks these per GPU): WG,ROWS for the worker,
 // e.g. WORKER_TUNE=64,8 to stand in for a phone whose autotune differs from the host's
@@ -55,7 +60,7 @@ const mk = async (lo, hi, hasEmbed, hasHead) => {
   const weights = await qwen35Weights(G, bytesOf, { lo, hi, hasEmbed, hasHead, mtp: hasHead });
   const t = lo > 0 ? tune(env("WORKER_TUNE", "")) : hasEmbed && hi < L ? tune(env("HOST_TUNE", "")) : {};
   const e = roomFlags(await Qwen35Engine.create({ ...common, ...t, weights, layerRange: [lo, hi], hasEmbed, hasHead }));
-  console.log(`  engine [${lo},${hi})${hasEmbed ? " +embed" : ""}${hasHead ? " +head" : ""}${e.mtp ? " +mtp" : ""}: moeFuse ${e.moeFuse}, ${((performance.now() - t0) / 1000).toFixed(0)} s`);
+  console.log(`  engine [${lo},${hi})${hasEmbed ? " +embed" : ""}${hasHead ? " +head" : ""}${e.mtp ? " +mtp" : ""}: moeFuse ${e.moeFuse}, attnPrefillTile ${e.attnPrefillTile}, moeGroupPrefill ${e.moeGrpU || "off"}, prefillUbatch ${e.ubatch || "off"}, ${((performance.now() - t0) / 1000).toFixed(0)} s`);
   return e;
 };
 

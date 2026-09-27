@@ -1,7 +1,7 @@
 // Wide prefill (engine option prefillUbatch, engine/wgsl/gemm_wide.js) vs the default 16-column prefill
 // on a real model, same engine, same tokens (engine.prefillWide toggles it):
-//   * logits of the token after the prompt: argmax equal and relDiff < 2e-3 (the prefill tolerance of
-//     tests/test_batch_q38.js); also both against one-token-at-a-time (sequential) on the shortest prompt;
+//   * logits of the token after the prompt: argmax equal and relDiff under prefillTol (load_model.js: 2e-3,
+//     the tolerance of tests/test_batch_q38.js, dense; 2e-2 MoE); also both against one-token-at-a-time (sequential) on the shortest prompt;
 //   * greedy continuation of GEN tokens: identical to the default path (reported; a difference means the
 //     option must stay off by default under the correctness policy);
 //   * speculative decoding after a wide prefill: identical to plain decoding after the same prefill;
@@ -10,7 +10,7 @@
 //   cd tests && MODEL=27b PREFILL_UBATCH=256 deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights test_prefill_wide.js
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { argmax } from "../engine/engine.js";
-import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, MOE_PATH, Q38_PATH, wideOpts } from "./load_model.js";
+import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, MOE_PATH, Q38_PATH, wideOpts, prefillTol } from "./load_model.js";
 
 const env = (k, d) => Deno.env.get(k) ?? d;
 const MODEL = env("MODEL", "27b"), GEN = +env("GEN", 24), K = +env("K", 3);
@@ -59,7 +59,7 @@ for (const n of LENS) {
   const r = rel(w.lg, d.lg); maxRel = Math.max(maxRel, r);
   const sameGen = d.gen.every((t, i) => t === w.gen[i]);
   let line = `${n} tokens: prefill default ${d.tokps.toFixed(1)} tok/s, wide ${w.tokps.toFixed(1)} tok/s (${(w.tokps / d.tokps).toFixed(2)}x) · logits relDiff wide vs default ${r.toExponential(2)} · argmax ${argmax(d.lg)} / ${argmax(w.lg)} · greedy ${GEN} ${sameGen ? "identical" : "DIFFERS"}`;
-  if (argmax(d.lg) !== argmax(w.lg) || !(r < 2e-3)) fail++;
+  if (argmax(d.lg) !== argmax(w.lg) || !(r < prefillTol(!!eng.moe))) fail++;
   if (!sameGen) { line += `\n  default: ${JSON.stringify(tok.decode(d.gen))}\n  wide:    ${JSON.stringify(tok.decode(w.gen))}`; fail++; }
   if (eng.mtp) {
     const s = await run(ids, true, true), same = s.gen.every((t, i) => t === w.gen[i]);

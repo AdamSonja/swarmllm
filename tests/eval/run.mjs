@@ -7,6 +7,7 @@
 //   --no-selftest   skip checking that each task's `bad` files fail its check (on by default for mock)
 //   --verbose       print page errors (the apps' own, expected ones included)
 //   --port 18995
+//   --engine-opts '<JSON>'  extra engine options (A/B), e.g. '{"attnPrefillTile":false,"moeGroupPrefill":0,"prefillUbatch":0}'
 // Writes tests/eval/results/<stamp>-<model>.jsonl (one record per task run) and a directory of
 // the same name with one trajectory JSON per task run (the full conversation and final files).
 // Exit code: non-zero when a mock run or a self-test fails. Needs playwright on NODE_PATH.
@@ -42,9 +43,10 @@ try {
   });
   const page = await ctx.newPage();
   if (flag("verbose")) page.on("pageerror", (e) => console.error("page error:", String(e).slice(0, 300)));   // the apps' own errors show here too
-  await page.goto(`http://127.0.0.1:${PORT}/tests/eval/eval.html?model=${MODEL}${arg("ctx", "") ? "&ctx=" + arg("ctx") : ""}`);
+  await page.goto(`http://127.0.0.1:${PORT}/tests/eval/eval.html?model=${MODEL}${arg("ctx", "") ? "&ctx=" + arg("ctx") : ""}${arg("engine-opts", "") ? "&opts=" + encodeURIComponent(arg("engine-opts")) : ""}`);
   await page.waitForFunction(() => window.__eval, null, { timeout: 30000 });
   await page.evaluate(() => window.__eval.init());
+  if (MODEL === "engine") console.log("engine:", JSON.stringify(await page.evaluate(() => window.__engineInfo)));
   const all = await page.evaluate(() => window.__eval.tasks);
   const ids = arg("tasks", "") ? arg("tasks").split(",") : all;
   const unknown = ids.filter((i) => !all.includes(i));
@@ -77,6 +79,7 @@ try {
   }
   const line = await page.evaluate(async (r) => (await import("/tests/eval/suite.js")).summary(r), recs);
   console.log(line);
+  if (MODEL === "engine") console.log("GPU errors:", await page.evaluate(() => window.__engineInfo?.gpuErrors));
   console.log(`results: ${path.relative(ROOT, jsonl)} (+ trajectories in ${path.relative(ROOT, outDir)}/)`);
   if (MODEL === "mock" && recs.some((r) => !r.ok)) code = 1;
 } catch (e) {

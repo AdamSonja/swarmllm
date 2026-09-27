@@ -8,7 +8,7 @@
 //   cd tests && MODEL=moe deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights test_attn_tile.js
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { argmax } from "../engine/engine.js";
-import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, Q38_PATH, MOE_PATH } from "./load_model.js";
+import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, Q38_PATH, MOE_PATH, prefillTol } from "./load_model.js";
 
 const env = (k, d) => Deno.env.get(k) ?? d;
 const MODEL = env("MODEL", "moe"), CTX = +env("CTX", 4096), N = +env("TOKENS", 16), SEQREF_MAX = +env("SEQREF_MAX", 20000);
@@ -57,11 +57,12 @@ for (const len of LENS) {
   // time. Then the reference is that token-by-token decode (attn_flash per column, the
   // tests/test_batch_q38.js reference) and the tiled path must be within the gate of it or no further
   // from it than attn_flash's prefill is.
-  let seqNote = "", seqOk = rel < 2e-3;
+  const TOL = prefillTol(!!eng.moe);   // 2e-3 dense, 2e-2 MoE (load_model.js)
+  let seqNote = "", seqOk = rel < TOL;
   if (!seqOk && Number.isFinite(rel) && len > SEQREF_MAX) seqNote = ` (token-by-token reference skipped: ${len} > SEQREF_MAX ${SEQREF_MAX})`;
   else if (!seqOk && Number.isFinite(rel)) {
     const S = await seqRef(prompt), rA = relOf(S, a.first), rB = relOf(S, b.first);
-    seqOk = rB < 2e-3 || rB <= rA;
+    seqOk = rB < TOL || rB <= rA;
     seqNote = ` (vs token-by-token decode: attn_flash ${rA.toExponential(2)}, tile ${rB.toExponential(2)})`;
   }
   const ok = argmax(a.first) === argmax(b.first) && seqOk && Number.isFinite(rel);

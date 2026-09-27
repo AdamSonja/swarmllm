@@ -36,6 +36,9 @@ export function prefillMathFeatures(adapter, mode = envPrefillMath()) {
   return [...SGM_FEATURES, ...SGM_FEATURES_OPT].filter((f) => adapter.features.has(f));
 }
 
+// MoE prefill ubatch (tokens) for the default expert-grouped + wide prefill (moeGroupPrefill, prefillUbatch)
+export const MOE_PREFILL_UBATCH = 256;
+
 export class Qwen35Engine {
   // Option defaults applied under every create() call's own options (test runners set these from the
   // environment for A/B runs, e.g. tests/load_model.js ATTN_PREFILL_TILE=1).
@@ -154,7 +157,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, attnPrefillTile, attnPrefillSplits = 32, attnPrefillTK = 0, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true, moeGroupPrefill = 0, moeGroupUC = 8, moeGroupTiled = true, prefillUbatch = 0, prefillTile, prefillMath, prefillSgm, adapterInfo, headRows = 0 }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, attnPrefillTile, attnPrefillSplits = 32, attnPrefillTK = 0, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true, moeGroupPrefill, moeGroupUC = 8, moeGroupTiled = true, prefillUbatch, prefillTile, prefillMath, prefillSgm, adapterInfo, headRows = 0 }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -242,12 +245,14 @@ export class Qwen35Engine {
     // It changes the prefill summation order (tolerance, not bits) and only runs on full-width passes
     // that are not a speculative verify (_snapNow null: prefillTokens, runHiddenBatch/embedRunBatch
     // without snapshots); decode and verify keep attn_flash at every batchCols, so spec == plain.
-    // Default: on for dense models (27B relDiff vs attn_flash 9.6e-5 at 16k, 2.2x prefill at 16k), off
-    // for MoE: there it lands 4e-3..1.6e-2 from attn_flash (expert routing near-ties), over the 2e-3
-    // prefill tolerance, so it stays opt-in (attnPrefillTile: true) until a MoE tolerance is decided
-    // (docs/research/prefill-profile-2026-09.md, candidate E). The kernel is compiled whenever it is not
-    // explicitly false, so engine.attnPrefillTile can be flipped at runtime for A/B runs.
-    const aptOn = attnPrefillTile === undefined || attnPrefillTile === "auto" ? !this.moe : attnPrefillTile !== false;
+    // Default ("auto" / undefined): on for every model. Dense: 27B relDiff vs attn_flash 9.6e-5 at 16k, 2.2x
+    // prefill at 16k. MoE (on since 2026-09-27, docs/bench-log.md): it lands 4e-3..1.6e-2 from attn_flash
+    // because expert-routing near-ties amplify any summation-order change, the same size as the MoE's own
+    // batched-prefill vs token-by-token gap (2e-3..2.3e-2 at 700+ tokens in Deno); argmax, greedy text, spec == plain
+    // and split rooms are unchanged (tests/test_moe_split.js, test_prefill_opts.js). false forces attn_flash.
+    // The kernel is compiled whenever it is not explicitly false, so engine.attnPrefillTile can be flipped
+    // at runtime for A/B runs.
+    const aptOn = attnPrefillTile !== false;
     this.attnPTCfg = this.flash && !this.kvQ8 && attnPrefillTile !== false
       ? attnTileConfig({ hd, G: nH / nKV, faSplit: this.faSplit, faSplits: this.faSplits,
         wgMem: device.limits.maxComputeWorkgroupStorageSize, target: attnPrefillSplits, tk: attnPrefillTK }) : null;
@@ -324,14 +329,16 @@ export class Qwen35Engine {
     // sorted by expert and each chosen expert's rows are streamed once per chunk of up to moeGroupUC
     // (column, slot) pairs instead of once per pair. moeGroupTiled (the default when moeGroupPrefill is set)
     // runs real per-expert tiles: experts 3x faster, MoE prefill +23..38% on the GB10, but its logits drift
-    // from the per-pass path (1.7e-2 at 700 tokens, argmax/greedy equal), over the 2e-3 prefill tolerance, so
-    // moeGroupPrefill stays off by default. moeGroupTiled: false keeps the per-pair arithmetic (bit-identical
+    // from the per-pass path (1.7e-2 at 700 tokens, argmax/greedy equal; the MoE prefill tolerance is 2e-2,
+    // see attnPrefillTile). Default (undefined): 256 on a MoE engine whose kernels allow it, silently off
+    // otherwise; an explicit value warns when it cannot be used. moeGroupTiled: false keeps the per-pair arithmetic (bit-identical
     // to the per-pass path, but slower than it at every UC; kept only as a reference).
     // engine.moeGroup = false at runtime restores the per-pass path.
     // Decode, speculative verify and the prompt tail (under 2 * batchCols tokens) never use it.
     this.moeGrpU = 0; this.moeGrpUC = 0;
     {
-      const gU = Math.floor(+moeGroupPrefill) || 0, UC = Math.floor(+moeGroupUC) || 8, R = dnGroupRows(UC);
+      const auto = moeGroupPrefill === undefined || moeGroupPrefill === "auto";
+      const gU = auto ? (this.moe && hasEmbed && lo === 0 ? MOE_PREFILL_UBATCH : 0) : Math.floor(+moeGroupPrefill) || 0, UC = Math.floor(+moeGroupUC) || 8, R = dnGroupRows(UC);
       const why = gU <= 0 ? null : !this.moeFuse ? "needs the fused MoE FFN (moeFuse)" : !this.flash ? "needs flash attention"
         : gU % batchCols || gU < 2 * batchCols ? `ubatch ${gU} is not a multiple of batchCols ${batchCols} (at least 2 passes)`
         : ![1, 2, 4, 8, 16].includes(UC) ? `moeGroupUC ${UC} is not 1, 2, 4, 8 or 16`
@@ -341,20 +348,24 @@ export class Qwen35Engine {
         : gU > device.limits.maxComputeWorkgroupsPerDimension
           || moeGroupSizes({ U: gU, K: this.moe.K, nExp: this.moe.nExp, UC }).maxChunks > device.limits.maxComputeWorkgroupsPerDimension
           ? `ubatch ${gU} exceeds the dispatch limit (an over-limit indirect dispatch would silently do nothing)` : "";
-      if (why) console.warn(`moeGroupPrefill ${gU} off: ${why}`);
+      if (why && !auto) console.warn(`moeGroupPrefill ${gU} off: ${why}`);
       else if (why === "") { this.moeGrpU = gU; this.moeGrpUC = UC; this.moeGrpTiled = !!moeGroupTiled; }
     }
     this.moeGroup = this.moeGrpU > 0;   // runtime kill switch
 
-    // ---- wide prefill (opt-in; docs/research/prefill-profile-2026-09.md candidate B) ----
+    // ---- wide prefill (docs/research/prefill-profile-2026-09.md candidate B) ----
     // prefillUbatch = U > 0: prefillTokens runs chunks of up to U prompt tokens (multiples of the tile
     // width BN) through _encodeLayerWide: every Q4_0 / Q8_0 projection is ONE tiled GEMM over the
     // whole chunk (engine/wgsl/gemm_wide.js); the DeltaNet recurrence, attention and MoE experts run
     // on the existing batchCols-wide kernels, sub-batch by sub-batch. Prefill-tolerance numerics (a
-    // different summation order), so off by default; decode and verify never use it. engine.prefillWide
-    // = false switches it off at runtime. prefillTile: { BM, BN, TM, TN, KB } overrides the tile.
+    // different summation order); decode and verify never use it. Default (undefined): 256 on a MoE
+    // engine that holds the embedding (the MoE prefill tolerance, see attnPrefillTile; its 64x64 tile
+    // fits the 16 KB default workgroup memory), off on dense models (27B gain is smaller; kept opt-in).
+    // An automatic setting that cannot be used here is silently off; an explicit one warns.
+    // engine.prefillWide = false switches it off at runtime. prefillTile: { BM, BN, TM, TN, KB } overrides the tile.
     this.ubatch = 0; this.wideCfg = null;
-    const UB = Math.floor(+prefillUbatch || 0);
+    const ubAuto = prefillUbatch === undefined || prefillUbatch === "auto";
+    const UB = ubAuto ? (this.moe && hasEmbed && lo === 0 ? MOE_PREFILL_UBATCH : 0) : Math.floor(+prefillUbatch || 0);
     if (UB > 0) {
       let why = null, cfg = null;
       try { cfg = wideTileConfig(prefillTile, device.limits.maxComputeWorkgroupStorageSize); } catch (e) { why = e.message; }
@@ -368,7 +379,7 @@ export class Qwen35Engine {
       else if (!hasEmbed || lo !== 0) why = "it needs the embedding (whole-model prefill)";
       else if ([dim, dInner, qDim, ...(weights.layers.some((L) => !L.moe) ? [inter] : [])].some((d) => d % cfg.KS)) why = `a projection width is not a multiple of ${cfg.KS}`;
       else if (!weights.layers.every((L) => projOK(L) && ffnOK(L))) why = "a projection is not Q4_0 / Q8_0";
-      if (why) console.warn(`prefillUbatch ${UB}: wide prefill off (${why})`);
+      if (why) { if (!ubAuto) console.warn(`prefillUbatch ${UB}: wide prefill off (${why})`); }
       else { this.ubatch = UB; this.wideCfg = cfg; }
     }
     this.prefillWide = this.ubatch > 0;

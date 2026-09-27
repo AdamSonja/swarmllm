@@ -7,7 +7,11 @@
 //    GEMV, attention glue / KV store / flash / combine / gate, the MoE router and experts, the whole
 //    MTP draft-cache fill) is dispatched with exactly the same bind group, grid and frame
 //    (positions, column count), in the same order per bind group, as the default 16-column prefill;
-//  * with prefillUbatch off (the default), the command stream is exactly the default path's.
+//  * with prefillUbatch off (the dense default), the command stream is exactly the default path's;
+//  * the defaults: wide + expert-grouped prefill on for a MoE engine holding the embedding, off (silently)
+//    for a MoE worker without it and for dense models.
+// The MoE comparison runs with moeGroupPrefill 0 on both sides (the per-sub-batch expert kernels are what
+// it checks; the grouped kernels are tests/unit/moe_group_engine_test.js's).
 //   deno test --no-check --allow-read tests/unit/prefill_wide_test.js
 import { mockDevice } from "./mock_gpu.js";
 import { buildSynthGGUF, SYNTH_MOE } from "../e2e/synth.mjs";
@@ -52,8 +56,8 @@ const PROJ = /^(matvec_.*coop_b|matvec_.*gu_b|gemm_(q4|q8|red|xpose)|rmsnorm_mc$
 const eq = (a, b, m) => { if (a !== b) throw new Error(`${m}: ${a} != ${b}`); };
 
 async function compare(model, n, U, wgMem) {
-  const base = await trace(model, n);
-  const wide = await trace(model, n, { prefillUbatch: U }, wgMem);
+  const base = await trace(model, n, { prefillUbatch: 0, moeGroupPrefill: 0 });
+  const wide = await trace(model, n, { prefillUbatch: U, moeGroupPrefill: 0 }, wgMem);
   if (wide.warns.length || !wide.eng.ubatch) throw new Error(`wide prefill did not turn on: ${wide.warns}`);
   const A = byBg(base.log), B = byBg(wide.log);
   let same = 0;
@@ -113,4 +117,32 @@ Deno.test("wide prefill: off by default and at runtime (engine.prefillWide = fal
   if (short.log.some((e) => e.pipe.startsWith("gemm_w_"))) throw new Error("wide path on a 40-token prompt");
   const bad = await trace("dense", 40, { prefillUbatch: 48 });
   if (bad.eng.ubatch || !bad.warns.some((w) => w.includes("wide prefill off"))) throw new Error("a ubatch that is not a multiple of BN was accepted");
+});
+
+Deno.test("prefill defaults: wide + expert-grouped on for a MoE engine with the embedding, off for its workers and for dense", async () => {
+  const host = await engineFor(models.moe);
+  eq(host.eng.ubatch, 256, "MoE host prefillUbatch default"); eq(host.eng.moeGrpU, 256, "MoE host moeGroupPrefill default");
+  eq(!!host.eng.attnPrefillTile, true, "MoE attnPrefillTile default");
+  eq(host.warns.length, 0, "MoE host warnings");
+  const G = parseGGUFHeader(models.moe.buffer.slice(models.moe.byteOffset, models.moe.byteOffset + models.moe.byteLength));
+  const L = G.meta["qwen35.block_count"] - 1, bytesOf = async (i) => models.moe.slice(i.byteOffset, i.byteOffset + i.byteLength);
+  const warns = [], origWarn = console.warn; console.warn = (...a) => warns.push(a.join(" "));
+  let worker;
+  try {
+    worker = await Qwen35Engine.create({ device: mockDevice({ wgMem: 16384 }), meta: G.meta, layerRange: [4, L], hasEmbed: false, hasHead: false,
+      maxSeq: 512, batchCols: 16, coopRowsB: 1, weights: await qwen35Weights(G, bytesOf, { lo: 4, hi: L, hasEmbed: false, hasHead: false }) });
+  } finally { console.warn = origWarn; }
+  eq(worker.ubatch, 0, "MoE worker prefillUbatch"); eq(worker.moeGrpU, 0, "MoE worker moeGroupPrefill");
+  eq(!!worker.attnPrefillTile, true, "MoE worker attnPrefillTile"); eq(warns.length, 0, "MoE worker warnings: " + warns.join("; "));
+  const dense = await engineFor(models.dense);
+  eq(dense.eng.ubatch, 0, "dense prefillUbatch default"); eq(dense.eng.moeGrpU, 0, "dense moeGroupPrefill");
+  eq(dense.warns.length, 0, "dense warnings");
+});
+
+Deno.test("prefill defaults on a MoE: wide chunks with the expert-grouped kernels inside, valid commands", async () => {
+  const r = await trace("moe", 300);   // 256-token wide chunk, then a 32-token grouped ubatch, then 16-column passes
+  const n = (p) => r.log.filter((e) => e.pipe.startsWith(p)).length;
+  if (!n("gemm_w_")) throw new Error("no wide GEMMs");
+  if (!n("moe_gsort") || !n("moe_gusg_") || !n("moe_dng_")) throw new Error("no expert-grouped kernels");
+  eq(r.eng.pos, 300, "position after prefill");
 });

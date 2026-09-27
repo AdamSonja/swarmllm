@@ -63,6 +63,14 @@ export function serveRepo(port, extra = {}) {
     if (!fs.existsSync(p) || fs.statSync(p).isDirectory()) { r.statusCode = 404; r.end(); return; }
     r.setHeader("content-type", MIME[path.extname(p)] || "application/octet-stream");
     r.setHeader("cache-control", "no-store");
+    // Range requests (tests/eval/eval.html streams a model too big for a tab's heap tensor by tensor)
+    const m = /^bytes=(\d+)-(\d*)$/.exec(q.headers.range || "");
+    if (m) {
+      const size = fs.statSync(p).size, a = +m[1], b = Math.min(m[2] ? +m[2] : size - 1, size - 1);
+      r.statusCode = 206; r.setHeader("content-range", `bytes ${a}-${b}/${size}`); r.setHeader("content-length", b - a + 1);
+      fs.createReadStream(p, { start: a, end: b }).pipe(r);
+      return;
+    }
     fs.createReadStream(p).pipe(r);
   }).listen(port, "127.0.0.1");
 }

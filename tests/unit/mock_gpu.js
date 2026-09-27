@@ -79,6 +79,15 @@ export function mockDevice({ wgMem = 16384 } = {}) {
             pipe.layouts.forEach((l, i) => { if (!bgs[i]) fail(`${pipe.name}: bind group ${i} not set`); if (bgs[i].layout !== l) fail(`${pipe.name}: bind group ${i} has another layout`); });
             cmds.push({ op: "dispatch", pipe: pipe.name, grid: [x, y, z], bg0: bgs[0], bg1: bgs[1] });
           },
+          // the grid comes from the GPU at run time: logged as "indirect" (buffer and offset checked)
+          dispatchWorkgroupsIndirect: (b, off) => {
+            if (!pipe) fail("dispatch without a pipeline");
+            checkBuf(b, "indirect");
+            if (!(b.usage & U.INDIRECT)) fail(`${pipe.name}: indirect buffer without INDIRECT usage`);
+            if (off % 4 || off + 12 > b.size) fail(`${pipe.name}: indirect offset ${off}`);
+            pipe.layouts.forEach((l, i) => { if (!bgs[i]) fail(`${pipe.name}: bind group ${i} not set`); if (bgs[i].layout !== l) fail(`${pipe.name}: bind group ${i} has another layout`); });
+            cmds.push({ op: "dispatch", pipe: pipe.name, grid: ["indirect", off], bg0: bgs[0], bg1: bgs[1] });
+          },
           end: () => { open = false; },
         };
       },

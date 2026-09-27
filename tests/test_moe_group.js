@@ -9,11 +9,11 @@
 //   cd tests && deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights test_moe_group.js
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { argmax } from "../engine/engine.js";
-import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, MOE_PATH } from "./load_model.js";
+import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, MOE_PATH, prefillTol } from "./load_model.js";
 
 const env = (k, d) => Deno.env.get(k) ?? d;
 const U = +env("U", 64), UC = +env("UC", 8), NC = +env("BCOLS", 16), N = +env("N", 16), K = +env("K", 3);
-const TILED = env("TILED", "0") === "1";   // tiled kernels: not bit-identical; judged by relDiff < 2e-3 (test_batch*.js) and argmax
+const TILED = env("TILED", "0") === "1";   // tiled kernels: not bit-identical; judged by relDiff < the MoE prefill tolerance (2e-2, load_model.js prefillTol) and argmax
 const LENS = env("LENS", "150,301,700").split(",").map(Number), PERF = +env("PERF", 2048);
 const { device } = await gpuDevice();
 watchGpuErrors(device);
@@ -63,8 +63,8 @@ for (const n of LENS) {
   const ub = g;
   console.log(`prompt ${n} tok (${g} through grouped ubatches, ${n - 1 - g} through the ordinary passes): logits ${diff ? `DIFFER in ${diff} (max rel ${maxRel.toExponential(2)})` : "bit-identical"}, ` +
     `greedy ${same ? "identical" : "DIFFERS"} · prefill ${a.pf.toFixed(2)}s -> ${b.pf.toFixed(2)}s · last sort ${JSON.stringify(b.grp)}`);
-  if (TILED) console.log(`  tiled: relDiff ${relDiff.toExponential(2)} (gate 2e-3), argmax ${am ? "same" : "DIFFERS"}, greedy ${N} ${same ? "same" : "differs (informational)"}`);
-  if ((TILED ? !(am && relDiff < 2e-3) : diff || !same) || !ub) fail++;
+  if (TILED) console.log(`  tiled: relDiff ${relDiff.toExponential(2)} (gate ${prefillTol(true)}), argmax ${am ? "same" : "DIFFERS"}, greedy ${N} ${same ? "same" : "differs (informational)"}`);
+  if ((TILED ? !(am && relDiff < prefillTol(true)) : diff || !same) || !ub) fail++;
   if (eng.mtp) {
     const sa = await runOnce(false, n, true), sb = await runOnce(true, n, true);
     // tiled: speculative decoding must equal plain greedy within each path (spec == plain), not across paths

@@ -2,38 +2,61 @@
 // tiled prefill attention (attnPrefillTile), wide prefill GEMM (prefillUbatch) and, on the MoE, the
 // expert-grouped tiled kernels (moeGroupPrefill; inside the wide chunks when both are on). Runtime
 // switches: engine.attnPrefillTile, engine.prefillWide, engine.moeGroup.
-//   * logits of the token after the prompt: relDiff vs the all-off path and vs one-token-at-a-time
-//     (SEQ_ALL=1: at every length, else the shortest), argmax;
+//   * logits of the token after the prompt: relDiff vs the all-off path (must be under prefillTol:
+//     2e-3 dense, 2e-2 MoE, see load_model.js) and vs one-token-at-a-time (SEQ_ALL=1: at every length,
+//     else the shortest), argmax;
 //   * greedy continuation of GEN tokens vs the all-off path (reported);
 //   * speculative decoding after an all-on prefill: identical to plain decoding after the same prefill;
 //   * prefill tok/s both ways (single runs, second of two when REPS=2).
-//   MODEL=27b|moe  LENS=150,700,2100  GEN=24  PREFILL_UBATCH=256  MOEGROUP=256  (ATTN_PREFILL_TILE is forced on)
+//   MODEL=27b|moe  LENS=150,700,2100  GEN=24  PREFILL_UBATCH (27B: 256; MoE: the engine default)  MOEGROUP (the
+//   engine default; tiled attention: the engine default, on)
+//   LIMITS=default: a device with the WebGPU default limits (16 KB workgroup memory, 256 invocations, ...) except
+//   BIND_MB (default 256: the MoE's 151 MB expert tensors do not fit the 128 MiB default) and BUF_MB (default 256),
+//   i.e. what a phone-class device gives room.js; each option must work there or switch itself off cleanly.
+//   BUF_MB=max / BIND_MB=max: the adapter's. The whole MoE needs max (its 508 MB LM head), so a 256 MiB device
+//   is tested with LAYERS=N: layers [0, N) + embedding, no head; the last prompt token's hidden is compared.
 //   cd tests && MODEL=moe deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights test_prefill_opts.js
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { argmax } from "../engine/engine.js";
-import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, MOE_PATH, Q38_PATH, wideOpts } from "./load_model.js";
+import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, MOE_PATH, Q38_PATH, wideOpts, prefillTol } from "./load_model.js";
 
 const env = (k, d) => Deno.env.get(k) ?? d;
 const MODEL = env("MODEL", "27b"), GEN = +env("GEN", 24), K = +env("K", 3), REPS = +env("REPS", 1);
-if (!Deno.env.get("PREFILL_UBATCH")) Deno.env.set("PREFILL_UBATCH", "256");
+if (MODEL !== "moe" && !Deno.env.get("PREFILL_UBATCH")) Deno.env.set("PREFILL_UBATCH", "256");   // dense: opt-in
 const LENS = env("LENS", "150,700,2100").split(",").map(Number);
-const { device } = await gpuDevice();
+const LIMITS = env("LIMITS", "");
+const { device } = LIMITS === "default" ? await (async () => {
+  const adapter = await navigator.gpu.requestAdapter(), MB = 2 ** 20;
+  const lim = (k, e) => env(e, "256") === "max" ? adapter.limits[k] : Math.min(adapter.limits[k], +env(e, "256") * MB);
+  const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: lim("maxBufferSize", "BUF_MB"),
+    maxStorageBufferBindingSize: lim("maxStorageBufferBindingSize", "BIND_MB") } });
+  const l = device.limits;
+  console.log(`device limits: workgroup memory ${l.maxComputeWorkgroupStorageSize} B, invocations ${l.maxComputeInvocationsPerWorkgroup}, storage buffers/stage ${l.maxStorageBuffersPerShaderStage}, binding ${l.maxStorageBufferBindingSize / MB} MiB, buffer ${l.maxBufferSize / MB} MiB, workgroups/dim ${l.maxComputeWorkgroupsPerDimension}`);
+  return { device };
+})() : await gpuDevice();
 const errors = watchGpuErrors(device);
 const model = openGGUF(MODEL === "moe" ? MOE_PATH : Q38_PATH);
-const G = model.G, L = trunkLayers(G), nBlk = G.meta["qwen35.block_count"];
-const hasMtp = L < nBlk;
+const PART = +env("LAYERS", 0);   // > 0: layers [0, PART) + embedding only (hidden compared, no decode)
+const G = model.G, L = PART || trunkLayers(G), nBlk = G.meta["qwen35.block_count"];
+const hasMtp = !PART && L < nBlk, hasHead = !PART;
 const tok = model.tokenizer();
-const weights = await model.weights({ lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
+const weights = await model.weights({ lo: 0, hi: L, hasEmbed: true, hasHead, mtp: hasMtp });
 const maxSeq = Math.ceil((Math.max(...LENS) + GEN + 64) / 256) * 256;
-const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq, batchCols: 16, coopRowsB: 1,
-  attnPrefillTile: true, ...wideOpts(), ...(MODEL === "moe" ? { moeGroupPrefill: +env("MOEGROUP", 256), moeGroupUC: +env("MOEGROUP_UC", 8) } : {}) });
+const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead, maxSeq, batchCols: 16, coopRowsB: 1,
+  ...wideOpts(), ...(env("MOEGROUP") ? { moeGroupPrefill: +env("MOEGROUP") } : {}), ...(env("MOEGROUP_UC") ? { moeGroupUC: +env("MOEGROUP_UC") } : {}) });
+const TOL = prefillTol(!!eng.moe);
 const set = (on) => { eng.attnPrefillTile = on && !!eng.attnPTCfg; eng.prefillWide = on && eng.ubatch > 0; eng.moeGroup = on && eng.moeGrpU > 0; };
-console.log(`${MODEL}: ${L} layers, mtp ${!!eng.mtp}, attnPrefillTile ${!!eng.attnPTCfg}, ubatch ${eng.ubatch}, moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC} tiled ${eng.moeGrpTiled}` : ""}`);
+console.log(`${MODEL}: ${L} layers, mtp ${!!eng.mtp}, attnPrefillTile ${!!eng.attnPTCfg}${eng.attnPTCfg ? ` (TK ${eng.attnPTCfg.TK})` : ""}, ubatch ${eng.ubatch}, moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC} tiled ${eng.moeGrpTiled}` : ""}`);
 
 let src = [];
 for (const f of ["../engine/qwen35.js", "../engine/gguf.js", "../harness/agent.js"]) src.push(...tok.encode(await Deno.readTextFile(new URL(f, import.meta.url))));
 const V = tok.vocab;
+// PROMPT_FILE=path (relative to tests/): that file's raw tokens repeated to each length, no chat template (the
+// Chrome bench's ?prefilllen prompt is its page's HTML repeated this way)
+const PF = env("PROMPT_FILE", "");
+let raw = PF ? tok.encode(await Deno.readTextFile(new URL(PF, import.meta.url))) : null;
 const prompt = (n) => {
+  if (raw) { while (raw.length < n) raw = raw.concat(raw); return raw.slice(0, n); }
   const tail = [V["<|im_end|>"], ...tok.encode("\n"), V["<|im_start|>"], ...tok.encode("assistant\n")];
   const head = [V["<|im_start|>"], ...tok.encode("user\nSummarize what this code does:\n")];
   return [...head, ...src.slice(0, n - head.length - tail.length), ...tail];
@@ -46,6 +69,11 @@ async function run(ids, on, spec = false) {
     eng.reset(); set(on); if (eng.mtp) eng.mtpFill = spec;
     const t0 = performance.now();
     await eng.prefillTokens(ids.slice(0, -1));
+    if (PART) {   // no head: the last prompt token's hidden after layer PART - 1
+      const h = Float32Array.from(await eng.embedRun(ids.at(-1), eng.pos));
+      out = { lg: h, gen: [], tokps: ids.length / ((performance.now() - t0) / 1000) };
+      continue;
+    }
     let lg = Float32Array.from(await eng.forwardToken(ids.at(-1)));
     const s = (performance.now() - t0) / 1000;
     const first = lg;
@@ -64,7 +92,8 @@ for (const n of LENS) {
   const r = rel(w.lg, d.lg); maxRel = Math.max(maxRel, r);
   const sameGen = d.gen.every((t, i) => t === w.gen[i]);
   let line = `${n} tokens: prefill all-off ${d.tokps.toFixed(1)} tok/s, all-on ${w.tokps.toFixed(1)} tok/s (${(w.tokps / d.tokps).toFixed(2)}x) · logits relDiff on vs off ${r.toExponential(2)} · argmax ${argmax(d.lg)} / ${argmax(w.lg)} · greedy ${GEN} ${sameGen ? "identical" : "DIFFERS"}`;
-  if (argmax(d.lg) !== argmax(w.lg)) fail++;
+  if ((!PART && argmax(d.lg) !== argmax(w.lg)) || !(r < TOL)) fail++;
+  if (PART) { console.log(`${n} tokens (layers [0, ${L}) + embed): prefill all-off ${d.tokps.toFixed(1)} tok/s, all-on ${w.tokps.toFixed(1)} tok/s · hidden relDiff on vs off ${r.toExponential(2)}`); continue; }
   if (!sameGen) line += `\n  off: ${JSON.stringify(tok.decode(d.gen))}\n  on:  ${JSON.stringify(tok.decode(w.gen))}`;
   if (eng.mtp) {
     const s = await run(ids, true, true), same = s.gen.every((t, i) => t === w.gen[i]);
@@ -80,6 +109,6 @@ for (const n of LENS) {
   }
 }
 set(true);
-console.log(`max logits relDiff all-on vs all-off ${maxRel.toExponential(2)} (2e-3 is the dense prefill tolerance), GPU errors ${errors.count}`);
-console.log(fail || errors.count ? "PREFILL OPTS FAIL (argmax / spec / GPU errors)" : "PREFILL OPTS PASS (argmax, spec == plain; relDiff reported)");
+console.log(`max logits relDiff all-on vs all-off ${maxRel.toExponential(2)} (tolerance ${TOL}), GPU errors ${errors.count}`);
+console.log(fail || errors.count ? "PREFILL OPTS FAIL (argmax / relDiff / spec / GPU errors)" : "PREFILL OPTS PASS (argmax, relDiff under tolerance, spec == plain)");
 Deno.exit(fail || errors.count ? 1 : 0);

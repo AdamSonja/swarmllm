@@ -19,20 +19,28 @@ let makeModel = null;
 
 async function loadEngine() {
   const { Qwen35Engine } = await import("/engine/qwen35.js");
-  const { parseGGUFHeader, qwen35Weights, GGML_EMBED, tokenizerFromGGUF } = await import("/engine/gguf.js");
+  const { parseGGUFHeader, qwen35Weights, GGML_EMBED, tokenizerFromGGUF, streamEntryToGPU } = await import("/engine/gguf.js");
   const { makeTokenizer } = await import("/engine/tokenizer.js");
   const { engineModel } = await import("/harness/engine-model.js");
-  const buf = await (await fetch("/__m.gguf")).arrayBuffer();
-  const G = parseGGUFHeader(buf);
+  // read by byte range and stream the quantized tensors straight into GPU buffers (as the room does): the
+  // 35B MoE (21 GB) does not fit in a tab's heap as one ArrayBuffer
+  const readAt = async (off, len) => new Uint8Array(await (await fetch("/__m.gguf", { headers: { Range: `bytes=${off}-${off + len - 1}` } })).arrayBuffer());
+  const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer);
   const tok = makeTokenizer(tokenizerFromGGUF(G.meta));
   const arch = G.meta["general.architecture"] || "qwen35";   // qwen35, or qwen35moe for the 35B MoE
   const L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
   const adapter = await navigator.gpu.requestAdapter();
   const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
+  let gpuErrors = 0;
+  device.addEventListener("uncapturederror", (e) => { if (gpuErrors++ < 3) say("GPU ERROR " + (e.error?.message || "").slice(0, 200)); });
   const maxSeq = +(q.get("ctx") || 16384);
-  const eng = await Qwen35Engine.create({ device, meta: G.meta, layerRange: [0, L], hasEmbed: true, hasHead: true, vocab: G.tensors[GGML_EMBED].shape[0], maxSeq,
-    weights: await qwen35Weights(G, async (i) => new Uint8Array(buf, i.byteOffset, i.byteLength).slice(), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: !!G.meta[arch + ".nextn_predict_layers"] }) });
-  say(`engine: ${L} layers, context ${maxSeq}`);
+  G.streamEntry = (info) => streamEntryToGPU(device, info, (i) => fetch("/__m.gguf", { headers: { Range: `bytes=${i.byteOffset}-${i.byteOffset + i.byteLength - 1}` } }));
+  // ?opts=<JSON>: extra engine options for A/B runs, e.g. {"attnPrefillTile":false,"moeGroupPrefill":0,"prefillUbatch":0}
+  const xopts = JSON.parse(q.get("opts") || "{}");
+  const eng = await Qwen35Engine.create({ device, meta: G.meta, layerRange: [0, L], hasEmbed: true, hasHead: true, vocab: G.tensors[GGML_EMBED].shape[0], maxSeq, ...xopts,
+    weights: await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: !!G.meta[arch + ".nextn_predict_layers"] }) });
+  say(`engine: ${L} layers, context ${maxSeq}, attnPrefillTile ${eng.attnPrefillTile}, moeGroupPrefill ${eng.moeGrpU || "off"}, prefillUbatch ${eng.ubatch || "off"}${Object.keys(xopts).length ? ", opts " + JSON.stringify(xopts) : ""}`);
+  window.__engineInfo = { attnPrefillTile: eng.attnPrefillTile, moeGroupPrefill: eng.moeGrpU, prefillUbatch: eng.ubatch, get gpuErrors() { return gpuErrors; } };
   return ({ tools }) => {
     const m = engineModel(eng, tok, { tools, maxNew: 4096 });
     let last = { prompt: 0, reused: 0, generated: 0 };
