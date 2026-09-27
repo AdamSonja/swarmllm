@@ -723,13 +723,13 @@ export async function initCode(api, { mock = null } = {}) {
   api.on("ai-pv-stop", (from, d) => { if (!isHost()) peerView().onStop(from, d); });
 
   // ================================================================ both
-  // what this screen may do, and the line about where the agent runs and where the files live
+  // a note only when this screen can't drive (a private room, or a folder from the host's disk)
   function driverNote() {
     if (isHost()) { ui.driverNote(api.peers().length && project?.kind === "folder" ? "This project is a folder on your disk: only you can send requests to it." : ""); return; }
     const host = hostName();
     ui.driverNote(!shared() ? `Only ${host} uses Code in this room. You see nothing of it.`
       : peerProj.kind === "folder" ? `${host} has a folder from their disk open: only ${host} can drive it. You see what it does, live.`
-      : `The agent runs on ${host}'s device, and the project's files live in ${host}'s browser. Anyone in the room can ask.`);
+      : "");   // the usual case needs no note: anyone can ask, the agent works where it always does
   }
   function setChrome() {
     const host = isHost();

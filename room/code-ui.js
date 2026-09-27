@@ -501,7 +501,8 @@ export function codeUI({ onMode = () => {} } = {}) {
   const drafts = new Map();   // path -> unsaved text, kept while other files are open
   let edPath = null, edBase = "", edRO = true, hlRaf = 0;
   const ta = $("ed-text"), hl = $("ed-hl"), gutter = $("ed-ln"), edBox = $("ed");
-  if (matchMedia("(max-width: 480px)").matches) $("code-prompt").placeholder = "Ask the agent to build something";
+  const PHONE = matchMedia("(max-width: 640px)");
+  if (PHONE.matches) $("code-prompt").placeholder = "";   // phones: an empty box (the Agent tab says what it is)
   $("ed-save").querySelector("kbd").textContent = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "\u2318S" : "Ctrl+S";
   function tree(paths) {
     const t = $("code-tree");
@@ -806,7 +807,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       $("code-stop").hidden = !(on && canStop);
       const pr = $("code-prompt");
       pr.dataset.ph ||= pr.placeholder;
-      pr.placeholder = on ? "Queue another request" : pr.dataset.ph;
+      pr.placeholder = on && !PHONE.matches ? "Queue another request" : pr.dataset.ph;
     },
   };
 }
