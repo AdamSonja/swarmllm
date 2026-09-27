@@ -1,7 +1,7 @@
 {
   "name": "pooled",
   "version": "0.2.0",
-  "description": "Run a big open model with your friends, in the browser: each device holds some of the layers, tabs talk over WebRTC, and our own WebGPU kernels do the math. Formerly SwarmLLM.",
+  "description": "Pool your devices to run big open models in a browser tab, for chat and for coding agents: each device holds some of the layers, tabs talk over WebRTC, and our own WebGPU kernels do the math. Formerly SwarmLLM.",
   "homepage": "https://pooled.run",
   "repository": {
     "type": "git",
