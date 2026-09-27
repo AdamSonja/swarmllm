@@ -4,7 +4,7 @@ Everything here was measured on a DGX Spark (GB10, 184 GB/s achievable through W
 
 ## Where the time goes
 
-A generated token on the 27B = ~111 ms on the GB10: **82 ms streaming 15 GB of weights through the matvec kernels** (183 GB/s: at the roofline) and ~30 ms of everything else (small kernels, command encoding, submit, logits readback). Prefill passes cost ~139 ms for 4 tokens. Measured with `benchmarks/bench_breakdown.js`, which re-times passes with one kernel family skipped at a time.
+A generated token on the 27B = ~111 ms on the GB10: **82 ms streaming 15 GB of weights through the matvec kernels** (183 GB/s: at the roofline) and ~30 ms of everything else (small kernels, command encoding, submit, logits readback). Prefill passes cost ~139 ms for 4 tokens. Measured with `benchmarks/bench_breakdown.js`, which re-times passes with one kernel family skipped at a time. These numbers predate the prefill GEMM, flash attention and the fused kernels, and the profiler's family lists need rebuilding before they are re-measured.
 
 ## Kernel families
 
@@ -61,7 +61,7 @@ A generated token on the 27B = ~111 ms on the GB10: **82 ms streaming 15 GB of w
 ### On the wire (the room)
 26. **Binary frames (−33%) and f16 activations (−50%)** over WebRTC data channels; decoders accept f32 from older peers.
 27. **16 prompt tokens per network round** (4 GPU passes per round) so prefill pays one round-trip per 16 tokens.
-28. **Cache API with size stamps**: the cache refuses 206 responses, so range responses are stored as 200 with an `x-swarm-len` stamp and validated on read.
+28. **Cache API with size stamps**: the cache refuses 206 responses, so range responses are stored as 200 with an `x-swarm-len` stamp and validated on read (the header keeps its old name so caches from before the rename stay valid).
 29. **Fire-and-forget prefill dispatches** with periodic `onSubmittedWorkDone()` syncs to keep the queue from growing unbounded.
 
 ## Things tried and rejected (measured)
@@ -73,5 +73,16 @@ A generated token on the 27B = ~111 ms on the GB10: **82 ms streaming 15 GB of w
 - 4×4-per-thread GEMM tiles: slower than 2×4 (occupancy beat reuse).
 
 ## Open items
-- Prefill GEMM: `benchmarks/bench_gemm.js` is correct and 1.25× over the batched GEMV path; still latency-bound at ~30 GB/s. Next: register prefetch tuning, split-K for small matrices, 256-thread workgroups.
+- Prefill GEMM: shipped in `engine/wgsl/gemm.js` (row-stationary Q4_0 and Q8_0 at 16 columns, split-K pinned per 27B shape; bench log, Sep 4). `benchmarks/bench_gemm.js` is the original prototype. Open: pinned shapes for the MoE and the 1.7B, and the prefill/* branches (roadmap 02).
 - Register-resident `dn_delta` (see [deltanet-prefill-spec.md](deltanet-prefill-spec.md)): ~4% of a pass, bit-identical.
+- MoE expert GEMV layout (`engine/wgsl/moe.js`, engine option `moeKernel`): the expert kernels are generated from
+  `{ WG, TPR, R, U, wide, xsh }` per kernel (threads per workgroup, threads per row group, rows per group,
+  unroll, 16 B whole-block loads, input staged transposed in workgroup memory). `MOE_DEFAULT` (wide 16 B loads,
+  staged x; gate/up 128 threads, 32 per row, 4 rows per workgroup; down 128 threads, 8 per row, 16 rows) was
+  picked by the sweep on the GB10: in-model moe_gu_q4 69.8 -> 60.7 µs, moe_dn_q4 43.0 -> 38.4 µs (~0.45 ms of
+  22.9 ms GPU per token); Chrome decode tok/s is within run-to-run noise of legacy;
+  the tuned layout is therefore opt-in (`moeKernel: "default"`); leaving `moeKernel` unset gives `MOE_LEGACY`, the
+  first coop build's bits exactly. It only affects the unfused `moe_gu` / `moe_dn` kernels (`moeFuse: false`); the
+  fused MoE FFN (the default) has its own kernels. Sweep with `tests/bench/moe_kernel_sweep.js`,
+  select at runtime with `MOE_KERNEL=<preset|JSON>` (Deno tests and `chrome_bench.mjs`).
+  Index math is checked on the CPU for ~400 layouts by `tests/unit/moe_kernels_test.js`.

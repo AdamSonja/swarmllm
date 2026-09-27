@@ -26,7 +26,7 @@ for (const sh of shapes) {
     const link = makeLink(), out = []; fakeChannels(link, 3, out);
     if (!sendFrame(link, { ...sh, data })) throw new Error("send refused");
     for (const { buf } of out) if (buf.byteLength > SLICE_BYTES) throw new Error("slice too big: " + buf.byteLength);
-    const expectSlices = Math.ceil(data.byteLength / (SLICE_BYTES - 24));
+    const expectSlices = Math.ceil(data.byteLength / (SLICE_BYTES - 32));
     if (out.length !== expectSlices) throw new Error(`expected ${expectSlices} slices, got ${out.length}`);
     // stripes: consecutive slices land on different channels
     if (out.length > 1 && out[0].i === out[1].i) throw new Error("slices not striped");
@@ -45,4 +45,52 @@ for (const sh of shapes) {
 Deno.test("transport refuses when no channel is open", () => {
   const link = makeLink(); link.chans.push({ readyState: "connecting", send() {} });
   if (sendFrame(link, { t: "ai-hidden", pos: 0, data: new Uint16Array(8) })) throw new Error("should refuse");
+});
+Deno.test("transport: frames that complete out of order are delivered in send order", () => {
+  const link = makeLink(), out = []; fakeChannels(link, 4, out);
+  const mk = (pos) => { const d = new Uint16Array(5120 * 4); d.fill(pos); return { t: "ai-hidden-b", basePos: pos, n: 4, data: d }; };
+  sendFrame(link, mk(0)); const first = out.length;
+  sendFrame(link, mk(4));
+  sendFrame(link, { t: "ai-hidden-b", basePos: 8, n: 4, rb: 2, reset: 1, data: new Uint16Array(5120 * 4) });
+  const got = []; const deliver = receiver((m) => got.push(m));
+  // every slice of frames 2 and 3 first, then frame 1's
+  for (const { buf } of out.slice(first)) deliver(buf);
+  if (got.length) throw new Error("delivered before frame 1 completed");
+  for (const { buf } of out.slice(0, first)) deliver(buf);
+  const order = got.map((m) => m.basePos).join(",");
+  if (order !== "0,4,8") throw new Error("order " + order);
+  if (got[2].rb !== 2 || got[2].reset !== 1 || got[0].rb !== undefined) throw new Error("flags lost");
+});
+Deno.test("transport: a late frame after its gap was skipped is dropped, never delivered out of order", () => {
+  const link = makeLink(), out = []; fakeChannels(link, 1, out);
+  const mk = (pos) => ({ t: "ai-hidden", pos, data: new Uint16Array(8) });
+  sendFrame(link, mk(1)); sendFrame(link, mk(2)); sendFrame(link, mk(3));
+  const got = []; let handler = null;
+  const rl = makeLink();
+  attachWire(rl, { peerConnection: { createDataChannel: () => ({ set onmessage(f) { handler = f; }, set onclose(_) {}, readyState: "open" }) } }, (m) => got.push(m.pos));
+  handler({ data: out[1].buf }); handler({ data: out[2].buf });   // frame 1 missing
+  if (got.length) throw new Error("delivered past a gap");
+  clearTimeout(rl.gapTimer); rl.gapTimer = null;                 // what the 5 s timer does, without waiting
+  rl.expect = 2; for (const id of [2, 3]) { got.push(rl.done.get(id).pos); rl.done.delete(id); } rl.expect = 4;
+  handler({ data: out[0].buf });                                  // frame 1 finally arrives
+  if (got.join(",") !== "2,3") throw new Error("late frame delivered: " + got.join(","));
+});
+Deno.test("transport carries checkpoint control (save / load / drop) with the frame", () => {
+  const cases = [
+    { sv: 3 }, { ld: 65534 }, { sv: 7, dp: [5] }, { sv: 9, ld: 2, dp: [1, 4] }, { dp: [0xffff] }, { dp: [1, 2, 3, 0xffff] }, {},
+  ];
+  for (const c of cases) {
+    const link = makeLink(), out = []; fakeChannels(link, 2, out);
+    sendFrame(link, { t: "ai-hidden-b", basePos: 3, n: 2, reset: 1, ...c, data: new Uint16Array(5120 * 2) });
+    let got = null; const deliver = receiver((m) => { got = m; });
+    for (const { buf } of out) deliver(buf);
+    const want = { sv: c.sv, ld: c.ld, dp: c.dp && (c.dp.includes(0xffff) ? [0xffff] : c.dp) };
+    for (const k of ["sv", "ld", "dp"]) if (JSON.stringify(got[k]) !== JSON.stringify(want[k])) throw new Error(`${JSON.stringify(c)}: ${k} ${JSON.stringify(got[k])}`);
+    if (!got.reset) throw new Error("flags lost");
+  }
+  for (const bad of [{ sv: 70000 }, { ld: -1 }, { dp: [1, 2, 3] }]) {
+    const link = makeLink(); fakeChannels(link, 1, []);
+    let threw = false; try { sendFrame(link, { t: "ai-hidden", pos: 0, ...bad, data: new Uint16Array(2) }); } catch { threw = true; }
+    if (!threw) throw new Error("accepted " + JSON.stringify(bad));
+  }
 });

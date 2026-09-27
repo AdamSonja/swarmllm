@@ -3,7 +3,7 @@ import { parseGGUFHeader, qwen35Weights } from "../engine/gguf.js";
 const openFile = async (p) => { const fh = await Deno.open(p); return async (off, len) => { await fh.seek(off, Deno.SeekMode.Start); const o = new Uint8Array(len); let g = 0; while (g < len) { const n = await fh.read(o.subarray(g)); if (n === null) break; g += n; } return o; }; };
 const adapter = await navigator.gpu.requestAdapter();
 const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
-const readAt = await openFile("../models/q38/model.gguf");
+const readAt = await openFile(new URL("../models/q38/model.gguf", import.meta.url).pathname);
 const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer, { skipTokenizer: true });
 const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: 64, hasEmbed: true, hasHead: true });
 const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, vocab: 248320, layerRange: [0, 64], hasEmbed: true, hasHead: true, maxSeq: 512 });

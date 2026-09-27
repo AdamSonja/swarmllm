@@ -1,6 +1,240 @@
 // WGSL for the hybrid Qwen 3.5/3.8 engine: Gated-DeltaNet recurrence (single and
 // multi-column, with speculative snapshot slots), gated attention glue, fused pre-pass,
 // and the logits argmax. Base kernels come from ./base.js; GEMVs from ./coop.js.
+// Register-resident single-token dn_delta (decode): the same transform as dn_delta_mc below, for
+// the one-column bindings. Same operations in the same order as the kernel it replaces, so the
+// state and output are bit-identical. Requires dState = 128.
+function dnDelta1RegsWGSL() {
+  const rows = Array.from({ length: 128 }, (_, i) => i);
+  const load = rows.map((i) => `s[${i}u] = dl_s[Sb + ${i * 128}u + j];`).join(" ");
+  const store = rows.map((i) => `dl_s[Sb + ${i * 128}u + j] = s[${i}u];`).join(" ");
+  const loop1 = rows.map((i) => `{ let sd = s[${i}u] * decay; s[${i}u] = sd; vh += sd * dl1_k[${i}u]; sq += sd * dl1_q[${i}u]; kq += dl1_k[${i}u] * dl1_q[${i}u]; }`).join("\n  ");
+  const loop2 = rows.map((i) => `s[${i}u] += dl1_k[${i}u] * d;`).join(" ");
+  return `
+var<workgroup> dl1_k: array<f32, 128>;
+var<workgroup> dl1_q: array<f32, 128>;
+@compute @workgroup_size(128)
+fn dn_delta(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let h = wg.x; let j = lid.x;
+  let kh = h % dl_dn.nKH;
+  let kOff = kh * 128u; let vOff = h * 128u; let Sb = h * 16384u;
+  let decay = dl_decay[h];
+  let scale = inverseSqrt(f32(dl_dn.dState));
+  dl1_k[j] = dl_k[kOff + j]; dl1_q[j] = dl_q[kOff + j];
+  var s: array<f32, 128>;
+  ${load}
+  workgroupBarrier();
+  var vh: f32 = 0.0; var sq: f32 = 0.0; var kq: f32 = 0.0;
+  ${loop1}
+  let d = (dl_v[vOff + j] - vh) * dl_beta[h];
+  ${loop2}
+  dl_o[vOff + j] = (sq + d * kq) * scale;
+  ${store}
+}`;
+}
+
+// dn_delta + dn_gatenorm for one token in one dispatch: both use one 128-thread workgroup per
+// value head, so the head's output stays in the workgroup and the gated norm (same tree
+// reduction, same expression) follows a barrier. Bit-identical to the two kernels; q/k/v are
+// read from the whole conv output (q | k | v), so the kernel fits in 7 storage bindings.
+function dnDeltaGnWGSL() {
+  const rows = Array.from({ length: 128 }, (_, i) => i);
+  const load = rows.map((i) => `s[${i}u] = dg_s[Sb + ${i * 128}u + j];`).join(" ");
+  const store = rows.map((i) => `dg_s[Sb + ${i * 128}u + j] = s[${i}u];`).join(" ");
+  const loop1 = rows.map((i) => `{ let sd = s[${i}u] * decay; s[${i}u] = sd; vh += sd * dg1_k[${i}u]; sq += sd * dg1_q[${i}u]; kq += dg1_k[${i}u] * dg1_q[${i}u]; }`).join("\n  ");
+  const loop2 = rows.map((i) => `s[${i}u] += dg1_k[${i}u] * d;`).join(" ");
+  return `
+@group(1) @binding(0) var<storage, read> dg_c: array<f32>;      // conv output [q | k | v]
+@group(1) @binding(1) var<storage, read> dg_beta: array<f32>;
+@group(1) @binding(2) var<storage, read> dg_decay: array<f32>;
+@group(1) @binding(3) var<storage, read_write> dg_s: array<f32>;
+@group(1) @binding(4) var<storage, read> dg_z: array<f32>;
+@group(1) @binding(5) var<storage, read> dg_w: array<f32>;
+@group(1) @binding(6) var<storage, read_write> dg_y: array<f32>;
+@group(1) @binding(7) var<uniform> dg_dn: DN;
+var<workgroup> dg1_k: array<f32, 128>;
+var<workgroup> dg1_q: array<f32, 128>;
+var<workgroup> dg_partial: array<f32, 128>;
+@compute @workgroup_size(128)
+fn dn_delta_gn(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let h = wg.x; let j = lid.x;
+  let kh = h % dg_dn.nKH;
+  let kOff = kh * 128u; let vOff = h * 128u; let Sb = h * 16384u;
+  let decay = dg_decay[h];
+  let scale = inverseSqrt(f32(dg_dn.dState));
+  dg1_k[j] = dg_c[dg_dn.keyDim + kOff + j]; dg1_q[j] = dg_c[kOff + j];
+  var s: array<f32, 128>;
+  ${load}
+  workgroupBarrier();
+  var vh: f32 = 0.0; var sq: f32 = 0.0; var kq: f32 = 0.0;
+  ${loop1}
+  let d = (dg_c[2u * dg_dn.keyDim + vOff + j] - vh) * dg_beta[h];
+  ${loop2}
+  let o = (sq + d * kq) * scale;
+  ${store}
+  dg_partial[j] = o * o;
+  workgroupBarrier();
+  var stride: u32 = 64u;
+  while (stride > 0u) {
+    if (j < stride) { dg_partial[j] += dg_partial[j + stride]; }
+    workgroupBarrier();
+    stride = stride / 2u;
+  }
+  let inv = inverseSqrt(dg_partial[0] / f32(dg_dn.dState) + cfg.eps);
+  let z = dg_z[vOff + j];
+  dg_y[vOff + j] = o * inv * dg_w[j] * (z / (1.0 + exp(-z)));
+}`;
+}
+
+// attn_flash (f16 KV) and attn_flash_q8 (int8 KV, one f32 scale per 32 values, llama.cpp q8_0
+// style) from one template: same structure and arithmetic order, only the K/V reads differ.
+function flashWGSL(q8) {
+  const P = q8 ? "fq" : "fa";
+  const binds = q8
+    ? `@group(1) @binding(0) var<storage, read> ${P}_q: array<f32>;
+@group(1) @binding(1) var<storage, read> ${P}_k: array<u32>;      // 4 int8 per word
+@group(1) @binding(2) var<storage, read> ${P}_v: array<u32>;
+@group(1) @binding(3) var<storage, read> ${P}_ks: array<f32>;     // one scale per 32 values
+@group(1) @binding(4) var<storage, read> ${P}_vs: array<f32>;
+@group(1) @binding(5) var<storage, read_write> ${P}_o: array<f32>;
+@group(1) @binding(6) var<storage, read_write> ${P}_ml: array<f32>;
+@group(1) @binding(7) var<uniform> ${P}: FA;`
+    : `@group(1) @binding(0) var<storage, read> ${P}_q: array<f32>;
+@group(1) @binding(1) var<storage, read> ${P}_k: array<u32>;      // f16 pairs
+@group(1) @binding(2) var<storage, read> ${P}_v: array<u32>;
+@group(1) @binding(3) var<storage, read_write> ${P}_o: array<f32>;
+@group(1) @binding(4) var<storage, read_write> ${P}_ml: array<f32>;
+@group(1) @binding(5) var<uniform> ${P}: FA;`;
+  const dot = q8
+    ? `let kb = (c0 + t) * (cfg.kvDim / 4u) + g * (hd / 4u);
+        let sb = (c0 + t) * (cfg.kvDim / 32u) + g * (hd / 32u);
+        let qb = h * hd;
+        var s: f32 = 0.0;
+        for (var p: u32 = 0u; p < hd / 4u; p++) {
+          let w = ${P}_k[kb + p]; let sc = ${P}_ks[sb + p / 8u];
+          s += fa_qs[qb + 4u * p] * (f32(bitcast<i32>(w << 24u) >> 24u) * sc);
+          s += fa_qs[qb + 4u * p + 1u] * (f32(bitcast<i32>(w << 16u) >> 24u) * sc);
+          s += fa_qs[qb + 4u * p + 2u] * (f32(bitcast<i32>(w << 8u) >> 24u) * sc);
+          s += fa_qs[qb + 4u * p + 3u] * (f32(bitcast<i32>(w) >> 24u) * sc);
+        }`
+    : `let kb = (c0 + t) * kvw + g * hw;
+        let qb = h * hd;
+        var s: f32 = 0.0;
+        for (var p: u32 = 0u; p < hw; p++) {
+          let kk = unpack2x16float(${P}_k[kb + p]);
+          s += fa_qs[qb + 2u * p] * kk.x;
+          s += fa_qs[qb + 2u * p + 1u] * kk.y;
+        }`;
+  const vread = q8
+    ? `let vw = ${P}_v[(c0 + t) * (cfg.kvDim / 4u) + g * (hd / 4u) + tid / 4u];
+        let v = f32(bitcast<i32>(vw << (24u - 8u * (tid & 3u))) >> 24u) * ${P}_vs[(c0 + t) * (cfg.kvDim / 32u) + (g * hd + tid) / 32u];`
+    : `let v = unpack2x16float(${P}_v[(c0 + t) * kvw + g * hw + tid / 2u])[tid & 1u];`;
+  return `
+${binds}
+@compute @workgroup_size(256)
+fn attn_flash${q8 ? "_q8" : ""}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let sp = wg.x; let col = wg.y; let g = wg.z; let tid = lid.x;
+  let seqLen = frame.seqLen + col;
+  let t0 = sp * ${P}.splitLen;
+  if (t0 >= seqLen) { return; }
+  let t1 = min(seqLen, t0 + ${P}.splitLen);
+  let hd = cfg.headDim; let G = cfg.nH / cfg.nKV;
+  let hw = hd / 2u; let kvw = cfg.kvDim / 2u;
+  let rs = sqrt(f32(hd));
+  for (var w: u32 = tid; w < G * hd; w += 256u) { fa_qs[w] = ${P}_q[col * ${P}.s0 + g * G * hd + w]; }
+  if (tid < G) { fa_m[tid] = -3.0e38; fa_l[tid] = 0.0; }
+  var acc: array<f32, 8>;
+  for (var h: u32 = 0u; h < 8u; h++) { acc[h] = 0.0; }
+  workgroupBarrier();
+  for (var c0: u32 = t0; c0 < t1; c0 += 64u) {
+    let n = min(64u, t1 - c0);
+    for (var w: u32 = tid; w < G * 64u; w += 256u) {
+      let h = w / 64u; let t = w % 64u;
+      if (t < n) {
+        ${dot}
+        fa_sc[w] = s / rs;
+      }
+    }
+    workgroupBarrier();
+    if (tid < G) {
+      let b = tid * 64u;
+      var cm = fa_m[tid];
+      for (var t: u32 = 0u; t < n; t++) { cm = max(cm, fa_sc[b + t]); }
+      let alpha = exp(fa_m[tid] - cm);
+      var l = fa_l[tid] * alpha;
+      for (var t: u32 = 0u; t < n; t++) { let e = exp(fa_sc[b + t] - cm); fa_sc[b + t] = e; l += e; }
+      fa_m[tid] = cm; fa_l[tid] = l; fa_a[tid] = alpha;
+    }
+    workgroupBarrier();
+    if (tid < hd) {
+      for (var h: u32 = 0u; h < G; h++) { acc[h] *= fa_a[h]; }
+      for (var t: u32 = 0u; t < n; t++) {
+        ${vread}
+        for (var h: u32 = 0u; h < G; h++) { acc[h] += fa_sc[h * 64u + t] * v; }
+      }
+    }
+    workgroupBarrier();
+  }
+  if (tid < hd) {
+    for (var h: u32 = 0u; h < G; h++) { ${P}_o[((col * cfg.nH + g * G + h) * ${P}.maxSplits + sp) * hd + tid] = acc[h]; }
+  }
+  if (tid < G) {
+    let b = (col * cfg.nH + g * G + tid) * ${P}.maxSplits + sp;
+    ${P}_ml[b * 2u] = fa_m[tid]; ${P}_ml[b * 2u + 1u] = fa_l[tid];
+  }
+}`;
+}
+
+// Register-resident dn_delta_mc (docs/deltanet-prefill-spec.md, RG=1): thread j keeps column j
+// of the head's state S in 128 registers for the whole pass (loaded once, stored once) instead of
+// two read-modify-write sweeps of global memory per column; q/k of each column are staged in
+// workgroup memory. Same operations in the same order as the kernel it replaces, so S, the
+// outputs and the snapshots are bit-identical (measured on the GB10 in isolation: 1.24x at 1
+// column, 2.03x at 16). Every private-array index is a literal (codegen-unrolled): a loop over a
+// constant bound does not unroll on every backend and spills the array. Requires dState = 128.
+function dnDeltaRegsWGSL() {
+  const rows = Array.from({ length: 128 }, (_, i) => i);
+  const load = rows.map((i) => `s[${i}u] = dlm_s[Sb + ${i * 128}u + j];`).join(" ");
+  const store = rows.map((i) => `dlm_s[Sb + ${i * 128}u + j] = s[${i}u];`).join(" ");
+  const shadow = rows.map((i) => `dlm_shadow[so + ${i * 128}u] = s[${i}u];`).join(" ");
+  const loop1 = rows.map((i) => `{ let sd = s[${i}u] * decay; s[${i}u] = sd; vh += sd * dlr_k[${i}u]; sq += sd * dlr_q[${i}u]; kq += dlr_k[${i}u] * dlr_q[${i}u]; }`).join("\n      ");
+  const loop2 = rows.map((i) => `s[${i}u] += dlr_k[${i}u] * d;`).join(" ");
+  return `
+var<workgroup> dlr_k: array<f32, 128>;
+var<workgroup> dlr_q: array<f32, 128>;
+@compute @workgroup_size(128)
+fn dn_delta_mc(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let h = wg.x; let j = lid.x;
+  let kh = h % dlm_dn.nKH;
+  let kOff = kh * 128u; let vOff = h * 128u; let Sb = h * 16384u;
+  let scale = inverseSqrt(f32(dlm_dn.dState));   // a uniform read, as before (a literal changes rounding)
+  let nCols = max(frame.nCols, 1u);
+  let sSize = dlm_dn.nVH * 16384u;
+  var s: array<f32, 128>;
+  ${load}
+  for (var col: u32 = 0u; col < nCols; col++) {
+    let qo = col * dlm_mc.s0 + kOff;
+    let ko = col * dlm_mc.s0 + dlm_dn.keyDim + kOff;
+    let vo = col * dlm_mc.s0 + 2u * dlm_dn.keyDim + vOff;
+    workgroupBarrier();                          // the previous column is done reading k/q
+    dlr_k[j] = dlm_c[ko + j]; dlr_q[j] = dlm_c[qo + j];
+    workgroupBarrier();
+    let decay = dlm_decay[col * dlm_mc.s1 + h];
+    var vh: f32 = 0.0; var sq: f32 = 0.0; var kq: f32 = 0.0;
+      ${loop1}
+    let d = (dlm_c[vo + j] - vh) * dlm_beta[col * dlm_mc.s1 + h];
+    ${loop2}
+    dlm_o[col * dlm_mc.s2 + vOff + j] = (sq + d * kq) * scale;
+    let dlSB = frame.snap & 0xffu;               // snapshot slot base + 1 (0 = off); bit 31: replay rollback, no state snapshots
+    if (dlSB != 0u && (frame.snap & 0x80000000u) == 0u && dlSB + col < ((frame.snap >> 8u) & 0xffu)) {
+      let so = (dlSB - 1u + col) * sSize + Sb + j;
+      ${shadow}
+    }
+  }
+  ${store}
+}`;
+}
+
 export const WGSL2 = /* wgsl */ `
 struct DN {
   convDim: u32, dState: u32, nKH: u32, nVH: u32,
@@ -72,37 +306,8 @@ fn dn_l2(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(1) @binding(5) var<storage, read_write> dl_s: array<f32>; // [nVH, dState, dState]
 @group(1) @binding(6) var<storage, read_write> dl_o: array<f32>; // [dInner]
 @group(1) @binding(7) var<uniform> dl_dn: DN;
-@compute @workgroup_size(128)
-fn dn_delta(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
-  let h = wg.x;
-  let j = lid.x;
-  if (h >= dl_dn.nVH || j >= dl_dn.dState) { return; }
-  let kh = h % dl_dn.nKH;
-  let kOff = kh * dl_dn.dState;
-  let vOff = h * dl_dn.dState;
-  let Sb = h * dl_dn.dState * dl_dn.dState;
-  let decay = dl_decay[h];
-  let scale = inverseSqrt(f32(dl_dn.dState));
-  var vhat: f32 = 0.0;
-  var sq: f32 = 0.0;
-  var kq: f32 = 0.0;
-  for (var i: u32 = 0u; i < dl_dn.dState; i++) {
-    let idx = Sb + i * dl_dn.dState + j;
-    let sdec = dl_s[idx] * decay;
-    dl_s[idx] = sdec;
-    let ki = dl_k[kOff + i];
-    let qi = dl_q[kOff + i];
-    vhat += sdec * ki;
-    sq += sdec * qi;
-    kq += ki * qi;
-  }
-  let d = (dl_v[vOff + j] - vhat) * dl_beta[h];
-  for (var i: u32 = 0u; i < dl_dn.dState; i++) {
-    let idx = Sb + i * dl_dn.dState + j;
-    dl_s[idx] += dl_k[kOff + i] * d;
-  }
-  dl_o[vOff + j] = (sq + d * kq) * scale;
-}
+${dnDelta1RegsWGSL()}
+${dnDeltaGnWGSL()}
 
 // --- gated norm: rmsnorm per head (w[dState]) * silu(z) ---
 @group(1) @binding(0) var<storage, read> gn_x: array<f32>;   // [dInner]
@@ -241,7 +446,7 @@ fn dn_gates_mc(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(1) @binding(2) var<storage, read_write> cvm_st: array<f32>;
 @group(1) @binding(3) var<storage, read_write> cvm_y: array<f32>;
 @group(1) @binding(4) var<uniform> cvm_mc: MC;          // n = convDim, x stride, y stride
-@group(1) @binding(5) var<storage, read_write> cvm_shadow: array<f32>;   // [7][convDim*3]
+@group(1) @binding(5) var<storage, read_write> cvm_shadow: array<f32>;   // [max(7, maxDrafts)][convDim*3]
 @compute @workgroup_size(64)
 fn dn_conv_mc(@builtin(global_invocation_id) gid: vec3<u32>) {
   let c = gid.x; let n = cvm_mc.n;
@@ -258,7 +463,7 @@ fn dn_conv_mc(@builtin(global_invocation_id) gid: vec3<u32>) {
     cvm_y[col * cvm_mc.s1 + c] = acc / (1.0 + exp(-acc));
     s0 = s1; s1 = s2; s2 = x;
     let cvSB = frame.snap & 0xffu;       // snapshot slot base + 1 (0 = off)
-    if (cvSB != 0u && cvSB + col < (frame.snap >> 8u)) {
+    if (cvSB != 0u && cvSB + col < ((frame.snap >> 8u) & 0xffu)) {
       let so = (cvSB - 1u + col) * n * 3u + c * 3u;
       cvm_shadow[so] = s0; cvm_shadow[so + 1u] = s1; cvm_shadow[so + 2u] = s2;
     }
@@ -288,45 +493,46 @@ fn dn_l2_mc(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(1) @binding(5) var<uniform> dlm_mc: MC;          // s0 conv stride, s1 gate stride, s2 out stride
 @group(1) @binding(6) var<uniform> dlm_dn: DN;
 @group(1) @binding(7) var<storage, read_write> dlm_shadow: array<f32>;   // [7][nVH*dState*dState]
-@compute @workgroup_size(128)
-fn dn_delta_mc(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
-  let h = wg.x; let j = lid.x; let dS = dlm_dn.dState;
-  if (h >= dlm_dn.nVH || j >= dS) { return; }
-  let kh = h % dlm_dn.nKH;
-  let kOff = kh * dS; let vOff = h * dS; let Sb = h * dS * dS;
-  let scale = inverseSqrt(f32(dS));
-  let nCols = max(frame.nCols, 1u);
-  let sSize = dlm_dn.nVH * dS * dS;
-  for (var col: u32 = 0u; col < nCols; col++) {
-    let qo = col * dlm_mc.s0 + kOff;
-    let ko = col * dlm_mc.s0 + dlm_dn.keyDim + kOff;
-    let vo = col * dlm_mc.s0 + 2u * dlm_dn.keyDim + vOff;
-    let decay = dlm_decay[col * dlm_mc.s1 + h];
-    var vhat: f32 = 0.0;
-    var sq: f32 = 0.0;
-    var kq: f32 = 0.0;
-    for (var i: u32 = 0u; i < dS; i++) {
-      let idx = Sb + i * dS + j;
-      let sdec = dlm_s[idx] * decay;
-      dlm_s[idx] = sdec;
-      let ki = dlm_c[ko + i];
-      let qi = dlm_c[qo + i];
-      vhat += sdec * ki;
-      sq += sdec * qi;
-      kq += ki * qi;
-    }
-    let d = (dlm_c[vo + j] - vhat) * dlm_beta[col * dlm_mc.s1 + h];
-    for (var i: u32 = 0u; i < dS; i++) {
-      let idx = Sb + i * dS + j;
-      dlm_s[idx] += dlm_c[ko + i] * d;
-    }
-    dlm_o[col * dlm_mc.s2 + vOff + j] = (sq + d * kq) * scale;
-    let dlSB = frame.snap & 0xffu;     // snapshot slot base + 1 (0 = off)
-    if (dlSB != 0u && dlSB + col < (frame.snap >> 8u)) {
-      let slot = dlSB - 1u + col;
-      for (var i: u32 = 0u; i < dS; i++) { dlm_shadow[slot * sSize + Sb + i * dS + j] = dlm_s[Sb + i * dS + j]; }
-    }
+${dnDeltaRegsWGSL()}
+
+// --- draft chain: the embedding row of the token the last argmax picked, dequantized on the GPU
+// exactly as the host's _embedRowF32 does (f16 scale x small integer: exact in f32), so K drafts
+// can run in one submit instead of K round trips through the CPU ---
+@group(1) @binding(0) var<storage, read> eg_qs: array<u32>;
+@group(1) @binding(1) var<storage, read> eg_sc: array<u32>;
+@group(1) @binding(2) var<storage, read> eg_id: array<u32>;
+@group(1) @binding(3) var<storage, read_write> eg_out: array<f32>;
+@group(1) @binding(4) var<uniform> eg_u: vec4<u32>;       // dim, kind (0 q4, 1 q8), rows
+// f16 bits -> f32 by hand (not unpack2x16float, which may flush f16 subnormals): the same value
+// the host's f16ToF32 returns for every finite input, subnormals and -0 included. The speculative
+// one-submit verify (engine specFuse) feeds these rows to the trunk, so they must match the host's.
+fn eg_f16(h: u32) -> f32 {
+  let e = (h >> 10u) & 0x1Fu; let m = h & 0x3FFu;
+  var v: f32;
+  if (e == 0u) { v = ldexp(f32(m), -24); }                       // subnormal: m * 2^-24, exact in f32
+  else if (e == 31u) { v = bitcast<f32>(0x7F800000u | (m << 13u)); }
+  else { v = bitcast<f32>(((e + 112u) << 23u) | (m << 13u)); }
+  return select(v, -v, (h & 0x8000u) != 0u);
+}
+@compute @workgroup_size(64)
+fn emb_gather(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x; let dim = eg_u.x;
+  if (i >= dim) { return; }
+  let id = min(eg_id[0], eg_u.z - 1u);
+  let nb = dim / 32u; let b = i / 32u; let e = i % 32u;
+  let si = id * nb + b;
+  let s = eg_f16((eg_sc[si >> 1u] >> ((si & 1u) * 16u)) & 0xFFFFu);
+  var q: f32;
+  if (eg_u.y == 0u) {
+    let bi = si * 16u + (e % 16u);
+    let by = (eg_qs[bi >> 2u] >> ((bi & 3u) * 8u)) & 0xFFu;
+    q = f32(i32(select(by & 0xFu, by >> 4u, e >= 16u)) - 8);
+  } else {
+    let bi = si * 32u + e;
+    let by = (eg_qs[bi >> 2u] >> ((bi & 3u) * 8u)) & 0xFFu;
+    q = f32(bitcast<i32>(by << 24u) >> 24u);
   }
+  eg_out[i] = s * q;
 }
 
 // --- argmax over n floats (single workgroup): out = [index, bitcast(value)] ---
@@ -502,5 +708,254 @@ fn sigmoid_mul_mc(@builtin(global_invocation_id) gid: vec3<u32>) {
   let g = smm_g[gid.y * smm_mc.s1 + i];
   let ai = gid.y * smm_mc.s0 + i;
   smm_a[ai] = smm_a[ai] * (1.0 / (1.0 + exp(-g)));
+}
+
+// ================= long-context attention: f16 KV cache + split-K flash decoding =================
+// kv_store writes each column's k and v rows into the caches as packed f16 pairs (half the
+// memory and bandwidth of f32; 64 KB per token per full-attention layer set on the 27B).
+@group(1) @binding(0) var<storage, read> ks_k: array<f32>;
+@group(1) @binding(1) var<storage, read> ks_v: array<f32>;
+@group(1) @binding(2) var<storage, read_write> ks_kc: array<u32>;
+@group(1) @binding(3) var<storage, read_write> ks_vc: array<u32>;
+@group(1) @binding(4) var<uniform> ks_mc: MC;           // s0 k column stride, s1 v column stride (floats)
+@compute @workgroup_size(64)
+fn kv_store(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let w = gid.x; let col = gid.y;
+  let kvw = cfg.kvDim / 2u;
+  if (w >= kvw) { return; }
+  let row = (frame.pos + col) * kvw + w;
+  let ko = col * ks_mc.s0 + 2u * w; let vo = col * ks_mc.s1 + 2u * w;
+  ks_kc[row] = pack2x16float(vec2<f32>(ks_k[ko], ks_k[ko + 1u]));
+  ks_vc[row] = pack2x16float(vec2<f32>(ks_v[vo], ks_v[vo + 1u]));
+}
+
+// kv_store_q8: one thread per 32-value block of a K and a V row: scale = max|x| / 127, values
+// rounded to int8, 4 per word. The flash kernel dequantises value * scale.
+@group(1) @binding(0) var<storage, read> k8_k: array<f32>;
+@group(1) @binding(1) var<storage, read> k8_v: array<f32>;
+@group(1) @binding(2) var<storage, read_write> k8_kc: array<u32>;
+@group(1) @binding(3) var<storage, read_write> k8_vc: array<u32>;
+@group(1) @binding(4) var<storage, read_write> k8_ks: array<f32>;
+@group(1) @binding(5) var<storage, read_write> k8_vs: array<f32>;
+@group(1) @binding(6) var<uniform> k8_mc: MC;           // s0 k column stride, s1 v column stride
+fn k8_block(x: ptr<function, array<f32, 32>>) -> vec2<f32> {   // (scale, 1/scale)
+  var a: f32 = 0.0;
+  for (var i: u32 = 0u; i < 32u; i++) { a = max(a, abs((*x)[i])); }
+  let sc = a / 127.0;
+  return vec2<f32>(sc, select(0.0, 1.0 / sc, sc > 0.0));
+}
+fn k8_pack(x: ptr<function, array<f32, 32>>, inv: f32, j: u32) -> u32 {
+  var w: u32 = 0u;
+  for (var b: u32 = 0u; b < 4u; b++) {
+    let q = i32(clamp(round((*x)[4u * j + b] * inv), -127.0, 127.0));
+    w = w | ((bitcast<u32>(q) & 255u) << (8u * b));
+  }
+  return w;
+}
+@compute @workgroup_size(64)
+fn kv_store_q8(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let blk = gid.x; let col = gid.y;
+  let nb = cfg.kvDim / 32u;
+  if (blk >= nb) { return; }
+  let p = frame.pos + col;
+  var x: array<f32, 32>;
+  for (var i: u32 = 0u; i < 32u; i++) { x[i] = k8_k[col * k8_mc.s0 + blk * 32u + i]; }
+  var r = k8_block(&x);
+  k8_ks[p * nb + blk] = r.x;
+  for (var j: u32 = 0u; j < 8u; j++) { k8_kc[p * (cfg.kvDim / 4u) + blk * 8u + j] = k8_pack(&x, r.y, j); }
+  for (var i: u32 = 0u; i < 32u; i++) { x[i] = k8_v[col * k8_mc.s1 + blk * 32u + i]; }
+  r = k8_block(&x);
+  k8_vs[p * nb + blk] = r.x;
+  for (var j: u32 = 0u; j < 8u; j++) { k8_vc[p * (cfg.kvDim / 4u) + blk * 8u + j] = k8_pack(&x, r.y, j); }
+}
+
+// attn_flash: one 256-thread workgroup per (split of splitLen positions, column, kv head). The
+// G = nH/nKV query heads sharing a kv head are done together, so each K/V row is read once for
+// all of them. Inside a split, chunks of 64 positions: scores to workgroup memory, a running
+// max / sum per head (online softmax), and thread i accumulates output dim i for every head.
+// Writes per-split partials (max, sum, unnormalised output); attn_combine merges the splits.
+// Every order is fixed by absolute position, so the decode (1 column) and batched (verify /
+// prefill) passes give the same bits for a given position, and so do solo and split devices.
+struct FA { s0: u32, s1: u32, splitLen: u32, maxSplits: u32 };   // q col stride, out col stride
+var<workgroup> fa_qs: array<f32, 2048>;   // G * headDim <= 2048
+var<workgroup> fa_sc: array<f32, 512>;    // G * 64 scores, then weights
+var<workgroup> fa_m: array<f32, 8>;
+var<workgroup> fa_l: array<f32, 8>;
+var<workgroup> fa_a: array<f32, 8>;
+${flashWGSL(false)}
+${flashWGSL(true)}
+
+// attn_flash_t2: attn_flash for two columns per workgroup (batched passes): each K and V row is
+// read once for both columns' 2 x G query heads. Per (column, head) the scores, the running max /
+// sum and the output accumulate in exactly attn_flash's order, so the partials are bit-identical
+// to running the columns one by one (decode and verify still agree). Needs 2 * G * headDim <= 3072.
+@group(1) @binding(0) var<storage, read> ft_q: array<f32>;
+@group(1) @binding(1) var<storage, read> ft_k: array<u32>;
+@group(1) @binding(2) var<storage, read> ft_v: array<u32>;
+@group(1) @binding(3) var<storage, read_write> ft_o: array<f32>;
+@group(1) @binding(4) var<storage, read_write> ft_ml: array<f32>;
+@group(1) @binding(5) var<uniform> ft: FA;
+var<workgroup> ft_qs: array<f32, 3072>;
+var<workgroup> ft_sc: array<f32, 768>;
+var<workgroup> ft_m: array<f32, 16>;
+var<workgroup> ft_l: array<f32, 16>;
+var<workgroup> ft_a: array<f32, 16>;
+@compute @workgroup_size(256)
+fn attn_flash_t2(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let sp = wg.x; let cb = wg.y * 2u; let g = wg.z; let tid = lid.x;
+  let nc = max(frame.nCols, 1u);
+  let hd = cfg.headDim; let G = cfg.nH / cfg.nKV;
+  let hw = hd / 2u; let kvw = cfg.kvDim / 2u;
+  let rs = sqrt(f32(hd));
+  let t0 = sp * ft.splitLen;
+  // where each of the two columns stops in this split (t0 = nothing to do)
+  let s0 = frame.seqLen + cb; let s1 = s0 + 1u;
+  let e0 = select(t0, min(s0, t0 + ft.splitLen), cb < nc && t0 < s0);
+  let e1 = select(t0, min(s1, t0 + ft.splitLen), cb + 1u < nc && t0 < s1);
+  let t1 = max(e0, e1);
+  if (t1 <= t0) { return; }
+  let GH = 2u * G;
+  for (var w: u32 = tid; w < GH * hd; w += 256u) {
+    let c = w / (G * hd);
+    if (cb + c < nc) { ft_qs[w] = ft_q[(cb + c) * ft.s0 + g * G * hd + w % (G * hd)]; }
+  }
+  if (tid < GH) { ft_m[tid] = -3.0e38; ft_l[tid] = 0.0; }
+  var acc: array<f32, 16>;
+  for (var j: u32 = 0u; j < 16u; j++) { acc[j] = 0.0; }
+  workgroupBarrier();
+  for (var c0: u32 = t0; c0 < t1; c0 += 64u) {
+    let n0 = select(0u, min(64u, e0 - c0), c0 < e0);
+    let n1 = select(0u, min(64u, e1 - c0), c0 < e1);
+    for (var w: u32 = tid; w < GH * 64u; w += 256u) {
+      let j = w / 64u; let t = w % 64u;
+      if (t < select(n0, n1, j >= G)) {
+        let kb = (c0 + t) * kvw + g * hw;
+        let qb = j * hd;
+        var s: f32 = 0.0;
+        for (var p: u32 = 0u; p < hw; p++) {
+          let kk = unpack2x16float(ft_k[kb + p]);
+          s += ft_qs[qb + 2u * p] * kk.x;
+          s += ft_qs[qb + 2u * p + 1u] * kk.y;
+        }
+        ft_sc[w] = s / rs;
+      }
+    }
+    workgroupBarrier();
+    if (tid < GH) {
+      let n = select(n0, n1, tid >= G);
+      if (n > 0u) {
+        let b = tid * 64u;
+        var cm = ft_m[tid];
+        for (var t: u32 = 0u; t < n; t++) { cm = max(cm, ft_sc[b + t]); }
+        let alpha = exp(ft_m[tid] - cm);
+        var l = ft_l[tid] * alpha;
+        for (var t: u32 = 0u; t < n; t++) { let e = exp(ft_sc[b + t] - cm); ft_sc[b + t] = e; l += e; }
+        ft_m[tid] = cm; ft_l[tid] = l; ft_a[tid] = alpha;
+      }
+    }
+    workgroupBarrier();
+    if (tid < hd) {
+      if (n0 > 0u) { for (var h: u32 = 0u; h < G; h++) { acc[h] *= ft_a[h]; } }
+      if (n1 > 0u) { for (var h: u32 = 0u; h < G; h++) { acc[G + h] *= ft_a[G + h]; } }
+      let nm = max(n0, n1);
+      for (var t: u32 = 0u; t < nm; t++) {
+        let v = unpack2x16float(ft_v[(c0 + t) * kvw + g * hw + tid / 2u])[tid & 1u];
+        if (t < n0) { for (var h: u32 = 0u; h < G; h++) { acc[h] += ft_sc[h * 64u + t] * v; } }
+        if (t < n1) { for (var h: u32 = 0u; h < G; h++) { acc[G + h] += ft_sc[(G + h) * 64u + t] * v; } }
+      }
+    }
+    workgroupBarrier();
+  }
+  for (var c: u32 = 0u; c < 2u; c++) {
+    if (select(e0, e1, c == 1u) > t0) {
+      let col = cb + c;
+      if (tid < hd) {
+        for (var h: u32 = 0u; h < G; h++) { ft_o[((col * cfg.nH + g * G + h) * ft.maxSplits + sp) * hd + tid] = acc[c * G + h]; }
+      }
+      if (tid < G) {
+        let b = (col * cfg.nH + g * G + tid) * ft.maxSplits + sp;
+        ft_ml[b * 2u] = ft_m[c * G + tid]; ft_ml[b * 2u + 1u] = ft_l[c * G + tid];
+      }
+    }
+  }
+}
+
+@group(1) @binding(0) var<storage, read> fc_o: array<f32>;
+@group(1) @binding(1) var<storage, read> fc_ml: array<f32>;
+@group(1) @binding(2) var<storage, read_write> fc_out: array<f32>;
+@group(1) @binding(3) var<uniform> fc: FA;
+@compute @workgroup_size(256)
+fn attn_combine(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let qh = wg.x; let col = wg.y; let i = lid.x;
+  let hd = cfg.headDim;
+  if (qh >= cfg.nH || i >= hd) { return; }
+  let seqLen = frame.seqLen + col;
+  let ns = (seqLen + fc.splitLen - 1u) / fc.splitLen;
+  let b0 = (col * cfg.nH + qh) * fc.maxSplits;
+  var M: f32 = -3.0e38;
+  for (var s: u32 = 0u; s < ns; s++) { M = max(M, fc_ml[(b0 + s) * 2u]); }
+  var L: f32 = 0.0; var O: f32 = 0.0;
+  for (var s: u32 = 0u; s < ns; s++) {
+    let w = exp(fc_ml[(b0 + s) * 2u] - M);
+    L += fc_ml[(b0 + s) * 2u + 1u] * w;
+    O += fc_o[(b0 + s) * hd + i] * w;
+  }
+  fc_out[col * fc.s1 + qh * hd + i] = O / L;
+}
+
+// --- fused attention glue: qsplit + q/k head_norm + partial rope in one dispatch ---
+// One workgroup per (head, column); heads [0, nH) are q heads (split out of q_full, gate
+// written to g), heads [nH, nH+nKV) are k heads (in place). Same arithmetic in the same order
+// as the five separate kernels: the sum of squares runs serially on thread 0, so the result
+// is bit-identical to qsplit -> head_norm -> rope_part. Needs headDim <= 256.
+@group(1) @binding(0) var<storage, read> ag_full: array<f32>;
+@group(1) @binding(1) var<storage, read_write> ag_q: array<f32>;
+@group(1) @binding(2) var<storage, read_write> ag_g: array<f32>;
+@group(1) @binding(3) var<storage, read_write> ag_k: array<f32>;
+@group(1) @binding(4) var<storage, read> ag_qw: array<f32>;
+@group(1) @binding(5) var<storage, read> ag_kw: array<f32>;
+@group(1) @binding(6) var<uniform> ag_mc: MC;          // n = k stride, s0 full stride, s1 q stride, s2 g stride
+@group(1) @binding(7) var<uniform> ag_dn: DN;
+var<workgroup> ag_v: array<f32, 256>;
+var<workgroup> ag_inv: f32;
+@compute @workgroup_size(64)
+fn attn_glue(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let hd = ag_dn.hd;
+  let isQ = wg.x < cfg.nH;
+  let h = select(wg.x - cfg.nH, wg.x, isQ);
+  let col = wg.y;
+  let fo = col * ag_mc.s0 + h * 2u * hd;
+  let qo = col * ag_mc.s1 + h * hd;
+  let go = col * ag_mc.s2 + h * hd;
+  let ko = col * ag_mc.n + h * hd;
+  for (var i: u32 = lid.x; i < hd; i += 64u) {
+    if (isQ) { ag_v[i] = ag_full[fo + i]; ag_g[go + i] = ag_full[fo + hd + i]; }
+    else { ag_v[i] = ag_k[ko + i]; }
+  }
+  workgroupBarrier();
+  if (lid.x == 0u) {
+    var ss: f32 = 0.0;
+    for (var i: u32 = 0u; i < cfg.headDim; i++) { let v = ag_v[i]; ss += v * v; }
+    ag_inv = inverseSqrt(ss / f32(cfg.headDim) + cfg.eps);
+  }
+  workgroupBarrier();
+  let inv = ag_inv;
+  for (var i: u32 = lid.x; i < hd; i += 64u) {
+    let w = select(ag_kw[i], ag_qw[i], isQ);
+    ag_v[i] = ag_v[i] * (inv * w);
+  }
+  workgroupBarrier();
+  let half = ag_dn.nRot / 2u;
+  for (var i: u32 = lid.x; i < half; i += 64u) {
+    let ang = f32(frame.pos + col) * pow(ag_dn.ropeTheta, -f32(2u * i) / f32(ag_dn.nRot));
+    let c = cos(ang); let s = sin(ang);
+    let a = ag_v[i]; let b = ag_v[i + half];
+    ag_v[i] = a * c - b * s;
+    ag_v[i + half] = b * c + a * s;
+  }
+  workgroupBarrier();
+  for (var i: u32 = lid.x; i < hd; i += 64u) {
+    if (isQ) { ag_q[qo + i] = ag_v[i]; } else { ag_k[ko + i] = ag_v[i]; }
+  }
 }
 `;

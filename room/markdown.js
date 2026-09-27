@@ -1,6 +1,7 @@
 // Minimal markdown renderer for the chat transcript (escapes first; no raw HTML).
+import { splitThink } from "./conversation.js";
 
-export function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+export function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }   // safe in text and in quoted attributes (peer names land in title=/data-name=)
 
 export function md(src) {
   let s = esc(src);
@@ -24,4 +25,13 @@ export function md(src) {
   }
   flushP(); flushL();
   return out;
+}
+
+// An answer as chat HTML: a think block (thinking mode) folds into a <details>, open while it
+// is still streaming, the rest is markdown.
+export function mdChat(raw) {
+  const { think, answer, open } = splitThink(raw);
+  if (think === null) return md(raw);
+  const words = think ? think.split(/\s+/).length : 0;
+  return `<details class="think"${open ? " open" : ""}><summary>${open ? "thinking\u2026" : `thought for ${words} words`}</summary>${md(think)}</details>` + md(answer);
 }

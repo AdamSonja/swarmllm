@@ -1,4 +1,4 @@
-// FULL Qwen3.8-27B on the SwarmLLM engine: 64 layers + head, greedy generation.
+// FULL Qwen3.8-27B on the Pooled engine: 64 layers + head, greedy generation.
 import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
 import { makeTokenizer, argmax } from "../engine/engine.js";
 import { Qwen35Engine } from "../engine/qwen35.js";
@@ -61,3 +61,4 @@ console.log("engine :", JSON.stringify(text));
 console.log("llama.cpp:", JSON.stringify(GOLDEN));
 console.log("speed:", (12 / secs).toFixed(2), "tok/s");
 console.log(text === GOLDEN ? "\nQWEN3.8-27B FULL PASS ✓✓✓" : "\nQWEN3.8 MISMATCH");
+Deno.exit(text === GOLDEN ? 0 : 1);

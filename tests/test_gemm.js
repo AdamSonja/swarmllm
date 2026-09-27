@@ -1,6 +1,7 @@
 // Row-stationary prefill GEMM vs the batched GEMV, inside the real shader module.
 // Gates: compiles clean alongside every other kernel, and matches
-// matvec_q4_coop_b (and _acc) within 5e-6 on every shape the engine runs.
+// matvec_q4_coop_b (and _acc) within 5e-6 on the 27B shapes in SH below (GEMM_S also pins 12288x5120
+// and 5120x5120, which are not checked here).
 import { WGSL, coopWGSL, probeUnpack } from "../engine/engine.js";
 import { gemmWGSL, GEMM_S, GEMM_TILE } from "../engine/wgsl/gemm.js";
 import { f32ToF16 } from "../engine/gguf.js";

@@ -1,6 +1,25 @@
 {
   "framework": null,
   "trailingSlash": false,
-  "rewrites": [{ "source": "/room", "destination": "/p2p.html" }],
-  "redirects": [{ "source": "/p2p.html", "destination": "/room", "permanent": false }]
+  "rewrites": [
+    { "source": "/room", "destination": "/p2p.html" },
+    { "source": "/r/:code", "destination": "/p2p.html" }
+  ],
+  "redirects": [
+    { "source": "/:path*", "has": [{ "type": "host", "value": "swarmllm.ai" }], "destination": "https://pooled.run/:path*", "permanent": true },
+    { "source": "/:path*", "has": [{ "type": "host", "value": "www.swarmllm.ai" }], "destination": "https://pooled.run/:path*", "permanent": true },
+    { "source": "/:path*", "has": [{ "type": "host", "value": "www.pooled.run" }], "destination": "https://pooled.run/:path*", "permanent": true },
+    { "source": "/p2p.html", "destination": "/room", "permanent": false }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+      ]
+    },
+    { "source": "/(engine|room|harness)/(.*)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }] },
+    { "source": "/room.js", "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }] }
+  ]
 }

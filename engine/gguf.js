@@ -1,9 +1,9 @@
 // GGUF loading: header and tensor parsing, tokenizer extraction, Q4_0/Q8_0
 // repacking into GPU-friendly layouts (packed nibbles + f16 scales), and
 // streaming upload straight into GPU buffers. See docs/models.md.
-// GGUF (v2/v3) parser + Q8_0 dequant. Shared by the CPU reference and the
-// WebGPU engine. Returns tensor byte ranges so browser peers can range-fetch
-// only their layers, same trick as the safetensors path.
+// Parses GGUF v2/v3 and handles Q4_0, Q4_1, Q5_0, Q5_K, Q6_K, Q8_0, F16, BF16
+// and F32 tensors, plus the qwen35 loaders. The parser returns tensor byte
+// ranges so browser peers can range-fetch only their layers.
 
 const T_U8 = 0, T_I8 = 1, T_U16 = 2, T_I16 = 3, T_U32 = 4, T_I32 = 5, T_F32 = 6,
   T_BOOL = 7, T_STR = 8, T_ARR = 9, T_U64 = 10, T_I64 = 11, T_F64 = 12;
@@ -15,7 +15,8 @@ export const Q8_0_BLOCK_BYTES = 34;      // f16 scale + 32 int8
 
 const _f16buf = new Float32Array(1), _f16u32 = new Uint32Array(_f16buf.buffer);
 export function f32ToF16(v) {
-  // IEEE f32 -> f16 bits, round-to-nearest-even. The scratch views are hoisted:
+  // IEEE f32 -> f16 bits, round to nearest with ties rounded up (away from
+  // zero in magnitude), not ties-to-even like the GPU's pack2x16float. The scratch views are hoisted:
   // this is called once per element of every wire frame and every quantized block.
   _f16buf[0] = v;
   const x = _f16u32[0];
@@ -114,6 +115,11 @@ export function parseGGUFHeader(buf, opts = {}) {
     const bytes = ggmlTypeBytes(t.ggmlType, n); // -1 for unsupported types
     tensors[t.name] = { ...t, nElems: n, byteOffset: dataStart + t.offset, byteLength: bytes };
   }
+  // the Qwen3.5+ MoE files use their own architecture name (keys like "qwen35moe.block_count");
+  // alias them under "qwen35." so the one engine reads both, dense and MoE
+  const arch = meta["general.architecture"];
+  if (typeof arch === "string" && arch !== "qwen35" && /^qwen3[5-9]/.test(arch))
+    for (const k of Object.keys(meta)) if (k.startsWith(arch + ".")) { const a = "qwen35." + k.slice(arch.length + 1); if (!(a in meta)) meta[a] = meta[k]; }
   return { meta, tensors, dataStart, headerBytes: off };
 }
 
@@ -175,15 +181,17 @@ export const GGML_EMBED = "token_embd.weight";
 export const GGML_FINAL_NORM = "output_norm.weight";
 export const GGML_OUTPUT = "output.weight"; // absent when embeddings are tied
 
-// Build the engine's weight structure from a parsed GGUF header.
+// One tensor's engine entry (repacked for the GPU) from a parsed GGUF header.
 // bytesOf: async (info) => Uint8Array of that tensor's data (local slice or
-// HTTP range fetch — same contract as the safetensors shard path).
+// HTTP range fetch, same contract as the safetensors shard path).
 export async function ggufEntry(G, bytesOf, name, optional, onBytes = () => {}) {
-  const info = G.tensors[name];
-  if (!info) {
+  const info0 = G.tensors[name];
+  if (!info0) {
     if (optional) return null;
     throw new Error("missing tensor " + name);
   }
+  // stacked MoE experts [nExp][dOut][dIn] are an ordinary matrix of nExp * dOut rows
+  const info = info0.shape.length === 3 ? { ...info0, shape: [info0.shape[0] * info0.shape[1], info0.shape[2]] } : info0;
   // the embedding stays on the CPU too (per-token row lookups), so it takes the normal path
   if (G.streamEntry && name !== GGML_EMBED && info.shape.length === 2 && (info.ggmlType === GGML_Q8_0 || info.ggmlType === GGML_Q4_0)) {
     const e = await G.streamEntry(info);
@@ -200,7 +208,7 @@ export async function ggufEntry(G, bytesOf, name, optional, onBytes = () => {}) 
       const { qs, scales } = q4Repack(info, bytes);
       return { kind: "q4", qs, scales, shape: info.shape };
     }
-    if (info.ggmlType !== GGML_F32 && info.ggmlType !== GGML_F16) {
+    if (info.ggmlType !== GGML_F32 && info.ggmlType !== GGML_F16 && info.ggmlType !== GGML_BF16) {
       const { qs, scales } = requantQ8Streaming(info, bytes);
       return { kind: "q8", qs, scales, shape: info.shape };
     }
@@ -268,7 +276,7 @@ export function ggufShardBytes(G, { lo, hi, hasEmbed, hasHead }) {
 }
 
 // ---------- extended quant formats (Qwen3.8 / Q4_0 file family) ----------
-export const GGML_Q4_0 = 2, GGML_Q4_1 = 3, GGML_Q5_K = 13, GGML_Q6_K = 14;
+export const GGML_Q4_0 = 2, GGML_Q4_1 = 3, GGML_Q5_0 = 6, GGML_Q5_K = 13, GGML_Q6_K = 14, GGML_BF16 = 30;
 export const QK_K = 256;
 
 export function ggmlTypeBytes(type, n) {
@@ -277,6 +285,8 @@ export function ggmlTypeBytes(type, n) {
     case GGML_F16: return n * 2;
     case GGML_Q4_0: return (n / 32) * 18;
     case GGML_Q4_1: return (n / 32) * 20;
+    case GGML_Q5_0: return (n / 32) * 22;
+    case GGML_BF16: return n * 2;
     case GGML_Q8_0: return (n / 32) * 34;
     case GGML_Q5_K: return (n / QK_K) * 176;
     case GGML_Q6_K: return (n / QK_K) * 210;
@@ -298,6 +308,24 @@ export function dequantF32(info, bytes) {
   const n = info.nElems, T = info.ggmlType;
   if (T === GGML_F32 || T === GGML_F16 || T === GGML_Q8_0) return ggufToF32(info, bytes);
   const out = new Float32Array(n);
+  if (T === GGML_BF16) {   // bf16 is the top half of an f32: exact
+    const u = new Uint32Array(out.buffer);
+    for (let i = 0; i < n; i++) u[i] = (bytes[2 * i] | (bytes[2 * i + 1] << 8)) << 16;
+    return out;
+  }
+  if (T === GGML_Q5_0) {   // ggml dequantize_row_q5_0: d f16, qh u32 (5th bits), 16 bytes of nibbles
+    const nb = n / 32;
+    for (let b = 0; b < nb; b++) {
+      const base = b * 22, d = f16ToF32(bytes[base] | (bytes[base + 1] << 8));
+      const qh = (bytes[base + 2] | (bytes[base + 3] << 8) | (bytes[base + 4] << 16) | (bytes[base + 5] << 24)) >>> 0;
+      for (let j = 0; j < 16; j++) {
+        const q = bytes[base + 6 + j], h0 = ((qh >>> j) << 4) & 0x10, h1 = (qh >>> (j + 12)) & 0x10;
+        out[b * 32 + j] = d * (((q & 0xF) | h0) - 16);
+        out[b * 32 + j + 16] = d * (((q >> 4) | h1) - 16);
+      }
+    }
+    return out;
+  }
   if (T === GGML_Q4_0) {
     const nb = n / 32;
     for (let b = 0; b < nb; b++) {
@@ -375,8 +403,8 @@ export function dequantF32(info, bytes) {
   throw new Error("dequantF32: unsupported type " + T);
 }
 
-// Tokenizer straight from GGUF metadata (tokens + merges arrays); returns the
-// same {vocab, encode, decode} shape as makeTokenizer(tokenizer.json).
+// Tokenizer straight from GGUF metadata (tokens + merges arrays); returns a
+// tokenizer.json-shaped object to pass to makeTokenizer.
 export function tokenizerFromGGUF(meta) {
   const tokens = meta["tokenizer.ggml.tokens"];
   const merges = meta["tokenizer.ggml.merges"];
@@ -426,13 +454,19 @@ export function quantizeQ8(data) {
 
 
 // ---------- qwen3.5/3.8 (hybrid delta-net) shard loader ----------
-export function qwen35LayerNames(i, forceFull = false) {
+export function qwen35LayerNames(i, forceFull = false, moe = false, interval = 4) {
   const p = `blk.${i}.`;
-  const isFull = forceFull || i % 4 === 3;
+  const isFull = forceFull || i % interval === interval - 1;
   const shared = {
     attnNorm: p + "attn_norm.weight",
     postNorm: p + "post_attention_norm.weight",
-    ffnGate: p + "ffn_gate.weight", ffnUp: p + "ffn_up.weight", ffnDown: p + "ffn_down.weight",
+    ...(moe ? {
+      // routed experts (stacked [nExp][dOut][dIn]) + router, and the always-on shared expert
+      router: p + "ffn_gate_inp.weight",
+      expGate: p + "ffn_gate_exps.weight", expUp: p + "ffn_up_exps.weight", expDown: p + "ffn_down_exps.weight",
+      shGate: p + "ffn_gate_shexp.weight", shUp: p + "ffn_up_shexp.weight", shDown: p + "ffn_down_shexp.weight",
+      shRouter: p + "ffn_gate_inp_shexp.weight",
+    } : { ffnGate: p + "ffn_gate.weight", ffnUp: p + "ffn_up.weight", ffnDown: p + "ffn_down.weight" }),
   };
   if (isFull) return { ...shared, isFull,
     wq: p + "attn_q.weight", wk: p + "attn_k.weight", wv: p + "attn_v.weight",
@@ -453,11 +487,20 @@ export async function qwen35Weights(G, bytesOf, { lo, hi, hasEmbed, hasHead, mtp
     if (e && onEntry) onEntry(e, name);
     return e;
   };
+  const moe = (G.meta["qwen35.expert_count"] || 0) > 0;
+  const interval = G.meta["qwen35.full_attention_interval"] || 4;
   const loadLayer = async (i, forceFull = false) => {
-    const N = qwen35LayerNames(i, forceFull);
+    const N = qwen35LayerNames(i, forceFull, moe, interval);
     const L = { isFull: N.isFull,
-      attnNorm: await entry(N.attnNorm), postNorm: await entry(N.postNorm),
-      ffnGate: await entry(N.ffnGate), ffnUp: await entry(N.ffnUp), ffnDown: await entry(N.ffnDown) };
+      attnNorm: await entry(N.attnNorm), postNorm: await entry(N.postNorm) };
+    if (moe) {
+      L.moe = true;
+      L.router = await entry(N.router); L.expGate = await entry(N.expGate); L.expUp = await entry(N.expUp); L.expDown = await entry(N.expDown);
+      L.shGate = await entry(N.shGate, true); L.shUp = await entry(N.shUp, true); L.shDown = await entry(N.shDown, true);
+      L.shRouter = await entry(N.shRouter, true);
+    } else {
+      L.ffnGate = await entry(N.ffnGate); L.ffnUp = await entry(N.ffnUp); L.ffnDown = await entry(N.ffnDown);
+    }
     if (N.isFull) {
       L.wq = await entry(N.wq); L.wk = await entry(N.wk); L.wv = await entry(N.wv);
       L.wo = await entry(N.wo);
@@ -498,10 +541,14 @@ export async function qwen35Weights(G, bytesOf, { lo, hi, hasEmbed, hasHead, mtp
   return out;
 }
 
+// qwen35LayerNames for this file (dense or MoE, its full-attention interval)
+export function qwen35NamesFor(G, i, forceFull = false) {
+  return qwen35LayerNames(i, forceFull, (G.meta["qwen35.expert_count"] || 0) > 0, G.meta["qwen35.full_attention_interval"] || 4);
+}
 export function qwen35ShardBytes(G, { lo, hi, hasEmbed, hasHead, mtp = false }) {
   let total = 0;
   const add = (n) => { if (G.tensors[n]) total += G.tensors[n].byteLength; };
-  for (let i = lo; i < hi; i++) Object.values(qwen35LayerNames(i)).forEach((v) => { if (typeof v === "string") add(v); });
+  for (let i = lo; i < hi; i++) Object.values(qwen35NamesFor(G, i)).forEach((v) => { if (typeof v === "string") add(v); });
   if (hasEmbed || hasHead) add(GGML_EMBED);
   if (hasHead) { add(GGML_FINAL_NORM); add(GGML_OUTPUT); }
   if (mtp && hasHead) total += qwen35MtpBytes(G);
@@ -514,7 +561,7 @@ export function qwen35MtpBytes(G) {
   if (!G.tensors[p + "eh_proj.weight"]) return 0;
   let total = 0;
   const add = (n) => { if (G.tensors[n]) total += G.tensors[n].byteLength; };
-  Object.values(qwen35LayerNames(N, true)).forEach((v) => { if (typeof v === "string") add(v); });
+  Object.values(qwen35NamesFor(G, N, true)).forEach((v) => { if (typeof v === "string") add(v); });
   ["eh_proj", "enorm", "hnorm", "shared_head_norm"].forEach((n) => add(p + n + ".weight"));
   return total;
 }
@@ -544,7 +591,9 @@ export function gpuUploadEntry(device, e, keepCpu = false) {
     return buf;
   };
   if (e.kind === "q8" || e.kind === "q4")
-    e.gpu = { kind: e.kind, qs: mk(e.qs, GPUBufferUsage.STORAGE), sc: mk(e.scales, GPUBufferUsage.STORAGE) };
+    // COPY_SRC: engines may row-concatenate projections on the GPU at load (Qwen35Engine fuseProj), and
+    // the MoE engine repacks the shared expert's gate/up on the GPU (engine/qwen35.js packGU)
+    e.gpu = { kind: e.kind, qs: mk(e.qs, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC), sc: mk(e.scales, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC) };
   else e.gpu = { kind: "f32", buf: mk(e.data, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC) };
   if (!keepCpu) e.qs = e.scales = e.data = null;
   return e.gpu;
