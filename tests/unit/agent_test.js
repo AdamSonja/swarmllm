@@ -66,7 +66,7 @@ Deno.test("agent: read, edit, answer", async () => {
   ];
   const A = new Agent({ generate: scripted(replies, seen), tools: codingTools(ws), system: "You are Tabby.", onEvent: (e) => events.push(e.type) });
   const r = await A.run("add() is broken, fix it");
-  eq(r, { text: "Fixed: add() subtracted instead of adding.", steps: 3, calls: 2 });
+  eq(r, { text: "Fixed: add() subtracted instead of adding.", steps: 3, calls: 2, reason: "done" });
   eq(await ws.read("src/add.js"), "export function add(a, b) {\n  return a + b;\n}\n");
   ok(seen[0].system.includes("<tools>") && seen[0].system.endsWith("You are Tabby."), "tools in the system prompt");
   const t1 = seen[1].turns;
@@ -86,7 +86,7 @@ Deno.test("agent: declined edits, unknown tools and malformed calls are reported
   eq(r.text, "ok");
   ok(!(await ws.exists("x.js")), "declined write did not happen");
   const back = seen[1].turns[2].text;
-  ok(back.includes("the user declined this change") && back.includes("there is no tool called rm_rf") && back.includes("error: tool call has no name"), back);
+  ok(back.includes("declined by the user") && back.includes("there is no tool called rm_rf") && back.includes("error: tool call has no name"), back);
 });
 
 Deno.test("agent stops at maxSteps", async () => {
@@ -96,19 +96,19 @@ Deno.test("agent stops at maxSteps", async () => {
   eq((await A.run("go")).steps, 3);
 });
 
-Deno.test("agent trims old tool outputs past its budget, oldest first, keeping the latest", async () => {
+Deno.test("agent trims old tool outputs past its budget, oldest first, keeping the last two", async () => {
   const big = "x".repeat(3000);
   const ws = new MemoryWorkspace({ "a.txt": big, "b.txt": big, "c.txt": big });
   const call = (f) => `<tool_call>\n<function=read_file>\n<parameter=path>\n${f}\n</parameter>\n</function>\n</tool_call>`;
   const seen = [];
-  const A = new Agent({ generate: scripted([call("a.txt"), call("b.txt"), call("c.txt"), "done"], seen), tools: codingTools(ws), budget: 2500 });
+  const A = new Agent({ generate: scripted([call("a.txt"), call("b.txt"), call("c.txt"), "done"], seen), tools: codingTools(ws), budget: 3000 });
   const r = await A.run("read them");
   eq(r.text, "done");
   const last = seen[seen.length - 1].turns;
   const res = last.filter((t) => t.text.startsWith("<tool_response>"));
   eq(res.length, 3);
-  ok(res[0].text.includes("[output removed"), "oldest trimmed");
-  ok(res[2].text.includes("xxxx"), "latest kept");
+  ok(res[0].text.includes("(output of read_file a.txt dropped; run it again if needed)"), "oldest trimmed: " + res[0].text);
+  ok(res[1].text.includes("xxxx") && res[2].text.includes("xxxx"), "the last two kept");
   const size = (seen[seen.length - 1].system.length + last.reduce((n, t) => n + t.text.length, 0)) / 3.5;
-  ok(size < 2500 * 1.2, `size after trimming ~${Math.round(size)} tokens`);
+  ok(size < 3000, `size after trimming ~${Math.round(size)} tokens`);
 });

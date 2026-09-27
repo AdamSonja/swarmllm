@@ -337,6 +337,7 @@ function onData(from, d) {
         if (d.died?.during && d.died.ago > 2) log("swarm", `${d.name} came back: its tab was killed ${d.died.ago} s ago while ${d.died.during}. Phones kill background tabs; keep the screen on.`);
         if (ai.visibility !== "all") sendTo(from, { t: "ai-visibility", mode: ai.visibility });
         if (!d.back) aiWelcome(from); else offerRedealForNewcomers();
+        codeWelcome(from);
       }
       break;
     case "leaving":   // the tab is closing: treat the link as gone now instead of waiting for ICE to time out
@@ -1365,7 +1366,7 @@ async function aiStart(modelArg) {
 // degraded) or to bring in devices that joined after the start. Cached ranges reload in seconds;
 // the conversation is kept and re-prefilled on the next question.
 async function aiRedeal() {
-  if (ai.role !== "host" || ai.busy === "gen") return;
+  if (ai.role !== "host" || ai.busy === "gen" || ai.busy === "code") return;
   if (ai.loadingShard) { toast("wait for this device's layers to finish loading, then re-deal"); return; }
   $("chat-tools").hidden = true;
   const model = ai.model || $("ai-model").value;
@@ -1376,6 +1377,7 @@ async function aiRedeal() {
   $("ai-row").style.display = "none";
   showRedeal(false);
   broadcastAll({ t: "ai-redeal", by: myName, model });
+  codeRoleChanged();
   aiLoading(true, "re-dealing the layers");
   await aiStart(model);
 }
@@ -1408,6 +1410,7 @@ function aiPeerLeft(id, name) {
   aiStatus(`${why} — re-deal the layers to keep going`);
   showRedeal(true, `${why}. Re-deal to split the model over the devices still here; cached layers reload in seconds.`);
   broadcastAll({ t: "ai-degraded", why });
+  codeRoleChanged();
 }
 
 // a newcomer while the room is online gets the chat as a guest, and the conversation so far
@@ -1457,6 +1460,7 @@ function aiMaybeReady() {
   setTimeout(nextQueued, 0);
   saveHost();
   mascot("Cluster online! Ask anything. Everyone in the room can.");
+  codeRoleChanged();
 }
 
 // ---- laps ----
@@ -1581,7 +1585,10 @@ async function aiPipeToken(id, needLogits = true, fillNext) {
 const PREFILL_WINDOW = 6;
 const LOOKUP = new URLSearchParams(location.search).get("lookup") !== "0";   // ?lookup=0: draft head only, for A/B
 const TAIL_FRAME = new URLSearchParams(location.search).get("tail") !== "0";   // ?tail=0: old per-token tail, for A/B   // prefill rounds in flight round the chain at once
-async function aiPrefill(ids) {
+// aborted / onStatus: the caller's stop test and status line (roomGenerate passes its own). On
+// abort no new round is issued, the rounds in flight are awaited, and it returns null with ai.fed
+// and ai.pos matching exactly what the caches hold, so the next request reuses that prefix.
+async function aiPrefill(ids, { aborted = () => ai.abort, onStatus = aiStatus } = {}) {
   if (!ai.chain.length && ai.engine.prefillTokens && ids.length > 1) {
     // solo: batched prefill, several prompt tokens per GPU pass
     ai.engine.pos = ai.pos;
@@ -1608,7 +1615,7 @@ async function aiPrefill(ids) {
     const inflight = [];
     try {
       outer: for (const W of widths) while (ids.length - 1 - i >= W) {
-        if (ai.abort) break outer;
+        if (aborted()) break outer;
         const nChunks = Math.max(1, Math.min(Math.floor(16 / W), Math.floor((ids.length - 1 - i) / W)));
         const n = nChunks * W, basePos = ai.pos, i0 = i;
         const hb = new Float32Array(n * hdim);
@@ -1625,9 +1632,9 @@ async function aiPrefill(ids) {
         ai.pos = basePos + n;
         ai.fed.push(...ids.slice(i0, i0 + n));
         i += n;
-        aiStatus(`prefill: ${i}/${ids.length} tokens…`);
+        onStatus(`prefill: ${i}/${ids.length} tokens…`);
       }
-      if (flex && !ai.abort && i < ids.length) {
+      if (flex && !aborted() && i < ids.length) {
         const n = ids.length - i, basePos = ai.pos, i0 = i;   // n <= 4: what the widths above left
         const hb = await ai.engine.embedRunBatch(ids.slice(i), basePos);
         if (badF32(hb)) throw new Error(`NaN in batched prefill (pos ${basePos})`);
@@ -1649,11 +1656,11 @@ async function aiPrefill(ids) {
       for (const p of inflight) await p;
     } catch (err) { failWaiters(err); throw err; }
   }
-  if (ai.abort) return null;
+  if (aborted()) return null;
   if (tailLogits) return tailLogits;
   let logits = null;
   for (; i < ids.length; i++) {
-    if (ai.abort) return null;
+    if (aborted()) return null;
     logits = await aiPipeToken(ids[i], i === ids.length - 1, ids[i + 1]);
   }
   return logits;
@@ -1746,81 +1753,55 @@ function sendChat(msg, askerId) {
 // answer length the host picks; ?maxnew=N overrides it (tests)
 const ANSWER_LEN = { short: 150, normal: MAX_NEW, long: 1200 };
 const MAXNEW_PARAM = Math.max(0, parseInt(new URLSearchParams(location.search).get("maxnew"), 10) || 0);
-// mode: "ask" a new question, or "continue" the last answer (it stopped at the length cap)
-async function aiGenerate(textArg, who, askerId = peer.id, mode = "ask") {
-  const cont = mode === "continue";
-  const lastTurn = ai.conv.turns[ai.conv.turns.length - 1];
-  if (cont && lastTurn?.role !== "assistant") return;
-  const text = cont ? "(continue)" : (textArg ?? $("ai-prompt").value).trim();
-  const asker = who || myName;
-  if (!text || ai.busy || !ai.engine) return;
-  if (ai.degraded) {
-    if (askerId === peer.id) toast("a device left: re-deal the layers first");
-    else sendTo(askerId, { t: "ai-busy", why: "a device left the room; the host has to re-deal the layers first" });
-    return;
-  }
-  ai.busy = "gen";
-  ai.abort = false;
-  ai.askerId = askerId;
-  ai.lastAsker = askerId;
-  setBusyUI(true, true);
-  const S = specials(ai.tok);
-  const persona = PERSONAS[ai.settings.persona] || PERSONAS.default;
-  const thinking = !!ai.settings.thinking && S.think !== undefined;
-  const sample = pickSampler(ai.settings.sampling);
-  const eos = (t) => t === S.imEnd || t === S.eot;
 
-  setAfterAnswer(false, false);
-  if (!cont) chatUser(asker, text);
-  const mid = ai.msgSeq = (ai.msgSeq || 0) + 1;
-  chatBotStart(mid);
-  sendChat({ t: "ai-genstart", name: asker, text, asker: askerId, cont: cont ? 1 : 0, mid }, askerId);
-  mascot("Thinking… every word is taking a lap through the room.");
-
-  const answer = [];          // sampled ids of this answer, verbatim, for the next turn's history
-  let reply = "", count = 0, capped = false, dropped = 0, failed = null, stats = "";
-  const t0Gen = performance.now();
-  let tDecode = 0, tPre = 0, prefilled = 0, reused = 0, preFrames = 0, first = null, copied = 0;
+// The room's generation core, shared by the chat (aiGenerate) and Code mode (roomApi.generate):
+// prefill ids, reusing whatever the caches or a checkpoint already hold, then decode until a stop
+// token, maxNew, a full context or an abort. UI-free; host only; the caller holds the lock
+// (ai.busy). On failure it leaves the room clean (the next call resets) and rethrows.
+//   onToken(id, drafted)  per emitted token, in order (drafted: 0 sampled, 1 draft head, 2 lookup)
+//   stop                  Set of ids that end the answer (not emitted, not piped round the chain)
+//   sample(logits) -> id  a wrapper may mask logits first (the tool-name constraint)
+//   signal                AbortSignal; ai.abort (the Stop button) works too
+// -> { tokens, reason: "stop"|"max"|"ctx"|"abort", reused, prefilled, count, tps, acc, copied,
+//      tPre, tDecode, preFrames, stats }
+async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, sample = pickSampler(ai.settings.sampling), signal, onStatus = () => {} } = {}) {
+  if (!ai.engine) throw new Error("the model is not loaded");
+  const aborted = () => ai.abort || !!signal?.aborted;
+  const eos = (t) => stop.has(t);
+  const tokens = [];
+  let count = 0, capped = false, acc = null, copied = 0, first = null;
+  let tPre = 0, tDecode = 0, reused = 0, prefilled = 0, preFrames = 0;
   try {
-    // the conversation with this question, trimmed to fit, and how much the caches already hold
-    const fit = fitContext(ai.tok, { system: persona.system, turns: cont ? [...ai.conv.turns.slice(0, -1), { ...lastTurn, open: true }] : [...ai.conv.turns, { role: "user", text, name: asker }], thinking }, ctxMax(), MIN_ROOM);
-    dropped = fit.dropped;
-    ai.conv.turns = fit.turns;
-    reused = ckptResume(fit.ids, reusablePrefix(ai.fed, fit.ids));
+    reused = ckptResume(ids, reusablePrefix(ai.fed, ids));
     // Continue after a cap that landed on a written token: the caches hold the whole open answer,
     // so there is nothing to prefill, and the next token was already sampled when it stopped
     const pend = ai.pending; ai.pending = null;
-    if (!reused && cont && pend && pend.at === ai.pos && ai.fed?.length === fit.ids.length && ai.fed.every((t, i) => t === fit.ids[i])) {
-      reused = fit.ids.length; first = pend.next;
+    if (!reused && pend && pend.at === ai.pos && ai.fed?.length === ids.length && ai.fed.every((t, i) => t === ids[i])) {
+      reused = ids.length; first = pend.next;
     }
     if (!reused) resetState();
-    const ids = fit.ids.slice(reused);
+    const rest = ids.slice(reused);
     // a follow-up's first token needs a draft-cache row too: the trunk hidden at the position
     // before it is still in the engine when the last answer ended on a speculative step
-    if (reused && ids.length && FILL_DRAFTS && ai.engine.mtp && ai.xAt === ai.pos) ai.engine.mtpRun(null, ids[0], ai.pos, false);
+    if (reused && rest.length && FILL_DRAFTS && ai.engine.mtp && ai.xAt === ai.pos) ai.engine.mtpRun(null, rest[0], ai.pos, false);
     ai.xAt = null;
-    prefilled = ids.length;
-    const cap = thinking ? MAX_NEW_THINKING : (ANSWER_LEN[ai.settings.length] ?? MAX_NEW);
-    const maxNew = Math.min(MAXNEW_PARAM || cap, ctxMax() - fit.ids.length);
-    aiStatus(reused ? `prefill: ${ids.length} new tokens (${reused} already in the room's caches)…` : `prefill: ${ids.length} tokens…`);
+    prefilled = rest.length;
+    maxNew = Math.min(maxNew, ctxMax() - ids.length);
+    onStatus(reused ? `prefill: ${rest.length} new tokens (${reused} already in the room's caches)…` : `prefill: ${rest.length} tokens…`);
     const t0Pre = performance.now();
     ai.frames = 0;
-    let logits = ids.length ? await aiPrefill(ids) : null;
+    let logits = rest.length ? await aiPrefill(rest, { aborted, onStatus }) : null;
     tPre = performance.now() - t0Pre;
     preFrames = ai.frames;
 
     const t0 = performance.now();
     const emit = (tok, drafted) => {
-      const piece = ai.tok.decode([tok]);
-      answer.push(tok);
-      reply += piece;
+      tokens.push(tok);
       count++;
-      chatBotPiece(piece, drafted);
-      sendChat({ t: "ai-token", text: piece, d: drafted || 0 }, askerId);
+      onToken(tok, drafted);
       const tps = count / ((performance.now() - t0) / 1000);
-      aiStatus(`generating… ${count} tok · ${tps.toFixed(1)} tok/s`);
+      onStatus(`generating… ${count} tok · ${tps.toFixed(1)} tok/s`);
     };
-    let acc = null;
     if (!logits && first == null) { /* stopped during prefill */ }
     else if (ai.engine.mtp && ai.engine.specStep) {
       // speculative decoding: the model's own draft head proposes up to K tokens,
@@ -1870,7 +1851,7 @@ async function aiGenerate(textArg, who, askerId = peer.id, mode = "ask") {
       // answer) before the loop, or the reply starts one word late
       let next = first ?? sample(logits), done = false, pendTok = null;
       if (eos(next)) done = true; else emit(next, false);
-      while (!done && count < maxNew && !ai.abort) {
+      while (!done && count < maxNew && !aborted()) {
         // a speculative step touches positions pos .. pos+K (K drafts verified in one pass) and
         // drafts one more; shrink K near the end of the context and stop before it overflows
         let K = pickK();
@@ -1911,14 +1892,14 @@ async function aiGenerate(textArg, who, askerId = peer.id, mode = "ask") {
       if (!done && count >= maxNew) capped = true;
       ai.pos = ai.engine.pos;
       ai.xAt = ai.pos;   // specStep left the trunk hidden at ai.pos - 1 in the engine
-      if (pendTok != null && !ai.abort) ai.pending = { next: pendTok, at: ai.pos };
+      if (pendTok != null && !aborted()) ai.pending = { next: pendTok, at: ai.pos };
       const st = ai.engine.mtp.stats;
       if (st.drafts) crumb(`spec: ${st.accepted}/${st.drafts} drafts accepted${ai.lapStat ? ` · lap ${Math.round(ai.lapStat.lap)}ms` : ""}`
         + (ai.chain.length ? ` · K tok/s ${kc.cand.map((k) => `${k}:${kc.ema[k] ? kc.ema[k].toFixed(1) : "-"}`).join(" ")} · tokens by K ${JSON.stringify(kc.used)}` : ""));
     } else {
       // plain decoding. An end token is not piped through the chain: the next turn's template
       // writes <|im_end|> itself, so both paths leave the caches holding exactly prompt + answer
-      for (let i = 0; i < maxNew && !ai.abort; i++) {
+      for (let i = 0; i < maxNew && !aborted(); i++) {
         const next = i === 0 && first != null ? first : sample(logits);
         if (eos(next)) break;
         emit(next, false);
@@ -1928,24 +1909,83 @@ async function aiGenerate(textArg, who, askerId = peer.id, mode = "ask") {
       }
       if (count >= maxNew) {
         capped = true;
-        if (logits && !ai.abort && ai.pos < ctxMax() - 1) ai.pending = { next: sample(logits), at: ai.pos };   // for Continue
+        if (logits && !aborted() && ai.pos < ctxMax() - 1) ai.pending = { next: sample(logits), at: ai.pos };   // for Continue
       }
     }
     tDecode = performance.now() - t0;
-    const secs = tDecode / 1000;
-    stats = `${count} tok · ${(count / Math.max(secs, 1e-3)).toFixed(1)} tok/s · ${ai.chain.length + 1} device${ai.chain.length ? "s" : ""}`
-      + (acc != null ? ` · ${Math.round(acc * 100)}% drafts accepted` : "")
-      + (copied ? ` · ${copied} tok by lookup` : "")
-      + (ai.abort ? " · stopped" : "")
-      + (capped ? (ai.pos >= ctxMax() - 2 ? ` · stopped: context full (${ctxMax()} tokens)` : ` · stopped at ${count} tokens`) : "")
-      + (dropped ? ` · ${dropped} oldest exchange${dropped > 1 ? "s" : ""} forgotten to fit` : "");
-    if (ai.chain.length && count) { pushMap(count / Math.max(secs, 1e-3), acc, false, true); noteSpeeds(); }
-    else if (count > 8) lastSoloTps = Math.max(lastSoloTps, count / Math.max(secs, 1e-3));
   } catch (err) {
-    failed = err;
-    ai.fed = null;            // the caches are in an unknown state: the next question starts clean
+    ai.fed = null;            // the caches are in an unknown state: the next request starts clean
     ai.pendingCtl = {};
     ckptClear(true);
+    throw err;
+  }
+  const secs = tDecode / 1000, tps = count / Math.max(secs, 1e-3);
+  const full = capped && ai.pos >= ctxMax() - 2;
+  const stats = `${count} tok · ${tps.toFixed(1)} tok/s · ${ai.chain.length + 1} device${ai.chain.length ? "s" : ""}`
+    + (acc != null ? ` · ${Math.round(acc * 100)}% drafts accepted` : "")
+    + (copied ? ` · ${copied} tok by lookup` : "")
+    + (aborted() ? " · stopped" : "")
+    + (capped ? (full ? ` · stopped: context full (${ctxMax()} tokens)` : ` · stopped at ${count} tokens`) : "");
+  if (ai.chain.length && count) { pushMap(tps, acc, false, true); noteSpeeds(); }
+  else if (count > 8) lastSoloTps = Math.max(lastSoloTps, tps);
+  ckptSave();   // this answer's end state, on every device, for a later regenerate or branch
+  const reason = aborted() ? "abort" : capped ? (full ? "ctx" : "max") : "stop";
+  return { tokens, reason, reused, prefilled, count, tps, acc, copied, tPre, tDecode, preFrames, stats, capped };
+}
+
+// mode: "ask" a new question, or "continue" the last answer (it stopped at the length cap)
+async function aiGenerate(textArg, who, askerId = peer.id, mode = "ask") {
+  const cont = mode === "continue";
+  const lastTurn = ai.conv.turns[ai.conv.turns.length - 1];
+  if (cont && lastTurn?.role !== "assistant") return;
+  const text = cont ? "(continue)" : (textArg ?? $("ai-prompt").value).trim();
+  const asker = who || myName;
+  if (!text || ai.busy || !ai.engine) return;
+  if (ai.degraded) {
+    if (askerId === peer.id) toast("a device left: re-deal the layers first");
+    else sendTo(askerId, { t: "ai-busy", why: "a device left the room; the host has to re-deal the layers first" });
+    return;
+  }
+  ai.busy = "gen";
+  ai.abort = false;
+  ai.askerId = askerId;
+  ai.lastAsker = askerId;
+  setBusyUI(true, true);
+  const S = specials(ai.tok);
+  const persona = PERSONAS[ai.settings.persona] || PERSONAS.default;
+  const thinking = !!ai.settings.thinking && S.think !== undefined;
+  const sample = pickSampler(ai.settings.sampling);
+  const stop = new Set([S.imEnd, S.eot]);
+
+  setAfterAnswer(false, false);
+  if (!cont) chatUser(asker, text);
+  const mid = ai.msgSeq = (ai.msgSeq || 0) + 1;
+  chatBotStart(mid);
+  sendChat({ t: "ai-genstart", name: asker, text, asker: askerId, cont: cont ? 1 : 0, mid }, askerId);
+  mascot("Thinking… every word is taking a lap through the room.");
+
+  const answer = [];          // sampled ids of this answer, verbatim, for the next turn's history
+  let reply = "", failed = null, stats = "", capped = false, dropped = 0, r = null, inGen = false;
+  try {
+    // the conversation with this question, trimmed to fit
+    const fit = fitContext(ai.tok, { system: persona.system, turns: cont ? [...ai.conv.turns.slice(0, -1), { ...lastTurn, open: true }] : [...ai.conv.turns, { role: "user", text, name: asker }], thinking }, ctxMax(), MIN_ROOM);
+    dropped = fit.dropped;
+    ai.conv.turns = fit.turns;
+    const cap = thinking ? MAX_NEW_THINKING : (ANSWER_LEN[ai.settings.length] ?? MAX_NEW);
+    const onToken = (tok, drafted) => {
+      const piece = ai.tok.decode([tok]);
+      answer.push(tok);
+      reply += piece;
+      chatBotPiece(piece, drafted);
+      sendChat({ t: "ai-token", text: piece, d: drafted || 0 }, askerId);
+    };
+    inGen = true;   // from here roomGenerate cleans up after itself on failure
+    r = await roomGenerate(fit.ids, { onToken, stop, maxNew: MAXNEW_PARAM || cap, sample, onStatus: aiStatus });
+    capped = r.capped;
+    stats = r.stats + (dropped ? ` · ${dropped} oldest exchange${dropped > 1 ? "s" : ""} forgotten to fit` : "");
+  } catch (err) {
+    failed = err;
+    if (!inGen) { ai.fed = null; ai.pendingCtl = {}; ckptClear(true); }
     stats = "failed: " + err.message;
     aiStatus("generation failed: " + err.message);
   }
@@ -1953,7 +1993,6 @@ async function aiGenerate(textArg, who, askerId = peer.id, mode = "ask") {
   const tail = ai.conv.turns[ai.conv.turns.length - 1];
   if (tail?.role === "user") ai.conv.turns.push({ role: "assistant", ids: answer });
   else if (tail?.open) { tail.ids = [...tail.ids, ...answer]; delete tail.open; }
-  if (!failed) ckptSave();   // this answer's end state, on every device, for a later regenerate or branch
   const ctx = { used: ai.fed ? ai.pos : 0, max: ctxMax() };
   if (failed) chatBotEnd(reply ? null : "⚠ " + failed.message, stats);
   else chatBotEnd(null, stats);
@@ -1965,14 +2004,13 @@ async function aiGenerate(textArg, who, askerId = peer.id, mode = "ask") {
   if (ai.transcript.length > 50) ai.transcript.shift();
   setCtx(ctx.used, ctx.max);
   saveHost();
-  if (!failed) aiStatus(`ready — prefill ${prefilled} tok in ${(tPre / 1000).toFixed(1)}s${ai.chain.length ? ` / ${preFrames} frame${preFrames === 1 ? "" : "s"}` : ""}${reused ? ` (${reused} reused)` : ""}, ${stats}`);
+  if (!failed) aiStatus(`ready — prefill ${r.prefilled} tok in ${(r.tPre / 1000).toFixed(1)}s${ai.chain.length ? ` / ${r.preFrames} frame${r.preFrames === 1 ? "" : "s"}` : ""}${r.reused ? ` (${r.reused} reused)` : ""}, ${stats}`);
   mascot("Done. Anyone in the room can ask the next one.");
   ai.busy = false;
   ai.abort = false;
   setBusyUI(false);
   setTimeout(nextQueued, 0);
   if (ai.degraded) showRedeal(true);
-  void t0Gen;
 }
 
 // Continue / Regenerate the last answer: the host, or whoever asked it. Regenerate drops the last
@@ -1985,7 +2023,7 @@ function setAfterAnswer(canContinue, ok) {
 function aiCommand(cmd, from) {
   if (ai.role !== "host") return;
   if (ai.busy || !ai.engine || ai.degraded || ai.readyPeers.size < ai.chain.length) {
-    const why = ai.degraded ? "a device left: re-deal the layers first" : "the swarm is busy, try again in a moment";
+    const why = ai.degraded ? "a device left: re-deal the layers first" : ai.busy === "code" ? "the host's agent is working, try again when it is done" : "the swarm is busy, try again in a moment";
     if (from === peer.id) toast(why); else sendTo(from, { t: "ai-busy", why });
     return;
   }
@@ -2009,7 +2047,7 @@ function markReplaced() {
 
 // Start a new conversation: the next question prefills from scratch on every device.
 function aiNewChat() {
-  if (ai.role !== "host" || ai.busy === "gen") return;
+  if (ai.role !== "host" || ai.busy === "gen" || ai.busy === "code") return;
   ai.conv = { turns: [] };
   ai.fed = null;
   ai.transcript = [];
@@ -2080,6 +2118,7 @@ const HOST_WAIT_MS = 60000;
 function hostGone() {
   if (ai.role === "host") return;
   failWaiters(new Error("the host left"));
+  codeRoleChanged();
   $("ai-row").style.display = "none";
   $("room-over").hidden = false;
   $("room-over-why").textContent = "The host's tab closed. Waiting a minute in case it comes back (a reloaded host resumes the room)…";
@@ -2154,6 +2193,7 @@ const FROM_HOST = new Set(["ai-layers", "ai-ready-all", "ai-reset", "ai-redeal",
   "ai-token", "ai-gendone", "ai-history", "ai-reacts", "ai-queue", "ai-queued", "ai-regen", "ai-hostprog", "ai-next",
   "ai-visibility", "ai-style", "ai-busy", "ai-wait"]);
 async function aiOnData(from, d) {
+  if (d.t.startsWith("ai-code") || d.t.startsWith("ai-pv")) { codeOnData(from, d); return; }
   const e = conns.get(from);
   if (FROM_HOST.has(d.t)) {
     if (ai.role === "host") return;
@@ -2314,6 +2354,7 @@ async function aiOnData(from, d) {
       $("ai-empty").textContent = "cluster online. ask anything.";
       aiStatus(ai.range ? `cluster online · serving layers ${ai.range[0]}–${ai.range[1] - 1}` : "cluster online · this device asks, the others think");
       mascot("Cluster online! Type a question, the whole room answers.");
+      codeRoleChanged();
       break;
     case "ai-ask":
       if (ai.role !== "host") break;
@@ -2329,6 +2370,104 @@ async function aiOnData(from, d) {
     case "ai-busy": toast(d.why || "the swarm is still answering, try again in a moment"); break;
   }
 }
+
+// ---- Code mode: the surface room/code.js sees (docs/design/harness-app.md A.2) ----
+// The agent drives the room through roomApi only. A code run holds the room's lock (ai.busy =
+// "code") for all its steps, so a chat question cannot reset the caches between two of them;
+// questions asked meanwhile queue as usual and run when the lock is released.
+//
+// ?mock=code on localhost (tests only): no model needed. roomApi.ready() is true, the lock works
+// without an engine, and room/code.js takes its model from window.__pooledMock.model.
+const MOCK = new URLSearchParams(location.search).get("mock") === "code" && ["127.0.0.1", "localhost"].includes(location.hostname);
+// Code messages only the host sends; the one that goes the other way is ai-pv-want.
+const CODE_FROM_HOST = new Set(["ai-code-start", "ai-code-tok", "ai-code-tool", "ai-code-done", "ai-code-files", "ai-code-history",
+  "ai-pv", "ai-pv-blob", "ai-pv-stop"]);
+const CODE_TO_HOST = new Set(["ai-pv-want"]);
+const codeHandlers = new Map();   // message type -> fn(from, d)
+const codeJoin = [], codeRole = [], codeStop = [];
+let codeLoad = null, codeQ = Promise.resolve(), lockKind = null;
+
+function roomLock(kind = "code") {
+  if (ai.busy || ai.degraded || !(ai.engine || MOCK)) return false;
+  ai.busy = lockKind = kind;
+  ai.abort = false;
+  setBusyUI(true, true);
+  return true;
+}
+function roomUnlock() {
+  if (!lockKind || ai.busy !== lockKind) return;
+  ai.busy = false; ai.abort = false; lockKind = null;
+  setBusyUI(false);
+  setTimeout(nextQueued, 0);
+  if (ai.degraded) showRedeal(true);
+}
+const codeHost = () => ai.role === "host";
+const codeHostId = () => (codeHost() ? peer?.id : ai.hostId || PREFIX + roomCode);
+// the room's visibility setting applies to the agent too: "host" and "asker" (the asker being the
+// host) keep it on the host's screen. No stand-in messages: hidden screens get nothing.
+function codeRecipients() { return chatRecipients(ai.visibility || "all", peer?.id, [...conns.keys()]).full; }
+function sendCode(msg) { for (const id of codeRecipients()) sendTo(id, msg); }
+function codeRoleChanged() {
+  const r = { role: ai.role, hostId: codeHostId() };
+  for (const fn of codeRole) { try { fn(r); } catch (err) { console.error(err); } }
+}
+function codeWelcome(id) {
+  if (!codeHost() || !codeRecipients().includes(id)) return;
+  for (const fn of codeJoin) { try { fn(id); } catch (err) { console.error(err); } }
+}
+// Load room/code.js once, on first use (the Code tab, or a host's code message arriving at a peer),
+// so the chat page's load cost does not change.
+function loadCode() {
+  if (MOCK && isHost && !ai.role) { ai.role = "host"; ai.hostId = peer?.id; }
+  return codeLoad ||= import("./room/code.js").then((m) => m.initCode?.(roomApi, { mock: MOCK ? window.__pooledMock : null }))
+    .catch((err) => { codeLoad = null; throw err; });
+}
+// In arrival order, even across the first message's lazy load.
+function codeOnData(from, d) {
+  if (CODE_FROM_HOST.has(d.t)) {
+    if (codeHost() || from !== codeHostId()) return;
+  } else if (CODE_TO_HOST.has(d.t)) {
+    if (!codeHost() || !codeRecipients().includes(from)) return;
+  } else return;
+  codeQ = codeQ.then(async () => {
+    if (!codeHandlers.has(d.t) && CODE_FROM_HOST.has(d.t)) await loadCode();
+    await codeHandlers.get(d.t)?.(from, d);
+  }).catch((err) => console.error("code message", d.t, err));
+}
+document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code")) loadCode().catch((err) => toast("Code mode failed to load: " + err.message)); });
+
+const roomApi = {
+  myId: () => peer?.id,
+  role: () => ai.role,                                  // "host" | "worker" | "guest" | undefined
+  ready: () => MOCK || (!!ai.engine && !ai.degraded),   // host: can generate now
+  tok: () => ai.tok,
+  chatTemplate: () => ai.tok?.chatTemplate || "",
+  maxSeq: () => ctxMax(),
+  generate: roomGenerate,
+  lock: roomLock, unlock: roomUnlock,
+  busy: () => ai.busy,
+  // ai.abort ends the step in flight after its lap; code.js aborts its run's controller in onStop
+  stop: () => {
+    if (ai.busy === "code") { ai.abort = true; aiStatus("stopping after this lap…"); }
+    for (const fn of codeStop) { try { fn(); } catch (err) { console.error(err); } }
+  },
+  onStop: (fn) => { codeStop.push(fn); },
+  status: (text) => aiStatus(text),
+  setCtx: (used, max) => setCtx(used, max ?? ctxMax()),
+  // messaging
+  send: (id, msg) => sendTo(id, msg),
+  broadcast: (msg) => sendCode(msg),
+  recipients: () => codeRecipients(),
+  hostId: () => codeHostId(),
+  peers: () => [...conns.keys()],
+  channel: (id) => conns.get(id)?.conn?.dataChannel || null,   // for bufferedAmount back-pressure (ai-pv-blob)
+  on: (type, fn) => { codeHandlers.set(type, fn); },
+  onPeerJoin: (fn) => { codeJoin.push(fn); },
+  onRole: (fn) => { codeRole.push(fn); },
+  load: loadCode,
+  mock: MOCK,
+};
+if (MOCK) window.__pooledMock = { model: null, api: roomApi };
 
 $("ai-start").addEventListener("click", aiStartAnywhere);
 $("ai-redeal").addEventListener("click", aiRedeal);
@@ -2402,7 +2541,10 @@ function aiSubmit() {
   sendTo(hostId, { t: "ai-ask", text, name: myName });
 }
 function aiStop() {
-  if (ai.role === "host") { if (ai.busy === "gen") { ai.abort = true; aiStatus("stopping after this lap…"); } }
+  if (ai.role === "host") {
+    if (ai.busy === "gen") { ai.abort = true; aiStatus("stopping after this lap…"); }
+    else if (ai.busy === "code") roomApi.stop();
+  }
   else if (ai.hostId) sendTo(ai.hostId, { t: "ai-stop" });
   $("ai-send").disabled = true;
 }
