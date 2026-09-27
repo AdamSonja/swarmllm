@@ -145,7 +145,10 @@ const DOTS = '<svg class="dl" viewBox="0 0 24 24" aria-hidden="true">' + [[3.4, 
 
 export function codeUI({ onMode = () => {} } = {}) {
   const pane = $("chatpane"), log = $("code-log");
-  let host = false, mode = "chat", empty = null, waiting = 0;
+  // host: this tab runs the agent (the model host). drive: this screen can send requests, stop
+  // its own run and answer its own approvals (the host, and any member when the room shares Code)
+  let host = false, drive = false, mode = "chat", empty = null, waiting = 0;
+  let waitText = () => "waiting for approval";
   const title0 = document.title;
   // short announcements for screen readers (the streamed log itself is not live)
   const say = (text) => { const s = $("code-status"); if (s) s.textContent = text; };
@@ -168,7 +171,55 @@ export function codeUI({ onMode = () => {} } = {}) {
     const t = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
     e.preventDefault(); t.focus(); t.click();
   });
-  arrows($("mode-bar")); arrows($("code-out-tabs"));
+  arrows($("mode-bar")); arrows($("code-out-tabs")); arrows($("code-tabs"));
+  // ---------------- phones (640px and narrower): one view at a time, Agent / Preview / Files, from a
+  // tab bar at the bottom. The last tab is kept for the session; a dot on a tab says something
+  // happened there (a new revision, an approval waiting) or, on Agent, that the agent is working.
+  const phone = matchMedia("(max-width: 640px)");
+  const cp = $("code-pane"), TABS = ["agent", "preview", "files"];
+  let ptab = "agent";
+  try { const t = sessionStorage.getItem("pooled-code-tab"); if (TABS.includes(t)) ptab = t; } catch {}
+  const tabBtn = (t) => $("ctab-" + t);
+  function badge(t, on) { tabBtn(t)?.classList.toggle("badge", !!on); }
+  function setTab(t, { focus = false } = {}) {
+    if (!TABS.includes(t)) return;
+    ptab = t; cp.dataset.ptab = t;
+    try { sessionStorage.setItem("pooled-code-tab", t); } catch {}
+    for (const x of TABS) {
+      const b = tabBtn(x), on = x === t;
+      b.setAttribute("aria-selected", String(on)); b.tabIndex = on ? 0 : -1;
+    }
+    tabBtn("files").setAttribute("aria-controls", cp.classList.contains("ed-open") ? "code-out" : "code-files");
+    if (t !== "agent" || !waiting) badge(t, false);
+    if (t === "agent") { badge("agent", false); requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; jump.hidden = true; }); }
+    if (phone.matches) outTab(t === "files" ? "files" : "preview");
+    if (focus) tabBtn(t).focus();
+  }
+  // the editor, full screen inside Files (Back returns to the tree)
+  function edOpen(on) {
+    cp.classList.toggle("ed-open", !!on);
+    tabBtn("files").setAttribute("aria-controls", on ? "code-out" : "code-files");
+    if (on && phone.matches && ptab !== "files") setTab("files");
+  }
+  $("ed-back").onclick = () => { edOpen(false); $("code-tree").querySelector(".f.on")?.focus(); };
+  $("code-tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-ptab]"); if (b) setTab(b.dataset.ptab); });
+  function served() {
+    let first = true;
+    try { first = !sessionStorage.getItem("pooled-code-served"); sessionStorage.setItem("pooled-code-served", "1"); } catch {}
+    if (first && phone.matches && mode === "code") setTab("preview");
+    else if (ptab !== "preview") badge("preview", true);
+  }
+  function newRev() { if (ptab !== "preview") badge("preview", true); }
+  function busy(on) { tabBtn("agent").classList.toggle("busy", !!on); }
+  // the panes' roles follow the layout
+  const roles = () => {
+    for (const id of ["code-agent", "code-out", "code-files"]) { if (phone.matches) $(id).setAttribute("role", "tabpanel"); else $(id).removeAttribute("role"); }
+    for (const [id, t] of [["code-agent", "agent"], ["code-out", "preview"], ["code-files", "files"]]) { if (phone.matches) $(id).setAttribute("aria-labelledby", "ctab-" + t); else $(id).removeAttribute("aria-labelledby"); }
+    if (phone.matches) setTab(ptab);
+  };
+  phone.addEventListener("change", roles);
+  cp.dataset.ptab = ptab;
+
   const poke = () => { $("mode-bar").hidden = false; if (mode !== "code") $("mode-code").classList.add("fresh"); };
 
   // ---------------- timeline
@@ -216,6 +267,7 @@ export function codeUI({ onMode = () => {} } = {}) {
         add(u);
         runAt = performance.now();
         wait(true);
+        busy(true);
         break;
       }
       case "ai-code-tok": {
@@ -234,7 +286,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       case "ai-code-tool": toolCard(d); break;
       case "ai-code-note": wait(false); closeText(); add(h("div", "cm-note" + (d.err ? " err" : ""), words(d.text))); break;
       case "ai-code-done": {
-        runAt = 0; wait(false); editWin.close();
+        runAt = 0; wait(false); editWin.close(); busy(false);
         for (const l of log.querySelectorAll(".cm-live")) l.remove();
         closeText();
         const text = d.stats || `${plural(d.steps || 0, "step")} · ${d.reason || "done"}`;
@@ -371,9 +423,9 @@ export function codeUI({ onMode = () => {} } = {}) {
       pre.textContent = d.result;
     }
     if (d.diff && !el.querySelector(".cm-diff")) el.append(diffBlock(d.diff, host ? viewFull : null));
-    // peers (and the host's own record) see the pending state; the host adds buttons with ask()
+    // everyone sees the pending state; whoever may answer it (the asker, the host) gets buttons from ask()
     let ap = el.querySelector(".cm-approve");
-    if (d.state === "pending" && !host && !ap) { ap = h("div", "cm-approve"); ap.append(h("span", "wait", "waiting for the host's approval")); el.append(ap); }
+    if (d.state === "pending" && !host && !ap) { ap = h("div", "cm-approve"); ap.append(h("span", "wait", waitText(d.mid))); el.append(ap); }
     if (d.state !== "pending") ap?.remove();
     if (d.state === "error") det.open = true;
     // declined: the diff is struck through, and the reason, if one was given, says why
@@ -388,24 +440,33 @@ export function codeUI({ onMode = () => {} } = {}) {
     return el;
   }
 
-  // host only: Approve / Reject… / Allow edits for this task, on the card of call i. While it
-  // waits, the Code tab carries a dot and the page title says so (the host may be in Chat).
+  // Approve / Reject… / Allow edits for this task, on the card of call i, for the host and for the
+  // member who asked. While it waits, the Code tab carries a dot and the page title says so.
   function waitMark(on) {
     waiting = Math.max(0, waiting + (on ? 1 : -1));
     if (waiting) { $("mode-code").classList.add("fresh"); document.title = "(needs approval) " + title0; }
     else { if (mode === "code") $("mode-code").classList.remove("fresh"); document.title = title0; }
+    badge("agent", waiting > 0 && ptab !== "agent");
   }
   function ask(mid, i, { risky = false } = {}) {
     const el = find(key("c", mid, i));
     if (!el) return Promise.resolve({ ok: false, reason: "approval card missing" });
     el.querySelector(".cm-approve")?.remove();
-    const ap = h("div", "cm-approve");
+    const ap = h("div", "cm-approve"); ap.dataset.k = key("c", mid, i);
     const yes = h("button", "ok", "Approve"), no = h("button", null, "Reject…"), all = h("button", null, "Allow edits for this task");
     yes.type = no.type = all.type = "button";
     ap.append(yes, no);
     if (!risky) ap.append(all);   // a risky file asks every time anyway
-    el.append(ap);
-    el.scrollIntoView({ block: "nearest" });
+    // a phone: the question waits above the prompt (the card may be far up the log), with what it is about
+    const docked = phone.matches, head = () => {
+      if (!docked) return;
+      const t = h("div", "cd-t", `${el.dataset.name === "edit_file" ? "Edit" : el.dataset.name === "write_file" ? "Write" : "Run"}? `);
+      t.append(h("span", null, el.querySelector(".br")?.textContent || ""));
+      ap.prepend(t);
+    };
+    head();
+    if (docked) { $("code-dock").append(ap); follow(true); }
+    else { el.append(ap); el.scrollIntoView({ block: "nearest" }); }
     if (mode === "code") yes.focus({ preventScroll: true });
     waitMark(true);
     let settled = false;
@@ -415,7 +476,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       yes.onclick = () => done(true);
       all.onclick = () => done("all");
       no.onclick = () => {
-        ap.replaceChildren();
+        ap.replaceChildren(); head();
         const why = h("input"); why.type = "text"; why.placeholder = "why? (optional, the agent reads it)"; why.maxLength = 300;
         const send = h("button", null, "Reject"); send.type = "button";
         const back = h("button", null, "Cancel"); back.type = "button";
@@ -431,7 +492,7 @@ export function codeUI({ onMode = () => {} } = {}) {
   }
 
   // the run was stopped while the card waited: take the buttons away
-  function cancelAsk(mid, i) { find(key("c", mid, i))?.querySelector(".cm-approve")?.cancel?.(); }
+  function cancelAsk(mid, i) { (find(key("c", mid, i))?.querySelector(".cm-approve") || [...$("code-dock").children].find((a) => a.dataset.k === key("c", mid, i)))?.cancel?.(); }
 
   // ---------------- files: the tree, and the editor (a highlighted layer under a transparent
   // textarea: native editing, undo and selection, with colours). The host edits and saves into the
@@ -462,7 +523,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       f.dataset.ext = (/\.(\w+)$/.exec(p)?.[1] || "").toLowerCase();
       if (p === edPath) f.classList.add("on");
       if (drafts.has(p)) f.classList.add("dirty");
-      f.onclick = () => { t.querySelectorAll(".f.on").forEach((x) => x.classList.remove("on")); f.classList.add("on"); outTab("files"); fileClick(p); };
+      f.onclick = () => { t.querySelectorAll(".f.on").forEach((x) => x.classList.remove("on")); f.classList.add("on"); outTab("files"); edOpen(true); fileClick(p); };
       t.append(f);
     }
     if (paths.length > 500) t.append(h("div", "none", `(+${paths.length - 500} more)`));
@@ -501,7 +562,7 @@ export function codeUI({ onMode = () => {} } = {}) {
   }
   function viewFile(text, label = null) {
     if (text == null) {
-      edPath = null; edBase = ""; ta.value = ""; edRO = true;
+      edPath = null; edBase = ""; ta.value = ""; edRO = true; cp.classList.remove("ed-open");
       edBox.hidden = true; $("ed-bar").hidden = true; $("ed-empty").hidden = false;
       return;
     }
@@ -554,7 +615,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     outTab("files");
     $("code-tree").querySelectorAll(".f.on").forEach((x) => x.classList.remove("on"));
     viewFile(text, `${path} · proposed, not written yet`);
-    $("files-panel").scrollIntoView({ block: "nearest" });
+    if (phone.matches) { edOpen(true); setTab("files"); } else $("files-panel").scrollIntoView({ block: "nearest" });
   }
   function outTab(name) {
     for (const b of $("code-out-tabs").querySelectorAll("button[data-tab]")) {
@@ -617,8 +678,8 @@ export function codeUI({ onMode = () => {} } = {}) {
     $("pv-empty").hidden = true;
     $("pv-console").hidden = false;
     grow();
-    // a phone stacks the columns: the app that just started is below the agent, so bring it up
-    if (closable && mode === "code" && innerWidth < 820) requestAnimationFrame(() => $("code-out").scrollIntoView({ behavior: "smooth", block: "start" }));
+    // a phone: the first app served this session opens Preview (the landing demo does the same); later ones badge it
+    served();
     return P;
   }
   function dropPort(port) {
@@ -649,6 +710,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       P.rows.forEach((r) => (r.old = true));
       P.rows.push({ sep: `rev ${s.rev}` + (P.rev ? " · reloaded" : "") });
     }
+    if (s.rev && P.rev && s.rev > P.rev) newRev();
     if (s.rev) P.rev = s.rev;
     P.path = s.path || P.path; P.state = s.state;
     if (s.state === "ready") editWin.reloaded(port, P.rev);
@@ -677,7 +739,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       if (warns) c.append(h("b", "w", plural(warns, "warning")), " · ");
       c.append(plural(logs, "log"));
       c.dataset.errors = String(errs);
-      $("pv-to-agent").hidden = !host || !errs;   // only when there is something to fix
+      $("pv-to-agent").hidden = !drive || !errs;   // only when there is something to fix
       for (const r of P?.rows || []) {
         if (r.sep) { rows.append(h("div", "pv-row rev", r.sep)); continue; }
         const row = h("div", `pv-row ${r.level}${r.old ? " old" : ""}`);
@@ -698,25 +760,30 @@ export function codeUI({ onMode = () => {} } = {}) {
   $("pv-reload").onclick = () => { if (active != null) onReload(active); };
   $("pv-open").onclick = () => { if (active != null) onOpen(active, ports.get(active)?.path || null); };
 
-  // ---------------- host vs peer chrome
-  function setHost(v) {
-    host = !!v;
-    $("code-project").hidden = !host;
-    $("code-row").hidden = !host;
-    $("code-bar").hidden = !host;
-    $("code-driver").hidden = host;
-    $("pv-to-agent").hidden = !host || !(+$("pv-counts").dataset.errors > 0);
+  // ---------------- host vs peer chrome. Anyone who can drive gets the project bar, the prompt
+  // and the bar under the log; only the host opens a folder on disk or saves in the editor.
+  function setHost(v, { canDrive = v } = {}) {
+    host = !!v; drive = !!canDrive;
+    $("code-project").hidden = !drive;
+    $("code-open").hidden = !host || $("code-open").dataset.can !== "1";
+    $("code-row").hidden = !drive;
+    $("code-bar").hidden = !drive;
+    $("pv-to-agent").hidden = !drive || !(+$("pv-counts").dataset.errors > 0);
     if (edPath != null) { edRO = !host || !saveFile; ta.readOnly = edRO; edState(); }
   }
+  // a line above the log about where the agent runs (empty: hidden)
+  function driverNote(text) { const el = $("code-driver"); el.textContent = text || ""; el.hidden = !text; }
   setHost(false);
   viewFile(null);
+  roles();
 
   return {
-    show, poke, apply, ask, cancelAsk, clear, placeholder, setHost, tree, viewFile, openFile, fileChanged, outTab,
+    show, poke, apply, ask, cancelAsk, clear, placeholder, setHost, driverNote, tree, viewFile, openFile, fileChanged, outTab,
     get mode() { return mode; },
     get activePort() { return active; },
     get openPath() { return edPath; },
     onFile(fn) { fileClick = fn; },
+    onWaitText(fn) { waitText = fn; },
     onSave(fn) { saveFile = fn; },
     onClosePort(fn) { onClose = fn; },
     onReload(fn) { onReload = fn; },
@@ -731,6 +798,15 @@ export function codeUI({ onMode = () => {} } = {}) {
       el.title = `${used.toLocaleString("en-US")} of ${max.toLocaleString("en-US")} tokens`;
       el.classList.toggle("warn", used > max * 0.8);
     },
-    running(on) { $("code-send").hidden = !!on; $("code-stop").hidden = !on; },
+    // while a run goes, Send queues the next request; Stop shows for whoever may stop it
+    running(on, canStop = on) {
+      busy(on);
+      $("code-send").textContent = on ? "Queue" : "Send";
+      $("code-send").title = on ? "Runs after the current request" : "";
+      $("code-stop").hidden = !(on && canStop);
+      const pr = $("code-prompt");
+      pr.dataset.ph ||= pr.placeholder;
+      pr.placeholder = on ? "Queue another request" : pr.dataset.ph;
+    },
   };
 }

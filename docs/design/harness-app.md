@@ -499,6 +499,16 @@ announces a session (`ai-code-start` or `ai-pv`), with a dot when something new 
 
 **`#code-pane`** (host): two columns over 900 px, stacked below.
 
+Phones (640 px and narrower) show one view at a time, picked from `#code-tabs`, a tab bar at the
+bottom (`role="tablist"`, 56 px plus the safe area): **Agent** (the log, the prompt at the bottom;
+an approval waits in `#code-dock` above the prompt), **Preview** (the app at full height with its
+address bar) and **Files** (project and tree; a file opens the editor full screen with a back arrow).
+A dot on a tab: Agent pulses while the agent works and holds a dot while an approval waits, Preview
+gets one for a new revision served while elsewhere. The first app served in a session opens
+Preview. The tab is kept per session (`sessionStorage`); guests get the same layout. While typing,
+the tab bar steps aside and the prompt sits on the keyboard (`--kb` where the browser does not
+resize the page).
+
 - Left, the agent:
   - `#code-project`: project select, `New`, `Open folder…`, project name. Host only.
   - `#code-log`: the timeline. Items:
@@ -523,9 +533,17 @@ announces a session (`ai-code-start` or `ai-pv`), with a dot when something new 
   - Files: `#code-tree` (read-only tree from `walk()`, max 500); clicking a file opens
     `#code-view` (numbered lines, monospace, no editing in v1).
 
-**Peers** get the same pane read-only: the timeline without approval buttons (they see
-"waiting for the host's approval"), no project bar or prompt row (a line says "the host is
-driving the agent"), Preview with port tabs and their own console strip, and Files from
+**Peers** get the same pane, and drive it like the host when the room shows answers to everyone:
+one shared agent session per room, run on the model host. A member's request goes to the host as
+`ai-code-ask` and queues (six at most, two per member) behind the current run; its bubble carries
+the member's name. The member who asked, or the host, answers its approvals (`ai-code-approve`)
+and can stop it (`ai-code-stop`); others see "waiting for <name> to approve". Any member can start
+a new task, open or create a project saved in the host's browser, or tick auto-approve
+(`ai-code-cmd`); `ai-code-projects` mirrors the host's project list and `ai-code-sync` asks for the
+session on opening Code. The host alone opens a folder from disk, saves in the editor, and drives
+a folder project (what the agent reads there would reach the asker's screen). With "Only me" or
+"Whoever asked", Code stays the host's. A line above the log says where the agent runs and where
+the files live. Preview with port tabs and their own console strip, and Files from
 `ai-code-files`. Joining late: `ai-code-history` (last 50 items, results already capped) plus
 `ai-pv` per port.
 

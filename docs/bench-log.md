@@ -457,6 +457,52 @@ Checks, options on:
 - Unchanged: `test_q38_bits.js` `ATTN_PREFILL_TILE=0` -> 85b12667 / eba0b8d5, `run.sh q38once` and `quick` pass,
   `deno test tests/unit` 210 passed, `npm run check`.
 
+## 2026-09-27: GPU sampling on by default (branch release/v1-exp, exp/gpu-sample on v1.0.0), GB10
+
+GPU argmax / top-k (`topk_a` / `topk_b`, docs/research/exp-gpu-sample.md) in the head's submit: 16 B back per
+greedy token (8k + 8 B for top-k) instead of the 1 MB logits vector, and the draft chain's argmax as the
+two-stage multi-workgroup kernel. Merged onto v1.0.0's kernels (encode-ahead, head rows, MoE prefill options);
+`forwardTokenIds` now rides encode-ahead like `forwardToken`. Off: `?gpusample=0` (room, bench) or `GPU_SAMPLE=0`
+(Deno tests). Same tokens: sampling never touches the logits.
+
+Chrome, one device (`tests/bench/chrome_bench.mjs`, 40 tokens, K=3, greedy, `?gpusample=0&argmaxwide=0` vs
+`?gpusample=1`, same build, off/on alternated), decode tok/s plain / speculative:
+
+| Model | Prompt | off | on | change |
+|---|---|---|---|---|
+| 35B MoE | two-sum (run 1 / run 2) | 47.7 / 72.7, 47.0 / 71.6 | 50.5 / 81.5, 50.4 / 79.6 | plain +6 %, spec +12 % |
+| 35B MoE | hash map (run 1 / run 2) | 48.9 / 65.5, 47.8 / 64.7 | 50.4 / 71.4, 50.8 / 71.6 | plain +5 %, spec +10 % |
+| 27B | two-sum | 11.07 / 24.3 | 11.20 / 25.0 | plain +1 %, spec +3 % |
+| 27B | hash map | 11.06 / 20.3 | 11.13 / 21.2 | plain +1 %, spec +4 % |
+
+Acceptance identical (MoE 28/33, 28/39; 27B 28/33, 26/39), llama.cpp golden text on the MoE, spec == plain,
+gpuErrors 0 in every run.
+
+Room (`tests/e2e/room_latency.mjs --lat 0 --maxnew 128`, `japan` prompt, exact sampling, one Chromium per device,
+two answers per cell, mean), 35B MoE, `--query gpusample=0` vs `gpusample=1`:
+
+| Devices | off plain / spec | on plain / spec |
+|---|---|---|
+| 1 | 33.9 / 44.5 | 36.3 / 48.7 (+7 % / +9 %) |
+| 2 | 28.4 / 32.7 | 28.4 / 34.6 (0 / +6 %) |
+
+Correctness on this branch: `test_q38_bits.js` (ATTN_PREFILL_TILE=0) BITS plain 85b12667 hidden eba0b8d5, and
+GPU-sampled greedy (plain and speculative) gives the same 13 tokens as the logits path; `run.sh quick` (with
+`test_selftest.js`) and `q38once`; `test_moe.js` MATCH llama.cpp on 3 prompts, spec == plain, head check 0/256
+greedy and 0/32 top-40 mismatches; `test_moe_split.js`; `test_prefill_opts.js` 27B and MoE; `topk_kernel.mjs`
+(251 cases) and `gpusample_synth.mjs`; `room_synth.mjs --compare` at 2 and 3 devices (solo == split).
+
+`test_prefill_opts.js` now summarizes a frozen fixture (`tests/golden/prefill_opts_prompt.txt`) instead of the
+live `engine/qwen35.js`: editing the engine changed the 700-token MoE prompt and its all-on vs all-off relDiff
+(1.5e-3 -> 3.0e-2, over the 2e-2 gate) with identical kernels (same prompt file, both builds: 8.25e-3 and 2.53e-3
+on each). With the fixture the numbers equal v1.0.0's (1.48e-3 / 1.27e-3).
+
+Not in v1: `exp/moe-fused-layout` (its "tuned" preset measured +5 % speculative in Chrome on the old base, still
+flag-off with no keep verdict), `exp/chain-fuse`, `exp/tail-head` and `exp/k-probe` had no GPU validation verdict
+by the cut-off, and each conflicts with v1 in `engine/qwen35.js` / `room.js` / the test harnesses. `exp/one-sync-hop`
+(no speedup; its one-submit readback overlaps v1's encode-ahead, conflicts in 5 files) and `exp/wire-rtt` (nothing
+to gain) are left out too.
+
 ## 2026-09-27: first Apple M5 Max results (Mac Studio, Metal), main at cef5cd3
 
 Mac Studio, Apple M5 Max (32-core GPU, Metal 4), 36 GB unified memory, macOS 27.0. Deno 2.9.7 (wgpu on Metal) for

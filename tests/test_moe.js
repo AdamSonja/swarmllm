@@ -3,6 +3,7 @@
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { argmax } from "../engine/engine.js";
 import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, MOE_PATH, wideOpts } from "./load_model.js";
+import { GPU_SAMPLE, ARGMAX_WIDE, gpuGreedy, checkHeadIds } from "./gpusample_check.js";
 const N = +(Deno.env.get("TOKENS") || 40), K = +(Deno.env.get("K") || 3);
 const MOEK = Deno.env.get("MOE_KERNEL") ? (Deno.env.get("MOE_KERNEL").startsWith("{") ? JSON.parse(Deno.env.get("MOE_KERNEL")) : Deno.env.get("MOE_KERNEL")) : undefined;   // moeKernel: legacy | default | JSON
 const PATH = Deno.env.get("MOE") || MOE_PATH;
@@ -23,9 +24,11 @@ const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRang
   // MOEGROUP=U (unset: the engine default, 256 tiled; 0: off): expert-grouped prefill in ubatches of up to U tokens (U a multiple of BCOLS; these prompts are ~25 tokens:
   // with the default BCOLS=4, MOEGROUP=16 puts all but the last 0..7 prompt tokens through it), MOEGROUP_UC: pairs per chunk
   ...(Deno.env.get("BCOLS") ? { batchCols: +Deno.env.get("BCOLS"), coopRowsB: +Deno.env.get("BCOLS") >= 16 ? 1 : 4 } : {}),
-  moeGroupPrefill: Deno.env.get("MOEGROUP") === undefined ? undefined : +Deno.env.get("MOEGROUP"), moeGroupUC: +(Deno.env.get("MOEGROUP_UC") || 8), moeGroupTiled: Deno.env.get("MOEGROUP_TILED") === undefined ? undefined : Deno.env.get("MOEGROUP_TILED") === "1", ...wideOpts() });   // PREFILL_UBATCH: wide prefill (these prompts are < 64 tokens: test_prefill_wide.js exercises it)
+  moeGroupPrefill: Deno.env.get("MOEGROUP") === undefined ? undefined : +Deno.env.get("MOEGROUP"), moeGroupUC: +(Deno.env.get("MOEGROUP_UC") || 8), moeGroupTiled: Deno.env.get("MOEGROUP_TILED") === undefined ? undefined : Deno.env.get("MOEGROUP_TILED") === "1", ...wideOpts(),
+  // GPU_SAMPLE=0: the logits path (GPU sampling and the two-stage draft argmax are on by default; ARGMAX_WIDE=0|1 alone: only the latter)
+  gpuSample: GPU_SAMPLE, argmaxWide: ARGMAX_WIDE });   // PREFILL_UBATCH: wide prefill (these prompts are < 64 tokens: test_prefill_wide.js exercises it)
 console.log(`moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC}, batchCols ${eng.NC}` : ""}`);
-console.log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}`);
+console.log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}, gpuSample ${eng.gpuSample}, argmaxWide ${eng.argmaxWide}`);
 console.log(`${arch}: ${L} layers, mtp tensors ${hasMtp}, engine mtp ${!!eng.mtp}, moeFuse ${eng.moeFuse}; loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s`);
 if (eng.moeK) console.log("moeKernel", JSON.stringify(eng.moeK));
 const V = tok.vocab;
@@ -39,9 +42,9 @@ const CASES = [
 let fail = 0;
 for (const [name, prompt, golden] of CASES) {
   eng.reset(); if (eng.mtp) eng.mtpFill = false;
-  t0 = performance.now(); await eng.prefillTokens(prompt.slice(0, -1)); let logits = await eng.forwardToken(prompt[prompt.length - 1]); const pf = (performance.now() - t0) / 1000;
-  let next = argmax(logits); const gen = [next]; const tp0 = performance.now();
-  for (let i = 1; i < N; i++) { logits = await eng.forwardToken(next); next = argmax(logits); gen.push(next); }
+  t0 = performance.now(); await eng.prefillTokens(prompt.slice(0, -1)); let logits = GPU_SAMPLE ? await eng.forwardTokenIds(prompt[prompt.length - 1]) : await eng.forwardToken(prompt[prompt.length - 1]); const pf = (performance.now() - t0) / 1000;
+  let next = gpuGreedy(logits); const gen = [next]; const tp0 = performance.now();
+  for (let i = 1; i < N; i++) { logits = GPU_SAMPLE ? await eng.forwardTokenIds(next) : await eng.forwardToken(next); next = gpuGreedy(logits); gen.push(next); }
   const ts = (N - 1) / ((performance.now() - tp0) / 1000), text = tok.decode(gen), n = Math.min(text.length, golden.length), ok = n > 20 && text.slice(0, n) === golden.slice(0, n);
   console.log(`${name}: prefill ${prompt.length} tok ${pf.toFixed(2)}s · decode ${ts.toFixed(2)} tok/s · ${ok ? "MATCH llama.cpp" : "MISMATCH"}\n  engine: ${JSON.stringify(text)}${ok ? "" : "\n  golden: " + JSON.stringify(golden)}`);
   if (!ok) fail++;
@@ -49,10 +52,11 @@ for (const [name, prompt, golden] of CASES) {
     eng.reset(); eng.mtpFill = true; eng.mtp.stats = { drafts: 0, accepted: 0 };
     await eng.prefillTokens(prompt.slice(0, -1)); logits = await eng.forwardToken(prompt[prompt.length - 1]);
     next = argmax(logits); const spec = [next]; const ts0 = performance.now();
-    while (spec.length < N) { for (const t of await eng.specStep(next, argmax, K)) spec.push(t); next = spec[spec.length - 1]; }
+    while (spec.length < N) { for (const t of await eng.specStep(next, GPU_SAMPLE ? gpuGreedy : argmax, K)) spec.push(t); next = spec[spec.length - 1]; }
     const sts = (spec.length - 1) / ((performance.now() - ts0) / 1000), same = gen.every((t, i) => spec[i] === t), st = eng.mtp.stats;
     console.log(`  spec K=${K}: ${sts.toFixed(2)} tok/s, acceptance ${st.accepted}/${st.drafts}, ${same ? "identical to plain" : "DIFFERS from plain"}`);
     if (!same) fail++;
   }
 }
+if (GPU_SAMPLE) fail += await checkHeadIds(eng) ? 1 : 0;
 console.log(fail ? "MOE FAIL" : "MOE PASS ✓"); if (fail) Deno.exit(1);

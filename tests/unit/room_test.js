@@ -203,3 +203,21 @@ Deno.test("wire: badF32 finds a single Inf or NaN anywhere; packF16 refuses f16-
   let threw = false; try { packF16(big); } catch (e) { threw = e instanceof WireRangeError; }
   ok(threw, "a value beyond 65504 is refused, not sent as Inf");
 });
+
+import { pickModelHost } from "../../room/plan.js";
+Deno.test("plan: the model host is the strongest device, a computer before a phone, whoever pressed Start", () => {
+  const phone = { id: "p", meta: { webgpu: true, phone: true, contribGB: 6 } };
+  const laptop = { id: "z", meta: { webgpu: true, ua: "Mac", contribGB: 4 } };
+  const desk = { id: "d", meta: { webgpu: true, ua: "Device", contribGB: 12 } };
+  // the phone lends more, but the laptop holds the head and samples
+  eq(pickModelHost([phone, laptop]), "z");
+  eq(pickModelHost([laptop, phone]), "z");
+  // among computers, the most memory; ties go to the lowest id (every screen agrees)
+  eq(pickModelHost([phone, laptop, desk]), "d");
+  eq(pickModelHost([{ id: "b", meta: { webgpu: true, contribGB: 4 } }, { id: "a", meta: { webgpu: true, contribGB: 4 } }]), "a");
+  // a computer without WebGPU cannot hold layers: the phone it is
+  eq(pickModelHost([phone, { id: "a", meta: { webgpu: false, contribGB: 16 } }]), "p");
+  // an older tab without the phone flag: its user agent says so
+  eq(pickModelHost([{ id: "a", meta: { webgpu: true, ua: "Android", contribGB: 8 } }, laptop]), "z");
+  eq(pickModelHost([]), null);
+});

@@ -9,6 +9,7 @@
 //
 //   NODE_PATH=<dir with peer + peerjs + playwright> node tests/e2e/harness_tetris.mjs [--shots] [--headed]
 //   --shots: saves docs/design/shots/code-desktop.png, code-400.png, code-400-preview.png, code-preview.png, code-peer.png
+//   --guest-shots DIR: saves the peer's (a guest's) Code view: guest-approve-1440.png, guest-1440.png, guest-390.png
 //   --port 18990 --signal-port 9011
 // Prerequisites: playwright, the `peer` server package and the PeerJS client bundle (`peerjs`)
 // importable from NODE_PATH or ./node_modules. Without the PeerJS bundle it prints SKIP and
@@ -245,7 +246,7 @@ try {
   await host.click("#code-send");
   // the first edit asks; "Allow edits for this task" approves the rest
   await host.waitForSelector(".cm-approve button", { timeout: 15000 }).catch(async (e) => { console.error("timeline:", await host.evaluate(() => document.getElementById("code-log").innerText), errs); throw e; });
-  await peer.waitForFunction(() => /waiting for the host's approval/.test(document.getElementById("code-log")?.textContent || ""), null, { timeout: 10000 })
+  await peer.waitForFunction(() => /waiting for host-e2e to approve/.test(document.getElementById("code-log")?.textContent || ""), null, { timeout: 10000 })
     .then(() => check("peer sees the pending approval", true), () => check("peer sees the pending approval", false));
   check("the approval card shows the new file's diff", await host.evaluate(() => { const d = document.querySelector(".cm-tool .cm-diff"); return !!d && /index\.html/.test(d.textContent) && d.querySelectorAll(".r-add").length > 5; }));
   check("the approval has focus and marks the page title", await host.evaluate(() => document.activeElement?.textContent === "Approve" && /needs approval/.test(document.title)));
@@ -315,15 +316,15 @@ try {
   await peer.waitForFunction(() => document.querySelectorAll("#code-log .cm-tool").length >= 6 && document.querySelector("#code-log .cm-stats"), null, { timeout: 15000 });
   const P = await peer.evaluate(() => ({
     tools: [...document.querySelectorAll("#code-log .cm-tool")].map((t) => t.querySelector(".nm").textContent + ":" + t.querySelector(".chip").textContent),
-    readOnly: document.getElementById("code-row").hidden && !document.getElementById("code-driver").hidden,
+    drive: !document.getElementById("code-row").hidden && !document.getElementById("code-project").hidden && document.getElementById("code-open").hidden,
+    note: document.getElementById("code-driver").textContent,
     tree: [...document.querySelectorAll("#code-tree .f")].map((f) => f.dataset.path),
     run: document.querySelector(".pv-run")?.textContent,
   }));
   check("peer: timeline shows the 6 tool cards", P.tools.join(" ") === H.tools.join(" "), P.tools.join(" "));
-  check("peer: read-only (no prompt row, 'the host is driving')", P.readOnly);
+  check("peer: can drive (prompt row and projects, no Open folder), told where the files live", P.drive && /host-e2e's device/.test(P.note) && !/driving/.test(P.note), JSON.stringify(P));
   check("peer: file tree", P.tree.join(",") === H.tree.join(","), P.tree);
-  check("peer: click-to-run button", P.run === "Run preview :5173", P.run);
-  await peer.click(".pv-run");
+  check("peer: the preview runs by itself (no click-to-run button)", !P.run, P.run);
   await peer.waitForFunction(() => /^rev \d+$/.test(document.getElementById("pv-state").textContent), null, { timeout: 10000 });
   await peer.waitForTimeout(700);
   const peerRev = +(/rev (\d+)/.exec(await peer.textContent("#pv-state"))?.[1] || 0);
@@ -351,9 +352,10 @@ try {
     await host.waitForTimeout(400);
     await host.evaluate(() => { document.getElementById("code-log").scrollTop = 1e6; });
     await host.screenshot({ path: path.join(SHOTS, "code-400.png") });
-    await host.evaluate(() => document.getElementById("code-out").scrollIntoView());
+    await host.click("#ctab-preview");   // a phone shows one view at a time: the tab bar at the bottom picks it
     await host.waitForTimeout(200);
     await host.screenshot({ path: path.join(SHOTS, "code-400-preview.png") });
+    await host.click("#ctab-agent");
     check("400px: no horizontal page scroll", await host.evaluate(() => document.documentElement.scrollWidth <= 400 && document.getElementById("chatpane").scrollWidth <= 400));
     await host.setViewportSize({ width: 1440, height: 900 });
     log(`screenshots in ${SHOTS}`);
@@ -379,6 +381,82 @@ try {
   check("the next request runs after a stop", /Nothing to add/.test(after), after);
   await peer.waitForFunction(() => document.querySelectorAll("#code-log .cm-stats").length >= 3, null, { timeout: 10000 })
     .then(() => check("peer follows the later requests", true), () => check("peer follows the later requests", false));
+
+  // ---- a member drives: the PEER asks, approves the edit, sees it land, then stops its own run
+  // while the host's request waits in the queue
+  const GUEST_SHOTS = arg("guest-shots", null);
+  if (GUEST_SHOTS) fs.mkdirSync(GUEST_SHOTS, { recursive: true });
+  await host.evaluate(async () => {
+    const { scripted, xmlCall } = await import("/tests/scripted-model.js");
+    window.__pooledMock.model = scripted([
+      "A darker background.\n" + xmlCall("edit_file", { path: "style.css", old: "background: #14161f;", new: "background: #101a2a;" }),
+      "Done: the background is darker.",
+      "Let me plan the levels. " + "Thinking about the speed curve. ".repeat(80),
+      "Host's turn.",
+    ], { piece: 4, delay: 20 });
+  });
+  const G0 = await peer.evaluate(() => ({ auto: document.getElementById("code-auto").checked, proj: document.getElementById("code-proj-select").value,
+    kind: document.getElementById("code-proj-kind").textContent, send: document.getElementById("code-send").textContent }));
+  check("peer: sees the host's project and its auto-approve box (off)", G0.proj === "opfs:tetris" && !G0.auto && /host-e2e's browser/.test(G0.kind) && G0.send === "Send", JSON.stringify(G0));
+  const peerRev0 = +(/rev (\d+)/.exec(await peer.textContent("#pv-state"))?.[1] || 0);
+  await peer.fill("#code-prompt", "make the background darker");
+  await peer.click("#code-send");
+  await peer.waitForSelector("#code-log .cm-approve button.ok", { timeout: 15000 })
+    .then(() => check("peer: its own request's edit asks the peer", true), () => check("peer: its own request's edit asks the peer", false));
+  await host.waitForSelector("#code-log .cm-approve button.ok", { timeout: 5000 })
+    .then(() => check("host: can approve a member's edit too", true), () => check("host: can approve a member's edit too", false));
+  const who = (p) => p.evaluate(() => [...document.querySelectorAll("#code-log .cm-user .who")].map((w) => w.textContent));
+  check("the request is labelled with the peer's name, on both screens", (await who(host)).pop() === "peer-e2e" && (await who(peer)).pop() === "peer-e2e", JSON.stringify([await who(host), await who(peer)]));
+  check("peer: Stop shows for its own run", await peer.isVisible("#code-stop"));
+  if (GUEST_SHOTS) {
+    await peer.evaluate(() => { document.getElementById("code-log").scrollTop = 1e6; });
+    await peer.screenshot({ path: path.join(GUEST_SHOTS, "guest-approve-1440.png") });
+  }
+  await peer.click("#code-log .cm-approve button.ok");
+  for (const p of [host, peer]) await p.waitForFunction(() => document.querySelectorAll("#code-log .cm-stats").length >= 4, null, { timeout: 20000 });
+  const D = await host.evaluate(() => ({ tool: [...document.querySelectorAll("#code-log .cm-tool")].pop()?.textContent, answer: [...document.querySelectorAll("#code-log .cm-text")].pop()?.textContent,
+    approve: document.querySelectorAll("#code-log .cm-approve").length }));
+  check("host: the peer's approval went through, the edit ran", /edit_file/.test(D.tool) && /done/.test(D.tool) && /background is darker/.test(D.answer) && !D.approve, JSON.stringify(D));
+  check("peer: no approval buttons left", await peer.evaluate(() => !document.querySelector("#code-log .cm-approve")));
+  await peer.waitForFunction((r0) => +(/rev (\d+)/.exec(document.getElementById("pv-state").textContent)?.[1] || 0) > r0, peerRev0, { timeout: 10000 }).catch(() => {});
+  await peer.waitForTimeout(700);
+  const bg = async (p) => appFrame(p)?.evaluate(() => getComputedStyle(document.body).backgroundColor).catch((e) => String(e));
+  const bgs = [await bg(host), await bg(peer)];
+  check("both previews show the peer's change", bgs.every((b) => b === "rgb(16, 26, 42)"), JSON.stringify(bgs));
+
+  await peer.fill("#code-prompt", "plan the levels");
+  await peer.click("#code-send");
+  await peer.waitForFunction(() => /speed curve/.test([...document.querySelectorAll("#code-log .cm-text")].pop()?.textContent || ""), null, { timeout: 10000 });
+  await host.fill("#code-prompt", "then my turn");
+  await host.click("#code-send");
+  await host.waitForFunction(() => /queued: 1 request ahead/.test(document.getElementById("code-log").textContent), null, { timeout: 5000 })
+    .then(() => check("host: its request queues behind the peer's", true), () => check("host: its request queues behind the peer's", false));
+  await peer.click("#code-stop");
+  for (const p of [host, peer]) await p.waitForFunction(() => document.querySelectorAll("#code-log .cm-stats").length >= 6, null, { timeout: 20000 });
+  const Q = await host.evaluate(() => ({ notes: [...document.querySelectorAll("#code-log .cm-note")].map((n) => n.textContent).slice(-3), stats: [...document.querySelectorAll("#code-log .cm-stats")].map((s) => s.textContent).slice(-2),
+    who: [...document.querySelectorAll("#code-log .cm-user .who")].map((w) => w.textContent).slice(-2), answer: [...document.querySelectorAll("#code-log .cm-text")].pop()?.textContent, busy: window.__pooledMock.api.busy() }));
+  check("peer's Stop stopped its run; the host's queued request ran next", Q.notes.some((n) => /peer-e2e pressed stop/.test(n)) && /stopped/.test(Q.stats[0]) && Q.who.join() === "peer-e2e,host-e2e" && /Host's turn/.test(Q.answer) && !Q.busy, JSON.stringify(Q));
+  check("peer: Send again, no Stop, after the runs", await peer.evaluate(() => document.getElementById("code-stop").hidden && document.getElementById("code-send").textContent === "Send"));
+  if (GUEST_SHOTS) {
+    await peer.evaluate(() => { document.getElementById("code-log").scrollTop = 1e6; });
+    await peer.waitForTimeout(200);
+    await peer.screenshot({ path: path.join(GUEST_SHOTS, "guest-1440.png") });
+    await peer.setViewportSize({ width: 390, height: 844 });
+    await peer.waitForTimeout(400);
+    await peer.evaluate(() => { document.getElementById("code-log").scrollTop = 1e6; });
+    await peer.screenshot({ path: path.join(GUEST_SHOTS, "guest-390.png") });
+    check("guest 390px: no horizontal page scroll", await peer.evaluate(() => document.documentElement.scrollWidth <= 390));
+    await peer.setViewportSize({ width: 1440, height: 900 });
+    log(`guest screenshots in ${GUEST_SHOTS}`);
+  }
+  // a member starts a new project (saved in the host's browser)
+  await peer.click("#code-new");
+  await peer.fill("#code-new-name", "peer project");
+  await peer.press("#code-new-name", "Enter");
+  await host.waitForFunction(() => document.getElementById("code-proj-select").value === "opfs:peer-project", null, { timeout: 10000 })
+    .then(() => check("peer: New project opens it on the host", true), () => check("peer: New project opens it on the host", false));
+  await peer.waitForFunction(() => document.getElementById("code-proj-select").value === "opfs:peer-project" && /peer-e2e started the project/.test(document.getElementById("code-log").textContent), null, { timeout: 10000 })
+    .then(() => check("peer: follows the new project", true), () => check("peer: follows the new project", false));
 
   // ---- chat mode is still there
   await host.click("#mode-chat");

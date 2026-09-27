@@ -4,7 +4,7 @@
    its share, and a friend's phone joins and adds a little, which is what lets the biggest model fit. The
    room picks that model, the layers are dealt by memory and each device fetches only its own (one from its
    cache). "what is Pooled?", and while the answer streams a hidden state travels through every layer on
-   every device, once per word. The answer ends "It can write code too." and the Code tab is pressed.
+   every device, once per word. The answer ends "It can chat, or write code." and, a second later, the Code tab is pressed.
    Code: the visitor asks for an app (a different one each loop: Tetris, 2048, a space shooter, Snake,
    Breakout); the files appear as the agent writes them; it serves the app on :5173 and the preview opens
    on it, running; then a change request, an edit, a reload, and the changed app plays for a moment (with
@@ -37,7 +37,7 @@
     const b = ANI.slice().sort(() => Math.random() - .5);
     NAMES = [0, 1, 2].map(i => b[i]);
     demo.querySelectorAll("[data-name]").forEach(el => { el.textContent = NAMES[+el.dataset.name]; });
-    ANSWER = `Pooled splits one open model across this room. ${NAMES[0]} runs layers 1 to 17, ${NAMES[1]} 18 to 37, ${NAMES[2]} 38 to 40. Every word passes through all three. It can write code too.`;
+    ANSWER = `Pooled splits big models across these 3 devices, so together they run models none of them could run alone. It can chat, or write code.`;
     WORDS = ANSWER.split(" "); timeWords();
   };
 
@@ -133,13 +133,15 @@
   const CH = FILL1 + .6, A0 = CH + 1;                              // 5: chat
   let ANSWER = $("a1").textContent, WORDS = ANSWER.split(" ");
   const DUR = i => [1.2, .6, .38, .26][i] || .08;    // each word's trip; the first slow enough to follow
-  let WT = [], A1 = 0, C = 0, STEPS = [], END = 0, GAME = 0, SLOWS = [];
+  let WT = [], A1 = 0, C = 0, STEPS = [], END = 0, GAME = 0, SLOWS = [], SWEEPS = [];
   // 6 to 8, from C (the switch to Code): the ask, the files, :5173 serving the app; the change, the reload
   const ASK = 2.05, FILES = 2.8, SERVED = 5.45, CHANGE = 6.8, RELOAD = 8.85, SHOWN = 9.1;
   function timeWords() {
     WT = [A0]; WORDS.forEach((_, i) => WT.push(WT[i] + DUR(i)));
+    // a sweep starts with a word, at most one per lap (as room.js mapPulse): the fast words ride along
+    SWEEPS = []; WT.slice(0, -1).forEach(x => { if (!SWEEPS.length || x - SWEEPS[SWEEPS.length - 1] >= .6) SWEEPS.push(x); });
     A1 = WT[WORDS.length];
-    C = Math.ceil((A1 + .8) * 10) / 10;                // time to read "It can write code too.", then the tab switches
+    C = Math.ceil((A1 + 1.5) * 10) / 10;               // a second to read the answer, then the tab switches
     GAME = C + SHOWN;                                  // the app, changed, on screen
     STEPS = [0, S1, S2, S3, CH, C, C + FILES, C + CHANGE];
     END = GAME + 2 * SPEED;                            // about two seconds of it, then the story starts again
@@ -201,7 +203,7 @@
   const model = $("model"), card = $("card"), band = $("band"), rowsEl = $("rows"), mdS = $("mdS");
   const gbSum = $("gbSum"), hdSum = gbSum.parentNode, poolGB = $("poolGB");
   const fills = [...$("meter").querySelectorAll(".mt-fill i")], ticks = [...$("meter").querySelectorAll(".mt-ticks span")];
-  const rungs = [...$("rungs").children], startBtn = $("startBtn");
+  const rungs = [...$("rungs").children], startBtn = $("startBtn"), need = $("need");
   const lendGB = $("lendGB"), lendPlus = $("lendPlus");
   let lent = [0, 0, 0], joining = -1;
   const paintPool = (animate, who) => {
@@ -212,6 +214,8 @@
     if (animate && !RM) restart(hdSum, "bump");
     fills.forEach((f, k) => { f.style.width = (100 * lent[k] / TOP).toFixed(2) + "%"; });
     ticks.forEach((tk, k) => tk.classList.toggle("ok", sum >= NEEDS[k]));
+    const short = Math.round((NEEDS[2] - sum) * 10) / 10;
+    need.lastChild.textContent = short > 0 ? `${short} GB short` : "fits"; need.classList.toggle("ok", short <= 0);
     chips.forEach((ch, k) => { ch.querySelector(".cg").textContent = lent[k] ? gbs(lent[k]) : ""; });
     devRows.forEach((li, k) => {
       const b = li.querySelector("b"), t = k === joining ? "joined" : lent[k] ? gbs(lent[k]) : "";
@@ -232,6 +236,10 @@
   const rungSelect = k => { rungs.forEach((li, i) => li.classList.toggle("sel", i === k)); ticks.forEach((tk, i) => tk.classList.toggle("sel", i === k)); paintPool(false); };
 
   /* ---------- 4: the layers are dealt; each device downloads only its own ---------- */
+  // the load card (as the room's #load-card): a percent and a bar per device, the layers strip, the bytes and time left
+  const lcRows = [...$("lcRows").children], lcStrip = [...$("lcStrip").children], lcStatus = $("lcStatus");
+  const LC_RANGE = ["1\u201317", "18\u201337", "38\u201340"];
+  let lcKey = "";
   const segs = [0, 1, 2].map(k => [...$("cells" + k).children]);
   const cells = segs.flat();
   cells.forEach((cel, i) => cel.style.setProperty("--k", i));
@@ -243,6 +251,7 @@
     segs[k].forEach((cel, i) => {
       const on = i < n;
       if (on !== cel.classList.contains("f")) { cel.classList.toggle("f", on); if (on && !RM) restart(cel, "f"); }
+      lcStrip[[0, 17, 37][k] + i].classList.toggle("f", on);
     });
     filled[k] = n;
     const all = segs[k].length, gb = (SEG_GB[k] * n / all).toFixed(1);
@@ -263,15 +272,35 @@
     else mdS.textContent = txt;
     if (eta) { const e = document.createElement("span"); e.className = "eta" + (fresh && !RM ? " in" : ""); e.textContent = " · " + eta; mdS.append(e); }
   };
+  const lcPaint = (pcts, gb, eta) => {
+    const key = pcts.join() + "|" + gb + "|" + eta;
+    if (key === lcKey) return;
+    lcKey = key;
+    lcRows.forEach((rw, k) => {
+      const pct = pcts[k], done = pct >= 100;
+      rw.classList.toggle("done", done);
+      rw.querySelector(".fill").style.width = pct + "%";
+      rw.querySelector(".pct").textContent = done ? "ready" : pct + "%";
+      rw.querySelector(".lr").innerHTML = (done ? "" : '<span class="lw">downloading </span>') + "layers " + LC_RANGE[k];   // as the room: the layers under the name
+      chips[k].querySelector(".cst").textContent = done || gb == null ? "" : pct + "%";
+    });
+    // before the bytes flow the room says what this device is doing; then the bytes, the total and the time left
+    const b = +gb >= 1 ? gb + " GB" : Math.round(gb * 1024) + " MB";
+    lcStatus.innerHTML = gb == null ? '<span class="src gpu">This device</span><span>Getting this device ready</span>'
+      : `<span class="src">Downloading</span><span class="b">${b} of 22.5 GB</span>` + (eta ? `<span class="eta${/^estimating/.test(eta) ? " wait" : ""}">${eta}</span>` : "");
+  };
   const loadAt = t => {
-    if (t < FILL0) { [0, 1, 2].forEach(k => fillSeg(k, 0)); setMd("22.5 GB · 40 layers · split 3 ways by memory"); return; }
+    if (t < FILL0) { [0, 1, 2].forEach(k => fillSeg(k, 0)); lcPaint([0, 0, 0], null, ""); setMd("22.5 GB · 40 layers · split 3 ways by memory"); return; }
     const p0 = clamp01((t - FILL0) / (CACHE1 - FILL0)), p = clamp01((t - FILL0) / (FILL1 - FILL0)), p2 = clamp01(p * 1.3);
     fillSeg(0, Math.ceil(17 * p0)); fillSeg(1, Math.ceil(20 * p)); fillSeg(2, Math.ceil(3 * p2));
-    if (p >= 1) { setMd("Ready on 3 devices · 40 layers, split by memory"); return; }
+    const pcts = [p0, p, p2].map(x => Math.round(x * 100));
+    if (p >= 1) { lcPaint(pcts, "22.5", ""); setMd("Ready on 3 devices · 40 layers, split by memory"); return; }
     const gb = (SEG_GB[0] * p0 + SEG_GB[1] * p + SEG_GB[2] * p2).toFixed(1);
     // what is left, at about 50 MB/s: a believable home connection, not the demo's own pace
     const left = (SEG_GB[1] + SEG_GB[2]) * (1 - clamp01((t - ETA0) / (FILL1 - ETA0)) * .75) * .85, mins = Math.round(left / .05 / 60);
-    setMd(`Downloading · ${gb} of 22.5 GB`, t < ETA0 ? "estimating time" : mins >= 1 ? `about ${mins} min left` : "under a minute left");
+    const eta = t < ETA0 ? "estimating time" : mins >= 1 ? `about ${mins} min left` : "under a minute left";
+    lcPaint(pcts, gb, t < ETA0 ? "estimating time left" : mins > 1 ? eta : "about a minute left");
+    setMd(`Downloading · ${gb} of 22.5 GB`, eta);
   };
 
   /* ---------- 5: a hidden state, through every layer, once per word ---------- */
@@ -287,8 +316,24 @@
   const LEGS = [["seg", 0, 17], ["hop", 0, 3], ["seg", 1, 20], ["hop", 1, 3], ["seg", 2, 3], ["end", 2, 4]];
   const LW = LEGS.reduce((a, l) => a + l[2], 0);
   let hotI = -1;
-  const setHot = i => { if (i === hotI) return; if (hotI >= 0) cells[hotI].classList.remove("hot"); if (i >= 0) cells[i].classList.add("hot"); hotI = i; };
+  const mini = [...demo.querySelectorAll(".bd-mini i")], bdTok = $("bdTok");
+  const setHot = i => { if (i === hotI) return; if (hotI >= 0) { cells[hotI].classList.remove("hot"); mini[hotI].classList.remove("hot"); } if (i >= 0) { cells[i].classList.add("hot"); mini[i].classList.add("hot"); } hotI = i; };
   const tok = d => { chips.forEach((ch, j) => ch.classList.toggle("tok", j === d)); rows.forEach((rw, j) => rw.classList.toggle("tok", j === d)); };
+  /* the room's token sweep (p2p.html #room-screen.sweep: cellhot, actflash, cardtok, minihot): a glow runs along
+     the layers, lane after lane, each device's dot and chip lighting as it reaches them. Driven by the timeline,
+     so seeking and freezing show it too. SW is the room's lap x .9 (a 600 ms lap), in timeline seconds */
+  const SW = .54;
+  const bump = (q, peak) => q <= 0 || q >= 1 ? 0 : q < peak ? q / peak : (1 - q) / (1 - peak);
+  const acts = rows.map(r => r.querySelector(".act")), C0 = [0, 17, 37];
+  let swOn = false;
+  const sweep = tau => {
+    if (tau == null || tau > 2.2 * SW) { if (!swOn) return; tau = -1; swOn = false; } else swOn = true;
+    const k = v => v.toFixed(3);
+    cells.forEach((cel, c) => cel.style.setProperty("--h", k(bump((tau - SW * c / 40) / SW, .3))));
+    mini.forEach((m, c) => m.style.setProperty("--h", k(bump((tau - SW * (c < 17 ? 0 : c < 37 ? 1 : 2) / 3) / SW, .3))));
+    acts.forEach((a, d) => a.style.setProperty("--h", k(bump((tau - SW * C0[d] / 40) / SW, .25))));
+    chips.forEach((ch, d) => ch.style.setProperty("--h", k(bump((tau - SW * d / 4 / .9) / (SW / .9), .2))));
+  };
   const trip = u => {
     if (!geo) measure();
     const { ends } = geo;
@@ -300,27 +345,58 @@
     const a = ends[2][1]; return { x: a.x, y: a.y, i: -1, d: -1, end: true };
   };
   let words = -1, flowing = false;
+  const aLi = a1.parentNode;
+  // the answer streams into the bubble word by word (the cursor takes no room)
+  a1.textContent = ""; a1.innerHTML = '<span class="vis"></span><i class="cur" aria-hidden="true"></i><span class="ghost"></span>';
+  const aVis = a1.firstChild, aGhost = a1.lastChild;
+  // the bubble grows a line at a time as words are added (words are only appended, so earlier lines never
+  // re-wrap); the chat follows the line being written. (Reserving the final size left an empty, clipped box.)
+  const sayTo = n => { aVis.textContent = WORDS.slice(0, n).join(" "); aGhost.textContent = ""; };
   const flow = t => {
+    aLi.classList.toggle("streaming", t >= A0 && t < A1);
+    if ((t >= A1) !== aLi.classList.contains("done")) { aLi.classList.toggle("done", t >= A1); toBottom(); }
+    const wait = t < WT[1];   // from the moment the answer's place shows until its first word: the working line
+    if (wait !== aLi.classList.contains("wait")) { aLi.classList.toggle("wait", wait); follow(); }
     if (t < A0 || t >= A1) {
-      if (flowing) { flowing = false; pkt.classList.remove("on"); band.classList.remove("hop", "writing"); bdLive.textContent = "Ready"; setHot(-1); tok(-1); a1.classList.remove("cursor"); }
+      if (flowing) { flowing = false; band.classList.remove("writing"); bdLive.textContent = "Ready"; sweep(null); a1.classList.remove("cursor"); }
       const n = t < A0 ? 0 : WORDS.length;
-      if (n !== words) { words = n; a1.textContent = n ? ANSWER : ""; }
+      if (n !== words) { words = n; sayTo(n); bdTok.textContent = n ? WORDS.length : 0; }
       return;
     }
     if (!flowing) { flowing = true; band.classList.add("writing"); bdLive.textContent = "Writing"; }
     let w = 0; while (w < WORDS.length - 1 && t >= WT[w + 1]) w++;
-    if (w !== words) { words = w; a1.textContent = WORDS.slice(0, w).join(" "); a1.classList.add("cursor"); toBottom(); }
-    const p = trip((t - WT[w]) / DUR(w));
-    pkt.style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px)`;
-    pkt.classList.toggle("on", !p.end);
-    band.classList.toggle("hop", !!p.hop);
-    setHot(p.i); tok(p.d);
+    if (w !== words) { words = w; sayTo(w); a1.classList.add("cursor"); bdTok.textContent = w + 1; follow(); }
+    // the room's sweep: one per word while words are slow, then one per lap that the faster words ride along with
+    let s0 = SWEEPS[0]; for (const x of SWEEPS) { if (x <= t) s0 = x; else break; }
+    sweep(t - s0);
+  };
+
+  // Code: while the agent streams (a file, a line of its answer) a token passes through every layer, pass after pass,
+  // the same glow as in the chat (the room's band sweeps on every pass in Code too)
+  const PASS = 2 * SW + .15;
+  let coding = false;
+  const codeFlow = (t, on) => {
+    if (!on) { if (coding) { coding = false; sweep(null); } return; }
+    coding = true;
+    bdTok.textContent = WORDS.length + Math.floor((t - C) / .12);
+    sweep((t - C) % PASS);
   };
 
   /* ---------- chat ---------- */
   const msgs = $("msgs"), chatTyped = $("chatTyped"), chatComposer = $("chatComposer");
   const Q1 = "what is Pooled?";
-  const toBottom = () => { msgs.scrollTop = msgs.scrollHeight; };
+  // the chat follows its last line, gliding (a jump when seeking, or with reduced motion)
+  const toBottom = () => { const top = msgs.scrollHeight - msgs.clientHeight; if (Math.abs(top - msgs.scrollTop) < 1) return; if (RM || frozen) msgs.scrollTop = top; else msgs.scrollTo({ top, behavior: "smooth" }); };
+  // while the answer streams: follow the line being written (the bubble already has its final size, so going
+  // to the bottom would scroll ahead of the words and hide the question); only ever downward
+  const follow = () => {
+    const c = a1.querySelector(".cur"), ref = c && c.getClientRects().length ? c : aVis;
+    if (!ref) return;
+    const need = ref.getBoundingClientRect().bottom + 18 - msgs.getBoundingClientRect().bottom;
+    if (need < 1) return;
+    const top = Math.min(msgs.scrollHeight - msgs.clientHeight, msgs.scrollTop + need);
+    if (RM || frozen) msgs.scrollTop = top; else msgs.scrollTo({ top, behavior: "smooth" });
+  };
   const typeInto = (el, text, t0, t1, t) => {
     const n = Math.max(0, Math.min(text.length, Math.ceil((t - t0) / (t1 - t0) * text.length)));
     if (el.textContent.length !== n) el.textContent = text.slice(0, n);
@@ -334,7 +410,7 @@
   const log = $("log"), codeTyped = $("codeTyped"), codeComposer = $("codeComposer");
   const files = demo.querySelector(".files"), ftree = $("ftree");
   const fItems = Object.fromEntries([...ftree.children].map(li => [li.dataset.f, li]));
-  const lv = $("lv"), lvPre = $("lvPre"), lvF = $("lvF"), lvN = $("lvN");
+  const lv = $("lv"), lvPre = $("lvPre"), lvF = $("lvF"), lvN = $("lvN"), lvNm = lv.querySelector(".nm"), pvRev = $("pvRev");
   const app = $("app"), brLoad = $("brLoad"), game = $("game"), canvas = $("appc");
   const at = k => demo.querySelector(`[data-at="${k}"]`);
   const saysText = new Map();
@@ -353,6 +429,12 @@
     saysText.set(at("c-s2"), A.done); saysText.set(at("c-s3"), A.done2);
     const t4 = at("c-t4");
     t4.querySelector(".add").textContent = "+" + add; t4.querySelector(".del").textContent = "-" + del; t4.querySelector(".del").hidden = !del;
+    // each write_file card shows the new file's first lines, as the room's diff does
+    ["c-t0", "c-t1", "c-t2"].forEach(k => {
+      const card = at(k), f = card.querySelector(".br").textContent, rs = card.querySelector(".rs");
+      card.querySelector(".nl").textContent = lineOut[f]; rs.textContent = "";
+      A.files[f].filter(Boolean).slice(0, 3).forEach(txt => { const sp = document.createElement("span"); sp.className = "r add"; sp.textContent = txt; rs.append(sp); });
+    });
     const diff = $("diff"); diff.textContent = "";
     A.diff.forEach(([k, txt]) => { const sp = document.createElement("span"); sp.className = "r " + k; sp.textContent = txt; diff.append(sp); });
     game.setAttribute("aria-label", A.aria);
@@ -381,13 +463,14 @@
   };
   const liveStart = (name, key, t0, t1) => {
     liveSrc = key === "edit" ? A.diff.filter(d => d[0] === "add").map(d => d[1]) : A.files[key];
-    lvF.textContent = name; liveShown = -1; liveTo(0);
+    lvF.textContent = name; lvNm.textContent = key === "edit" ? "editing" : "writing"; liveShown = -1; liveTo(0);
+    lvPre.style.setProperty("--lvn", Math.min(6, liveSrc.length));
     lv.classList.remove("pending"); if (!RM) restart(lv, "enter");
     writing = [t0, t1, liveSrc.length, name, key, key === "edit" ? liveSrc.length : lineOut[key]];
     fileState(name, "w", key === "edit" ? null : 0);
     lv.parentNode.append(lv); logBottom();
   };
-  const liveEnd = () => { const w = writing; lv.classList.add("pending"); writing = null; tok(-1); if (w) fileState(w[3], "done", lineOut[w[4]]); };
+  const liveEnd = () => { const w = writing; lv.classList.add("pending"); writing = null; if (w) fileState(w[3], "done", lineOut[w[4]]); };
   const tool = k => { const el = show(k); if (el) { log.append(el); logBottom(); } return el; };
   let streams = [];
   const reveal = (el, rate) => streams.push({ el: el.querySelector(".say"), text: saysText.get(el), t0: tl.t, rate });
@@ -433,14 +516,14 @@
     // 5: chat
     [CH, () => scene("chat")],
     [CH + .3, () => { geo = null; chatComposer.classList.add("hot"); }],
-    [CH + .95, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); a1.textContent = ""; toBottom(); measure(); }],
-    // the answer ends on "It can write code too.": the Code tab is pressed, as if clicked, and the story goes on there
+    [CH + .95, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); sayTo(0); follow(); measure(); }],
+    // the answer ends on "It can chat, or write code.": a second later the Code tab is pressed, as if clicked, and the story goes on there
     [C - .3, () => press(mCode, 300)],
     // 6: Code
     [C, () => mode("code")],
     [c(.2), () => scene("code")],
     [c(.55), () => codeComposer.classList.add("hot")],
-    [c(ASK), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q"); }],
+    [c(ASK), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); codeComposer.classList.add("run"); tool("c-q"); }],
     [c(ASK + .2), () => reveal(tool("c-s1"), .035)],
     // 7: it writes three files and serves them; the preview opens on the running app
     [c(FILES), () => liveStart("index.html", "index.html", c(FILES), c(FILES + .35))],
@@ -452,30 +535,41 @@
     [c(FILES + 2.4), () => { setRun("c-t3", true); tool("c-t3"); }],
     [c(SERVED), () => { setRun("c-t3", false); app.classList.remove("blank"); openPreview(); reload(); runGame(.6, false); }],
     [c(SERVED + .15), () => reveal(tool("c-s2"), .035)],
+    [c(SERVED + .6), () => { tool("c-st2"); codeComposer.classList.remove("run"); }],
     // 8: a change, an edit, a reload: the app, with the change, for a moment, and an offer to play it.
     //    (on a phone the preview covers the agent, so it steps aside while the change is asked for and made)
     [c(CHANGE), () => { flag("app-on", false); codeComposer.classList.add("hot"); }],
-    [c(CHANGE + 1.25), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q2"); }],
-    [c(CHANGE + 1.4), () => liveStart("game.js", "edit", c(CHANGE + 1.4), c(CHANGE + 1.8))],
+    [c(CHANGE + 1.25), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); codeComposer.classList.add("run"); tool("c-q2"); }],
+    // the served app frosts over while the agent edits it, as the room's preview does
+    [c(CHANGE + 1.4), () => { liveStart("game.js", "edit", c(CHANGE + 1.4), c(CHANGE + 1.8)); flag("editing", true); }],
     [c(CHANGE + 1.9), () => { liveEnd(); fileState("game.js", "mod"); tool("c-t4"); }],
-    [c(RELOAD), () => { app.classList.add("blank"); openPreview(); reload(); }],
-    [GAME, () => { app.classList.remove("blank"); runGame(.6, true); ask(true); }],
+    // the reload happens under the frost; the frost lifts as the changed app comes up (no dark flash between)
+    [c(RELOAD), () => { pvRev.textContent = "rev 2"; app.classList.add("blank"); openPreview(); reload(); }],
+    [GAME, () => { flag("editing", false); app.classList.remove("blank"); runGame(.6, true); ask(true); }],
     [GAME + .25, () => reveal(tool("c-s3"), .035)],
+    [GAME + .9, () => { tool("c-st3"); codeComposer.classList.remove("run"); }],
     [GAME + 1.5 * SPEED, () => ask(false)],
   ].sort((a, b) => a[0] - b[0]);
   let EV = EVENTS();
 
+  const toastB = $("toastB"), toastC = $("toastC");
   const frame = t => {
+    // "heron joined", "lynx joined": the room's toast, for a few seconds after each device comes in
+    [[toastB, S1 + 1.65], [toastC, JOIN3]].forEach(([el, t0]) => {
+      const st = t >= t0 && t < t0 + 3.8 ? "on" : t >= t0 + 3.8 && t < t0 + 4.2 ? "out" : "";
+      if (el.dataset.st !== st) { el.dataset.st = st; el.classList.remove("on", "out"); if (st) el.classList.add(st); }
+    });   // Invite shows only while devices are joining (steps 2 and 3)
     if (t >= DL) loadAt(t);
     if (t > CH + .3 && t < CH + .95) typeInto(chatTyped, Q1, CH + .35, CH + .8, t);
     if (t >= CH) flow(t);
+    // Code: the room's band says Writing while the agent writes
+    if (t >= C) { const on = !!writing || streams.length > 0; if (on !== band.classList.contains("writing")) { band.classList.toggle("writing", on); bdLive.textContent = on ? "Writing" : "Ready"; } codeFlow(t, on); }
     if (t > c(.55) && t < c(ASK)) typeInto(codeTyped, A.prompt, c(.65), c(1.85), t);
     if (t > c(CHANGE) && t < c(CHANGE + 1.25)) typeInto(codeTyped, A.prompt2, c(CHANGE + .1), c(CHANGE + 1.1), t);
     if (writing) {
       const [a, b, n] = writing;
       liveTo(Math.max(0, Math.min(n, Math.ceil((t - a) / (b - a) * n))));
       fileState(writing[3], "w", writing[4] === "edit" ? null : Math.round(writing[5] * liveShown / Math.max(1, writing[2])));
-      tok(Math.floor(t * 7) % 3);
       logBottom();
     }
     streams = streams.filter(s => {
@@ -486,10 +580,11 @@
     });
   };
 
-  const LOGKEYS = ["c-q", "c-s1", "c-t0", "c-t1", "c-t2", "c-t3", "c-s2", "c-q2", "c-t4", "c-s3"];
+  const LOGKEYS = ["c-q", "c-s1", "c-t0", "c-t1", "c-t2", "c-t3", "c-s2", "c-st2", "c-q2", "c-t4", "c-s3", "c-st3"];
   tl.reset = () => {
     tl.t = 0; tl.fired = 0; tl.done = false; streams = []; writing = null;
-    scene("tabs"); mode("chat"); ["merge", "served", "app-on", "ask", "done"].forEach(k => flag(k, false));
+    scene("tabs"); mode("chat"); ["merge", "served", "app-on", "ask", "done", "editing"].forEach(k => flag(k, false));
+    codeComposer.classList.remove("run"); pvRev.textContent = "rev 1";
     tabA.classList.remove("done", "met"); tabB.classList.remove("done"); tabB.classList.add("idle"); letters(0);
     nmA.classList.remove("fresh"); nmB.classList.remove("fresh");
     setSlots(0, -1); bBtn.classList.remove("ready", "press"); aGo.classList.remove("press");
@@ -497,7 +592,7 @@
     lent = [0, 0, 0]; joining = -1; card.dataset.face = "pool";
     rungHover(-1); rungSelect(-1); rungs.forEach(li => li.classList.remove("unlock")); startBtn.classList.remove("hover", "press");
     model.classList.remove("dl"); rowsEl.classList.remove("dealt"); filled = [-1, -1, -1]; mdKey = ""; loadAt(0); geo = null;
-    words = -1; flowing = true; flow(0);
+    words = -1; flowing = true; coding = false; flow(0);
     demo.querySelectorAll("[data-at]").forEach(el => el.classList.add("pending"));
     chatTyped.textContent = ""; chatComposer.classList.remove("hot");
     codeTyped.textContent = ""; codeComposer.classList.remove("hot");
@@ -513,15 +608,16 @@
   tl.final = () => {
     streams = []; writing = null; tl.done = true; tl.t = END; tl.fired = EV.length;
     scene("code"); mode("code"); flag("merge", true); flag("served", true); flag("app-on", true); flag("ask", false); flag("done", true);
+    flag("editing", false); codeComposer.classList.remove("run"); pvRev.textContent = "rev 2";
     tabA.classList.add("done", "met"); tabB.classList.add("done"); tabB.classList.remove("idle"); letters(4); setSlots(4, -1);
     setDevices(3); joining = -1; lent = LEND.slice(); rungHover(-1); rungSelect(2); card.dataset.face = "pick";
     model.classList.add("dl"); rowsEl.classList.add("dealt"); loadAt(FILL1 + 1);
-    words = -1; flowing = true; flow(END);
+    words = -1; flowing = true; coding = false; flow(END);
     demo.querySelectorAll("[data-at]").forEach(el => el.classList.remove("pending", "enter"));
     saysText.forEach((txt, el) => { const s = el.querySelector(".say"); if (s) { s.textContent = txt; s.classList.remove("cursor"); } });
     chatTyped.textContent = ""; codeTyped.textContent = ""; chatComposer.classList.remove("hot"); codeComposer.classList.remove("hot");
     Object.keys(fItems).forEach(n => fileState(n, "done", lineOut[n])); fileState("game.js", "mod", lineOut.edit);
-    lv.classList.add("pending"); tok(-1);
+    lv.classList.add("pending"); sweep(null);
     app.classList.remove("blank"); runGame(1, true);
     toBottom(); logBottom();
     paintBar(END);
@@ -585,11 +681,11 @@
 
   /* ---------- the app: it plays itself; for a moment (or once the story is over) the visitor can take it over.
      Then the story waits, the keys (or, on a touch screen, the pad) play it, and leaving it lets the story go on ---------- */
-  const pvPlay = $("pvPlay"), pvPlayT = $("pvPlayT"), pvBack = $("pvBack"), pad = $("pad"), pv = $("pv");
+  const pvBack = $("pvBack"), pad = $("pad"), pv = $("pv");
   const COARSE = matchMedia("(pointer: coarse)");
   let lastPointer = "";
   const touchy = () => lastPointer ? lastPointer !== "mouse" : COARSE.matches;
-  const ask = on => { flag("ask", on); pvPlayT.textContent = touchy() ? "Tap to play" : "Click to play"; };
+  const ask = on => flag("ask", on);   // (no "Click to play" offer any more; clicking the game still plays it)
   const canPlay = () => demo.classList.contains("served") && demo.classList.contains("app-on") && (demo.classList.contains("ask") || tl.done);
   const startPlay = () => {
     if (playing || !canPlay()) return false;
@@ -608,8 +704,6 @@
     if (!quiet && document.activeElement === game) game.blur();
     wake();
   }
-  pvPlay.addEventListener("pointerdown", e => { lastPointer = e.pointerType; });
-  pvPlay.addEventListener("click", () => startPlay());
   pvBack.addEventListener("click", () => stopPlay());
   game.addEventListener("pointerdown", e => { lastPointer = e.pointerType; if (!playing) startPlay(); });
   game.addEventListener("keydown", e => {
@@ -658,6 +752,7 @@
 
   useApp("tetris"); labelDots();
   if (RM) tl.final(); else tl.reset();
+  demo.dataset.ready = "1";   // the static page shows the finished Code scene; with JS it starts at Chat, step 1
 
   // tests and screenshots: jump to a moment, pick an app
   window.__demo = {
