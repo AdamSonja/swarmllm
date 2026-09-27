@@ -1,5 +1,5 @@
 // harness/preview.js + preview-tools.js: virtual ports over a MemoryWorkspace, live reload,
-// the console ring, and the serve / preview_logs / stop_serve results, with a fake frame.
+// the console ring, and the serve / preview_logs results, with a fake frame.
 import { MemoryWorkspace, watch } from "../../harness/workspace.js";
 import { PreviewServer } from "../../harness/preview.js";
 import { previewTools, LOG_LINES } from "../../harness/preview-tools.js";
@@ -148,7 +148,7 @@ Deno.test("serve tool: first errors from the frame, missing files, no-frame mess
   clean(); s.close();
 });
 
-Deno.test("preview_logs: newest last, folding, caps, revs, cursor; stop_serve", async () => {
+Deno.test("preview_logs: newest last, folding, caps, revs, cursor; a stopped port", async () => {
   const s = server(app()), t = T(s);
   eq(await t.preview_logs.run({}), "error: nothing is served on :5173; call serve first");
   await s.serve({});
@@ -165,8 +165,8 @@ Deno.test("preview_logs: newest last, folding, caps, revs, cursor; stop_serve", 
   s.pushLog(5173, { level: "log", text: "y".repeat(2000), ms: 1 });
   s.pushLog(5173, { level: "log", text: "z".repeat(2000), ms: 1 });
   ok((await t.preview_logs.run({ since: 113 })).length < 3000 + 200, "char cap");
-  eq(await t.stop_serve.run({ port: 5173 }), "stopped :5173");
-  eq(await t.stop_serve.run({ port: 5173 }), "error: nothing is served on :5173; call serve first");
+  ok(s.stop(5173));
+  eq(await t.preview_logs.run({}), "error: nothing is served on :5173; call serve first");
   s.close();
 });
 
