@@ -976,6 +976,7 @@ function renderBot(m, live) {
   } else {
     b.classList.remove("drafts");
     b.innerHTML = mdChat(m.pieces.map((p) => p.t).join("")) + (live ? '<span class="cursor"></span>' : "");
+    if (live) { const cur = b.lastElementChild, last = cur?.previousElementSibling; if (last && /^(P|LI|UL|OL|H3|H4)$/.test(last.tagName)) ((last.tagName === "UL" || last.tagName === "OL") ? last.lastElementChild || last : last).appendChild(cur); }
     if (!live) for (const pre of b.querySelectorAll("pre")) {   // finished code blocks get a copy button
       const w = document.createElement("div"); w.className = "code-wrap";
       pre.replaceWith(w); w.appendChild(pre);
@@ -1818,7 +1819,7 @@ function renderMap(nodes, st, live) {
     strip.dataset.sig = sig;
     const n = Math.min(total, 64), per = total / Math.max(1, n);
     let html = "";
-    for (let c = 0; c < n; c++) { const L = c * per, sp = spans.find((x) => L >= x.lo && L < x.hi); html += `<i style="--c:${c};background:${swatch(sp ? sp.i : -1)}"${sp ? ` title="${esc(String(sp.name))}: layers ${sp.lo + 1}\u2013${sp.hi}"` : ""}></i>`; }
+    for (let c = 0; c < n; c++) { const L = c * per, sp = spans.find((x) => L >= x.lo && L < x.hi); const prev = c ? spans.find((x) => (c - 1) * per >= x.lo && (c - 1) * per < x.hi) : sp; html += `<i${prev !== sp ? ' class="b"' : ""} style="--c:${c};background:${swatch(sp ? sp.i : -1)}"${sp ? ` title="${esc(String(sp.name))}: layers ${sp.lo + 1}\u2013${sp.hi}"` : ""}></i>`; }
     strip.innerHTML = html;
     strip.style.setProperty("--cells", n);
   }

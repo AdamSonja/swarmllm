@@ -211,6 +211,7 @@
   .peer-sub .buf { color: var(--text); }
   .play { margin-left: auto; font: 400 11.5px/1 var(--mono); color: var(--ink-2); }
   .play:empty { display: none; }
+  .peer-card.holds .pkind, .peer-card.holds .pkind + span { display: none; }
   .peer-gpu { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 4px; padding-left: 34px; overflow-wrap: anywhere; }
   .peer-stats { font-family: var(--mono); font-size: 11px; margin-top: 4px; padding-left: 34px; display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); }
   .peer-stats b { color: var(--text); font-weight: 500; }
@@ -303,7 +304,7 @@
   #ai-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; font: 400 clamp(20px, 2vw, 25px)/1.25 var(--display); letter-spacing: -.02em; color: var(--ink-2); text-wrap: balance; animation: enter .4s var(--ease); }
   #ai-empty::before { content: ""; display: block; width: 52px; height: 52px; margin: 0 auto 20px; background: url("/site/logo/animated.svg") center / contain no-repeat; }
   #ai-empty::after { content: "Every device in the room holds some of the model's layers."; display: block; margin-top: 10px; font: 400 14px/1.5 var(--sans); letter-spacing: -.006em; color: var(--muted); }
-  #ai-panel.online ~ * #ai-empty::after, #room-screen:has(#ai-panel.online) #ai-empty::after { content: "Every word it writes passes through all of them."; }
+  #ai-panel.online ~ * #ai-empty::after, #room-screen:has(#ai-panel.online) #ai-empty::after { content: "Every word it writes passes through every device in the room."; }
   @keyframes enter { from { opacity: 0; transform: translateY(8px); } }
   /* loading: the landing's pick card, each device's share of the download */
   #load-card { display: none; margin: auto; width: min(540px, calc(100% - 32px)); padding: 22px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--lift); }
@@ -404,6 +405,7 @@
   .sm-model { flex: none; font: 500 12px/1 var(--mono); color: var(--text); white-space: nowrap; }
   .sm-strip { flex: 1; min-width: 60px; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 1.5px; height: 8px; }
   .sm-strip i { border-radius: 1.5px; transform-origin: center; }
+  .sm-strip i.b { margin-left: 4px; }
   #room-screen.sweep .sm-strip i { animation: cellhot calc(var(--lap) * .9) var(--ease) both; animation-delay: calc(var(--lap) * .9 * var(--c) / var(--cells, 40)); }
   @keyframes cellhot { 0%, 100% { transform: none; filter: none; } 30% { transform: scaleY(1.7); filter: brightness(.35) saturate(.4); } }
   .sm-meta { flex: none; font: 400 11.5px/1 var(--mono); color: var(--muted); white-space: nowrap; }

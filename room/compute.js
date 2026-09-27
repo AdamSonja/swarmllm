@@ -18,7 +18,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
   logo.innerHTML = DOTS.map(([x, y, r], i) => `<circle cx="${x}" cy="${y}" r="${r}" style="--i:${i};--rc:${Math.round(x / 7) + Math.round(y / 7)}"${i === 8 ? ' class="lit"' : ""}/>`).join("");
   const circles = [...logo.querySelectorAll("circle")];
   let open = false, raf = 0, timer = 0, lastSpawn = 0, owed = 0;
-  let tokens = 0, lastMs = null;
+  let tokens = 0, lastMs = null, statAt = 0;
   const stamps = [];            // pass times over the last few seconds, for the rate
   const packets = [];           // { t0, dur }
   let W = 0, H = 0, dpr = 1, cy = 0, lx = 0, lw = 0;
@@ -162,7 +162,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
       stamps.push(now);
       if (stamps.length > 400) stamps.splice(0, stamps.length - 400);
       if (!open || document.hidden) return;
-      $("cs-tok").textContent = fmt(tokens);
+      if (now - statAt > 250) { statAt = now; renderStats(); }
       if (REDUCED()) return;
       // at most one packet per 140 ms; faster passes ride along with the next one
       if (now - lastSpawn >= 140) { lastSpawn = now; owed = 0; spawn(now); }
