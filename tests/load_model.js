@@ -14,6 +14,18 @@ import fs from "node:fs";
 import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF, gpuUploadEntry } from "../engine/gguf.js";
 import { makeTokenizer } from "../engine/engine.js";
 import { attachWeightCache } from "./weight_cache.js";
+import { Qwen35Engine, prefillMathFeatures } from "../engine/qwen35.js";
+
+// A/B switches for every test and bench that loads through this file (engine defaults, not per test):
+//   ATTN_PREFILL_TILE=0|1 tiled causal flash attention for full-width prefill passes (engine/wgsl/attn_tile.js;
+//                         default on for dense models, off for MoE; 0 forces attn_flash, 1 forces it on)
+//   ATTN_PREFILL_TK=4|8|16  its positions per tile (default: the largest that fits the workgroup memory;
+//                         16 needs 32 KB, which gpuDevice() then requests from the adapter)
+//   ATTN_PREFILL_SPLITS=N its target number of context splits per pass (default 32)
+const envGet = (k) => globalThis.Deno?.env.get(k);
+if (envGet("ATTN_PREFILL_TILE")) Qwen35Engine.defaults.attnPrefillTile = envGet("ATTN_PREFILL_TILE") !== "0";
+if (envGet("ATTN_PREFILL_TK")) Qwen35Engine.defaults.attnPrefillTK = +envGet("ATTN_PREFILL_TK");
+if (envGet("ATTN_PREFILL_SPLITS")) Qwen35Engine.defaults.attnPrefillSplits = +envGet("ATTN_PREFILL_SPLITS");
 
 export const Q38_PATH = new URL("../models/q38/model.gguf", import.meta.url).pathname;
 export const MOE_PATH = new URL("../models/q36moe/Qwen_Qwen3.6-35B-A3B-Q4_0.gguf", import.meta.url).pathname;
@@ -47,10 +59,25 @@ export function openGGUF(path, { skipTokenizer = false, cache = true, headerByte
 
 export async function gpuDevice() {
   const adapter = await navigator.gpu.requestAdapter();
-  const device = await adapter.requestDevice({ requiredLimits: {
+  // PREFILL_MATH=sgmatrix asks for the tensor-core features where the adapter has them (Chrome only; none in Deno)
+  const device = await adapter.requestDevice({ requiredFeatures: prefillMathFeatures(adapter), requiredLimits: {
     maxBufferSize: adapter.limits.maxBufferSize,
-    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
+    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, ...wideLimits(adapter),
+    ...(Qwen35Engine.defaults.attnPrefillTK >= 16 ? { maxComputeWorkgroupStorageSize: adapter.limits.maxComputeWorkgroupStorageSize } : {}) } });
   return { adapter, device };
+}
+
+// Wide prefill A/B for any Deno test or bench (engine option prefillUbatch, off by default):
+//   PREFILL_UBATCH=256 [PREFILL_TILE='{"BM":64,"BN":64,"TM":4,"TN":4}'] [WGMEM=0: keep the 16 KB default]
+// wideOpts() -> engine options; wideLimits(adapter) -> device limits (the adapter's workgroup memory,
+// so the tile can take two quant blocks per K stage).
+export function wideOpts() {
+  const U = +(Deno.env.get("PREFILL_UBATCH") || 0), T = Deno.env.get("PREFILL_TILE");
+  return U ? { prefillUbatch: U, ...(T ? { prefillTile: JSON.parse(T) } : {}) } : {};
+}
+export function wideLimits(adapter) {
+  return +(Deno.env.get("PREFILL_UBATCH") || 0) && Deno.env.get("WGMEM") !== "0"
+    ? { maxComputeWorkgroupStorageSize: adapter.limits.maxComputeWorkgroupStorageSize } : {};
 }
 
 // Count (and print the first few) uncaptured GPU errors; tests read errors.count.

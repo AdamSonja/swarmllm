@@ -299,3 +299,88 @@ Where the 27B token still goes (GPU 88.7 ms): the GEMVs are ~79 ms at 200-215 GB
 LM head 5.8 ms at 228 GB/s); exact knobs tried per shape (tests/bench_wide.js: 16-byte loads, 1-16 rows
 per workgroup) are all bit-identical and within +-5% of today's kernel, so the remaining gap to llama.cpp
 (13.8 tok/s) is load efficiency that an exact kernel cannot reorder its way out of.
+
+## 2026-09-27: tiled prefill attention (attnPrefillTile, candidate E), on by default for dense models (MoE opt-in since prefill/combined)
+
+`attn_flash_tile` (engine/wgsl/attn_tile.js) replaces attn_flash / attn_flash_t2 on full-width prefill passes: one
+workgroup per (split, KV head, 64 query rows) shares each K/V tile across the whole pass. GB10, Deno,
+`bench_ctx.js` CTX=16640 TOKENS=8, prefill tok/s over the segment ending at each fill, off → on:
+
+| | 512 | 4096 | 16384 |
+|---|---|---|---|
+| 27B | 65.9 → 69.8 | 57.4 → 74.3 | 30.2 → 66.1 |
+| MoE | 151.3 → 159.7 | 133.3 → 166.0 | 80.8 → 117.2 |
+
+Whole 16000-token prompt: 27B 39.7 → 69.1, MoE 99.5 → 153.9. Attention kernel time at 4096 (`prof_prefill.js`):
+27B 14.5 → 2.2 s, MoE 4.8 → 1.0 s. Decode never uses the kernel. Every golden passes with it on; logit relDiff vs
+attn_flash and the MoE router caveat are in docs/research/prefill-profile-2026-09.md (candidate E).
+`ATTN_PREFILL_TILE=0` / `?attnptile=0` restores attn_flash.
+
+## 2026-09-27 · MoE expert-grouped prefill (candidate D, branch prefill/moe-group), GB10 Deno
+
+- Exact grouped kernels (`moeGroupPrefill: 256`): bit-identical on GPU (logits, greedy, spec, draft acceptance) but
+  slower than per-pass at every chunk size: 2048 tok 160 -> 147/151/117/111 tok/s (UC 2/4/8/16). Each pair still does
+  its own 256-lane reduction; a collapsed exact tree (2 barriers) was slower still. Verdict: drop as a speed path.
+- Tiled grouped kernels (`moeGroupPrefill: 256, moeGroupTiled: true`, UC 8): experts 3x faster (4096 tok: gate/up
+  6733 -> 2155 ms, down 4547 -> 1385 ms, sort 337 ms). bench_ctx prefill tok/s off -> on: 512 151.8 -> 208.5,
+  4096 140.3 -> 193.1, 16384 89.1 -> 109.3; decode unchanged (24.6/22.3/20.6 vs 24.1/23.5/21.2), same greedy text,
+  spec identical. test_moe.js (MOEGROUP=16 MOEGROUP_TILED=1): 3/3 MATCH llama.cpp, spec == plain.
+  Next-token logits relDiff vs per-pass: 5.3e-4 (300 tok), 1.7e-2 (700 tok; the per-pass path itself is 2.2e-3 off
+  token-by-token there, both argmax-equal): routing flips compound, so it stays off by default.
+
+## 2026-09-27 · prefill/combined: E + B + D + C merged, vs prefill/base (GB10)
+
+Merged into `prefill/combined`: flash-attn (E), moe-group (D), gemm-tiles (B), f16-subgroup (C). Not merged:
+deltanet-chunked (2.6x slower kernel, verdict drop) and prebaked-state (a TTFT feature, not prefill throughput; its
+reviews found room-path bugs, a restored hit can drop its own staged slot after any DROP_ALL and a worker can persist
+a stale slot under the prefix key, and its v2 state signature silently invalidates saved sessions on the default path).
+
+**Defaults.** Only the tiled prefill attention is on by default, and only for dense models: on the MoE it lands
+4e-3..1.6e-2 from attn_flash (over the 2e-3 prefill tolerance), so it is opt-in there. It no longer runs on
+speculative verify passes at any batchCols (review must-fix: gate is now `nCols === NC && !_snapNow`). Wide GEMM
+(`prefillUbatch`), expert-grouped MoE (`moeGroupPrefill`, tiled kernels by default when on) and `prefillMath` stay
+off. With wide + grouped both on, each wide chunk's MoE layers run the grouped expert kernels over the whole chunk.
+
+**Goldens on the combined branch (defaults):** `run.sh quick` 8/8, `run.sh q38` 9/9 (MATCH, test_batch_q38 relDiff
+1.74e-7, twins bit-identical, spec == plain, GEMM worst 1.61e-6), `test_moe.js` 3/3 MATCH llama.cpp, spec identical,
+acceptance 28/33, 28/39, 25/45.
+
+**All options on vs all off** (`tests/test_prefill_opts.js`, SEQ_ALL=1; argmax, 24 greedy tokens and spec == plain
+identical at every length):
+
+| | 150 | 700 | 2100 |
+|---|---|---|---|
+| 27B relDiff on vs off (vs one-at-a-time: off / on) | 2.7e-5 (2.9e-5 / 1.9e-5) | 9.0e-5 (6.4e-5 / 1.2e-4) | 7.3e-5 (5.5e-5 / 9.0e-5) |
+| MoE relDiff on vs off (vs one-at-a-time: off / on) | 2.7e-5 (1.4e-5 / 2.5e-5) | 6.7e-4 (1.2e-4 / 6.7e-4) | 1.5e-3 (6.3e-4 / 1.7e-3) |
+
+On this prompt the MoE all-on path stays under 2e-3, but D and E alone exceeded it on other prompts/lengths (up to
+1.7e-2), so the MoE options stay off until a MoE tolerance is decided.
+
+**bench_ctx**, Deno, CTX=16640 TOKENS=32, same tokens on both branches (`CTX_SRC` = prefill/base checkout), one run
+each, GPU idle (waited for other jobs). Prefill tok/s over the segment ending at each fill; decode plain / spec tok/s.
+"all opts" = 27B `PREFILL_UBATCH=256`; MoE `ATTN_PREFILL_TILE=1 PREFILL_UBATCH=256 MOEGROUP=256`.
+
+| | prefill 512 | 4096 | 16384 | plain decode 512 / 4k / 16k | spec decode 512 / 4k / 16k |
+|---|---|---|---|---|---|
+| 27B prefill/base | 65.9 | 59.0 | 34.9 | 8.78 / 8.55 / 7.58 | 16.92 / 11.27 / 12.70 |
+| 27B combined default | 70.0 | 74.4 | 66.1 | 8.80 / 8.54 / 7.60 | 16.91 / 11.35 / 12.81 |
+| 27B combined all opts | 85.9 | 94.5 | 78.4 | 8.77 / 8.50 / 7.59 | 16.78 / 10.53 / 12.75 |
+| MoE prefill/base | 152.9 | 139.2 | 88.9 | 22.67 / 22.39 / 20.47 | 31.80 / 39.24 / 28.42 |
+| MoE combined default | 153.2 | 139.5 | 88.9 | 24.20 / 22.39 / 21.84 | 33.65 / 39.51 / 28.86 |
+| MoE combined all opts | 300.2 | 370.6 | 296.4 | 23.93 / 23.77 / 21.62 | 32.28 / 41.66 / 29.50 |
+
+Spec output identical to plain at every fill in every run. The 27B all-opts spec dip at 4k (10.53) comes with
+16/45 accepted drafts instead of 17/42 (the draft cache is filled from the wide prefill's hiddens); plain decode is
+unchanged. llama.cpp CUDA (b749f688, -fa 1) for scale: 27B pp512 879 / pp4096 893 / pp16384 847, MoE 2356 / 2374 /
+2271. Gap now: 27B 12.6x / 12.0x / 12.8x by default (10.2x / 9.4x / 10.8x all opts); MoE 7.8x / 6.4x / 7.7x all opts.
+
+**Chrome** (`chrome_bench.mjs`, batchcols=16, 40 tokens, Chromium 131; decode plain / spec on two-sum, hash-map):
+
+| | 27B plain | 27B spec | MoE plain | MoE spec | prefill 2048 tok |
+|---|---|---|---|---|---|
+| prefill/base | 10.61 / 10.49 | 23.99 / 20.15 | 43.48 / 44.07 | 73.31 / 64.75 | not measured (no ?prefill on base) |
+| combined default | 10.63 / 10.62 | 24.08 / 20.14 | 42.20 / 43.83 | 71.98 / 64.79 | 27B 81.0, MoE 165.3 |
+| combined all opts | 10.52 / 10.56 | 23.99 / 20.23 | 44.69 / 42.53 | 73.18 / 63.95 | 27B 102.0, MoE 432.9 |
+
+Decode does not regress (all within about 3%, single runs; acceptance identical: 28/33, 26/39 and 28/33, 28/39).
+Logs: scratchpad `pc/` (bc_*, cr_*, opts_*, g_*).

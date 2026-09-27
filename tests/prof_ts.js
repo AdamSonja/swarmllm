@@ -31,7 +31,9 @@ device.createCommandEncoder = (d) => { const enc = origCreate(d); const ob = enc
   enc.beginComputePass = () => { let pipe = null, name = "?"; const bgs = {};
     return { setPipeline(p) { pipe = p; name = eng._pname.get(p) || "?"; }, setBindGroup(i, b) { bgs[i] = b; },
       dispatchWorkgroups(x, y = 1, z = 1) { const p = ob({ timestampWrites: { querySet: qs, beginningOfPassWriteIndex: nq, endOfPassWriteIndex: nq + 1 } }); nq += 2; names.push(name);
-        p.setPipeline(pipe); for (const i in bgs) p.setBindGroup(+i, bgs[i]); p.dispatchWorkgroups(x, y, z); p.end(); }, end() {} }; };
+        p.setPipeline(pipe); for (const i in bgs) p.setBindGroup(+i, bgs[i]); p.dispatchWorkgroups(x, y, z); p.end(); },
+      dispatchWorkgroupsIndirect(buf, off) { const p = ob({ timestampWrites: { querySet: qs, beginningOfPassWriteIndex: nq, endOfPassWriteIndex: nq + 1 } }); nq += 2; names.push(name);
+        p.setPipeline(pipe); for (const i in bgs) p.setBindGroup(+i, bgs[i]); p.dispatchWorkgroupsIndirect(buf, off); p.end(); }, end() {} }; };
   const ofin = enc.finish.bind(enc); enc.finish = () => { if (nq) enc.resolveQuerySet(qs, 0, nq, res, 0); if (nq) enc.copyBufferToBuffer(res, 0, rd, 0, nq * 8); return ofin(); };
   return enc; };
 eng._pname = new Map(Object.entries(eng.pipes).map(([k, v]) => [v, k]));

@@ -4,11 +4,16 @@
 // and 5120x5120, which are not checked here).
 import { WGSL, coopWGSL, probeUnpack } from "../engine/engine.js";
 import { gemmWGSL, GEMM_S, GEMM_TILE } from "../engine/wgsl/gemm.js";
-import { f32ToF16 } from "../engine/gguf.js";
+import { f32ToF16, f16ToF32 } from "../engine/gguf.js";
 import { gpuDevice } from "./load_model.js";
 
 // Standalone, or as a check of tests/run_q38_once.js (needs only a device; loads no model).
 const N = 16;
+// PREFILL_MATH=f16 (or GEMM_R16=1): also check the opt-in f16-operand twins (gemm_*_r16, gemm_xpose_r16)
+// against the GEMV (expected ~1e-4..1e-3: f16 operand rounding) and, on the first 32 rows, against a
+// float64 reference with f16-rounded operands (expected ~1e-6: summation order only)
+const env = (k) => { try { return Deno.env.get(k); } catch { return undefined; } };
+const R16 = env("PREFILL_MATH") === "f16" || env("GEMM_R16") === "1";
 
 export async function run({ device }) {
   const unpack = await probeUnpack(device);
@@ -16,7 +21,7 @@ export async function run({ device }) {
   const dIns = [...new Set(SH.map((s) => +s.split("x")[1]))];
   const splits = [...new Set(SH.map((s) => GEMM_S[s]))];
 
-  const code = WGSL + coopWGSL(256, 4, 64, N, 1, unpack) + gemmWGSL({ N, splits, dIns, UNPACK: unpack });
+  const code = WGSL + coopWGSL(256, 4, 64, N, 1, unpack) + gemmWGSL({ N, splits, dIns, UNPACK: unpack, R16 });
   device.pushErrorScope("validation");
   const mod = device.createShaderModule({ code });
   const info = await mod.getCompilationInfo();
@@ -52,9 +57,9 @@ export async function run({ device }) {
     const [dOut, dIn] = shape.split("x").map(Number);
     const Sp = GEMM_S[shape], nb = dIn / 32;
     const xs = align(dIn), ys = align(dOut);
-    const qs = buf(Uint32Array.from({ length: dOut * dIn / 8 }, () => (Math.random() * 2 ** 32) >>> 0));
-    const sc = buf(Uint32Array.from({ length: Math.ceil(dOut * nb / 2) },
-      () => f32ToF16(0.005 + Math.random() * 0.03) | (f32ToF16(0.005 + Math.random() * 0.03) << 16)));
+    const qsA = Uint32Array.from({ length: dOut * dIn / 8 }, () => (Math.random() * 2 ** 32) >>> 0), qs = buf(qsA);
+    const scA = Uint32Array.from({ length: Math.ceil(dOut * nb / 2) },
+      () => f32ToF16(0.005 + Math.random() * 0.03) | (f32ToF16(0.005 + Math.random() * 0.03) << 16)), sc = buf(scA);
     const xd = new Float32Array(N * xs); for (let c = 0; c < N; c++) for (let k = 0; k < dIn; k++) xd[c * xs + k] = Math.random() * 2 - 1;
     const x = buf(xd);
     const shp = buf(new Uint32Array([dOut, dIn, xs / 4, ys]), U);
@@ -83,9 +88,27 @@ export async function run({ device }) {
       return Math.sqrt(num / den); };
     const r1 = rel(a, b), r2 = rel(aa, ba);
     worst = Math.max(worst, r1, r2);
-    const ok = r1 < 5e-6 && r2 < 5e-6;
+    let ok = r1 < 5e-6 && r2 < 5e-6, r16msg = "";
+    if (R16) {
+      const xT2 = device.createBuffer({ size: dIn * N * 4, usage: S }), yH = device.createBuffer({ size: N * ys * 4, usage: S });
+      run(await pipe("gemm_xpose_r16"), bg1(x, sc, sc, xT2, shp), Math.ceil(dIn * N / 64));
+      run(await pipe(`gemm_q4_${dIn}_s${Sp}_r16`), bg1(qs, sc, xT2, part, shp), Math.ceil(dOut / GEMM_TILE) * Sp);
+      run(pR, bg1(part, sc, sc, yH, shp), Math.ceil(N * dOut / 64));
+      const hh = await read(yH, N * ys), h = Math.f16round;
+      const rv = rel(hh, b);
+      let num = 0, den = 0;
+      for (let r = 0; r < 32; r++) {
+        const w = Array.from({ length: dIn }, (_, k) => { const bl = k >> 5, kk = k & 31, s16 = (scA[(r * nb + bl) >> 1] >>> (16 * ((r * nb + bl) & 1))) & 0xffff;
+          const wd = qsA[(r * nb + bl) * 4 + ((kk % 16) >> 2)]; return h(Math.fround((((wd >>> (8 * (kk % 4) + (kk >= 16 ? 4 : 0))) & 15) - 8) * f16ToF32(s16))); });
+        for (let c = 0; c < N; c++) { let ref = 0; for (let k = 0; k < dIn; k++) ref += w[k] * h(xd[c * xs + k]); num += (hh[c * ys + r] - ref) ** 2; den += ref * ref; }
+      }
+      const rc = Math.sqrt(num / den), okH = rv > 1e-6 && rv < 2e-3 && rc < 2e-5;
+      if (!okH) ok = false;
+      r16msg = `  f16 twin: vs GEMV ${rv.toExponential(2)}, vs f16-operand CPU ${rc.toExponential(2)} ${okH ? "" : "(FAIL)"}`;
+      xT2.destroy(); yH.destroy();
+    }
     if (!ok) fails++;
-    console.log(`${shape.padEnd(12)} S=${String(Sp).padEnd(2)} relDiff ${r1.toExponential(2)}  acc ${r2.toExponential(2)}  ${ok ? "ok" : "FAIL"}`);
+    console.log(`${shape.padEnd(12)} S=${String(Sp).padEnd(2)} relDiff ${r1.toExponential(2)}  acc ${r2.toExponential(2)}  ${ok ? "ok" : "FAIL"}${r16msg}`);
     for (const bb of [qs, sc, x, xT, part, yRef, yG, yA, yRA]) bb.destroy();
   }
   console.log(fails ? `GEMM FAIL (${fails} shapes)` : `GEMM PASS ✓ (worst relDiff ${worst.toExponential(2)}, gate 5e-6)`);
