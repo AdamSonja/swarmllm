@@ -28,6 +28,10 @@ function fold(lines) {
   return out.map(({ e, n }) => ({ e, n, text: logLine(e) + (n > 1 ? ` ×${n}` : "") }));
 }
 
+// Code mode leaves stop_serve out of the model's tool block (the UI's close button stops a port);
+// it stays here for tests and the UI.
+export const PROMPT_HIDDEN = new Set(["stop_serve"]);
+
 export function previewTools(server) {
   const portOf = (p) => (p == null || p === "" ? DEFAULT_PORT : Number(p));
   const nothing = (port) => {
@@ -37,8 +41,8 @@ export function previewTools(server) {
   return [
     {
       name: "serve", mutates: false,
-      description: `Serve a folder as a static site on a preview port and report the page's first errors. Serving again reloads it.`,
-      parameters: { type: "object", properties: { dir: { type: "string", description: "folder, default project root" }, port: { type: "integer", description: `default ${DEFAULT_PORT}` }, entry: { type: "string", description: "default index.html" } } },
+      description: "Serve a folder on a preview port; returns the page's first errors.",
+      parameters: { type: "object", properties: { dir: { type: "string" }, port: { type: "integer", description: `default ${DEFAULT_PORT}` }, entry: { type: "string", description: "default index.html" } } },
       async run({ dir = "", port, entry = "index.html" } = {}) {
         port = portOf(port);
         const since = server.cursor(port);
@@ -60,7 +64,7 @@ export function previewTools(server) {
     },
     {
       name: "preview_logs", mutates: false,
-      description: "Console output and errors of a served page since a cursor (each result ends with next: since=N).",
+      description: "Console output of a served page since a cursor.",
       parameters: { type: "object", properties: { port: { type: "integer" }, since: { type: "integer" } } },
       async run({ port, since = 0 } = {}) {
         port = portOf(port);

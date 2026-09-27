@@ -3,7 +3,7 @@
 // and calls initCode(roomApi, { mock }) once; it returns { show(mode) }.
 //
 // Host: a project (OPFS scratch folder or a picked folder, harness/projects.js), a PreviewServer
-// over it, the 8 tools, and an Agent over the room's model (harness/room-model.js; with
+// over it, the 7 tools, and an Agent over the room's model (harness/room-model.js; with
 // ?mock=code, window.__pooledMock.model instead). A run holds the room's lock for all its steps.
 // Everything the timeline shows is an ai-code-* message: the host renders it, keeps it for late
 // joiners and broadcasts it (visibility rules apply, room.js sendCode).
@@ -13,7 +13,7 @@ import { codeUI } from "./code-ui.js";
 import { Agent, briefCall } from "../harness/agent.js";
 import { codingTools } from "../harness/codetools.js";
 import { PreviewServer } from "../harness/preview.js";
-import { previewTools } from "../harness/preview-tools.js";
+import { previewTools, PROMPT_HIDDEN } from "../harness/preview-tools.js";
 import { mountPreview, openPreviewTab } from "../harness/preview-frame.js";
 import { PreviewPublisher, PreviewSubscriber } from "../harness/preview-sync.js";
 import { lineDiff } from "../harness/diff.js";
@@ -162,7 +162,7 @@ export async function initCode(api, { mock = null } = {}) {
     closeProject();
     project = p;
     server = new PreviewServer(p.ws);
-    tools = [...codingTools(p.ws, { server }), ...previewTools(server)];
+    tools = [...codingTools(p.ws, { server }), ...previewTools(server)].filter((t) => !PROMPT_HIDDEN.has(t.name));
     publisher = new PreviewPublisher(server, { send: api.send, broadcast: api.broadcast, channel: api.channel });
     server.onUpdate(portUpdate);
     const saved = await loadSession(p.id).catch(() => null);

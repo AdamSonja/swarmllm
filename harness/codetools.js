@@ -18,15 +18,64 @@ const kb = (n) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
 const cut = (s, n) => (s.length > n ? s.slice(0, n) + `…(${s.length - n} chars cut)` : s);
 const lineCount = (t) => (t === "" ? 0 : t.split("\n").length - (t.endsWith("\n") ? 1 : 0));
 
-// edit_file's search/replace; also used by its preview so the card shows exactly what run does
+// pi-style normalisation for a second try: NFKC, smart quotes / dashes / odd spaces to ASCII,
+// trailing whitespace dropped
+const fuzz = (l) => l.normalize("NFKC").replace(/[\u2018\u2019\u201A\u201B]/g, "'").replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+  .replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ").replace(/\s+$/, "");
+const indentOf = (l) => /^[ \t]*/.exec(l)[0];
+const asLines = (s) => { const l = s.split("\n"); if (l.length > 1 && l[l.length - 1] === "") l.pop(); return l; };
+// start indexes of the windows of `F` whose lines equal `O`'s under `eq`
+function windows(F, O, eq) {
+  const at = [];
+  for (let i = 0; i + O.length <= F.length && at.length < 2; i++) {
+    let k = 0;
+    while (k < O.length && eq(F[i + k], O[k])) k++;
+    if (k === O.length) at.push(i);
+  }
+  return at;
+}
+// "lines 40-46 are closest:" + those lines numbered: the window sharing the most trimmed lines with old
+function closest(F, O) {
+  const want = new Set(O.map((l) => l.trim()).filter(Boolean));
+  if (!want.size) return "";
+  let best = -1, score = 0;
+  for (let i = 0; i + Math.min(O.length, F.length) <= F.length; i++) {
+    let k = 0;
+    for (let j = i; j < Math.min(F.length, i + O.length); j++) if (want.has(F[j].trim())) k++;
+    if (k > score) { score = k; best = i; }
+  }
+  if (best < 0) return "";
+  const from = Math.max(0, best - (O.length < 3 ? 1 : 0)), to = Math.min(F.length, from + Math.max(O.length + (O.length < 3 ? 2 : 0), 1), from + 12);
+  return `; lines ${from + 1}-${to} are closest:\n` + F.slice(from, to).map((l, i) => `${from + i + 1}|${cut(l, 200)}`).join("\n");
+}
+
+// edit_file's search/replace; also used by its preview so the card shows exactly what run does.
+// An exact match first; else whole lines equal after fuzz(), else after trim() (the new text then
+// takes the file's indentation); else an error naming the closest lines.
 function applyEdit(text, path, o, n) {
   if (!o) return { error: "error: old is empty; use write_file to create or replace a whole file" };
   if (o === n) return { error: "error: old and new are the same" };
   const k = text.split(o).length - 1;
-  if (k === 0) return { error: `error: old not found in ${path}; read_file it again and copy the text exactly (whitespace included)` };
   if (k > 1) return { error: `error: old appears ${k} times in ${path}; include more surrounding lines so it is unique` };
-  const at = text.indexOf(o);
-  return { after: text.slice(0, at) + n + text.slice(at + o.length), line: text.slice(0, at).split("\n").length };
+  if (k === 1) {
+    const at = text.indexOf(o);
+    return { after: text.slice(0, at) + n + text.slice(at + o.length), line: text.slice(0, at).split("\n").length };
+  }
+  const F = text.split("\n"), O = asLines(o);
+  for (const [eq, how] of [[(a, b) => fuzz(a) === fuzz(b), "whitespace"], [(a, b) => a.trim() === b.trim() && a.trim() !== "", "indentation"]]) {
+    const at = windows(F, O, eq);
+    if (at.length > 1) return { error: `error: old appears more than once in ${path} (ignoring ${how}); include more surrounding lines so it is unique` };
+    if (!at.length) continue;
+    const i = at[0];
+    let N = n === "" ? [] : asLines(n);
+    if (how === "indentation") {
+      const fi = indentOf(F[i]), oi = indentOf(O[0]);
+      if (fi !== oi) N = N.map((l) => (l && l.startsWith(oi) ? fi + l.slice(oi.length) : l));
+    }
+    return { after: [...F.slice(0, i), ...N, ...F.slice(i + O.length)].join("\n"), line: i + 1, how };
+  }
+  const near = closest(F, O);
+  return { error: `error: old not found in ${path}` + (near || "; read_file it again and copy the text exactly (whitespace included)") };
 }
 
 // a path the approval card shows exactly as it is written (normalised, not too long to read)
@@ -71,6 +120,19 @@ function grep(files, pattern, flags, ms) {
   });
 }
 
+// a rewrite that kept most of a long file: " · 190 of 200 old lines unchanged" (harness/cards.js
+// then suggests edit_file); "" otherwise
+export function kept(old, text) {
+  if (old == null) return "";
+  const O = asLines(old);
+  if (O.length <= 40) return "";
+  const have = new Map();
+  for (const l of asLines(text)) have.set(l, (have.get(l) || 0) + 1);
+  let k = 0;
+  for (const l of O) { const c = have.get(l); if (c) { k++; have.set(l, c - 1); } }
+  return k >= 0.8 * O.length ? ` · ${k} of ${O.length} old lines unchanged` : "";
+}
+
 // the xml tool format trims one newline at each end of a parameter; either name is accepted
 const oldOf = (a) => a.old ?? a.old_string ?? "", newOf = (a) => a.new ?? a.new_string ?? "";
 
@@ -92,7 +154,7 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
   return [
     {
       name: "list_dir", mutates: false,
-      description: "List a directory (default: project root). Folders end with /.",
+      description: "List a folder (default: project root).",
       parameters: { type: "object", properties: { path: { type: "string" } } },
       async run({ path = "" } = {}) {
         const es = await ws.list(path);
@@ -104,7 +166,7 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
     },
     {
       name: "read_file", mutates: false,
-      description: `Read a file with line numbers, at most ${MAX_LINES} lines per call; use start_line/end_line for more.`,
+      description: `Read lines with numbers (max ${MAX_LINES} per call).`,
       parameters: { type: "object", properties: { path: { type: "string" }, start_line: { type: "integer" }, end_line: { type: "integer" } }, required: ["path"] },
       async run({ path, start_line, end_line }) {
         let u8;
@@ -135,8 +197,8 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
     },
     {
       name: "search", mutates: false,
-      description: "Search the project for a JavaScript regular expression; returns path:line: text.",
-      parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string", description: "only under this folder" }, ignore_case: { type: "boolean" } }, required: ["pattern"] },
+      description: "Regex search in the project (or under path); returns path:line: text.",
+      parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" }, ignore_case: { type: "boolean" } }, required: ["pattern"] },
       async run({ pattern, path = "", ignore_case = false }) {
         const flags = ignore_case ? "i" : "";
         try { new RegExp(pattern, flags); } catch (e) { return `error: bad pattern: ${e.message}`; }
@@ -159,7 +221,7 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
     },
     {
       name: "edit_file", mutates: true,
-      description: "Replace one exact piece of text in a file. old must appear exactly once (add surrounding lines to make it unique).",
+      description: "Replace text: old must match the file exactly, once.",
       parameters: { type: "object", properties: { path: { type: "string" }, old: { type: "string" }, new: { type: "string" } }, required: ["path", "old", "new"] },
       async preview(args) {
         let path;
@@ -176,12 +238,12 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
         if (r.error) return r.error;
         await ws.write(path, r.after);
         const a = o.split("\n").length, b = n.split("\n").length, end = r.line + Math.max(b, 1) - 1;
-        return `edited ${path} ${end > r.line ? `lines ${r.line}-${end}` : `line ${r.line}`} (${a} -> ${b} lines)` + await reloadNote(path);
+        return `edited ${path} ${end > r.line ? `lines ${r.line}-${end}` : `line ${r.line}`} (${a} -> ${b} lines${r.how ? `, matched ignoring ${r.how}` : ""})` + await reloadNote(path);
       },
     },
     {
       name: "write_file", mutates: true,
-      description: "Create or overwrite a file. append: true adds to its end (write long files in parts).",
+      description: "Create or replace a file; append: true adds to its end.",
       parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" }, append: { type: "boolean" } }, required: ["path", "content"] },
       async preview({ path, content = "", append = false }) {
         try { path = clean(path); } catch (e) { return { path: String(path ?? "").slice(0, MAX_PATH), before: null, after: "", error: `error: ${e.message}` }; }
@@ -191,11 +253,12 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
       },
       async run({ path, content = "", append = false }) {
         path = clean(path);
-        const before = append ? await readOr(path) : null;
+        const old = await readOr(path).catch(() => null);
+        const before = append ? old : null;
         const text = before != null ? before + content : String(content);
         await ws.write(path, text);
         const size = `${lineCount(text)} lines, ${kb(new TextEncoder().encode(text).length)}`;
-        return (before != null ? `appended to ${path} (now ${size})` : `wrote ${path} (${size})`) + await reloadNote(path);
+        return (before != null ? `appended to ${path} (now ${size})` : `wrote ${path} (${size})${append ? "" : kept(old, text)}`) + await reloadNote(path);
       },
     },
   ];

@@ -182,7 +182,7 @@ Deno.test("agent: a call cut by the answer cap is not run; the model is told why
   const r = await A.run("go");
   eq(r.reason, "done");
   eq(log, [], "no truncated edit");
-  ok(/cut at 4096 tokens.*append: true/.test(A.turns[2].text), A.turns[2].text);
+  ok(/cut at 4096 tokens[\s\S]*hint: Write long files in parts[\s\S]*append: true/.test(A.turns[2].text), A.turns[2].text);
 });
 
 Deno.test("agent: a write_file cut by the answer cap keeps its complete lines and says where to continue", async () => {
