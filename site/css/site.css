@@ -59,6 +59,9 @@ ol,ul{list-style:none}
 .hero{padding:28px 0 0;text-align:center}
 .hero h1{font:400 clamp(32px,3.1vw,44px)/1.1 var(--display);letter-spacing:-.03em}
 .hero h1 span{color:var(--ink-3)}
+.hero .sub{margin-top:10px;font:400 clamp(17px,1.4vw,20px)/1.4 var(--sans,inherit);color:var(--ink-2)}
+.hero .kicker span{white-space:nowrap}
+.hero .kicker{margin-top:8px;font:400 11.5px/1.4 var(--mono);letter-spacing:.06em;color:var(--ink-3)}
 
 /* ---------- demo ---------- */
 .stage{padding:20px 0 0}
