@@ -13,6 +13,10 @@
 //            --stop [--stop-rounds 0,2] [--stop-after 5] [--stop-selector "#ai-send"]: press Stop
 //            once the answer has >= stop-after tokens
 //            --timeout-s 300 (per answer) --headed
+//            --code: after the chat rounds, drive the room through Code mode's adapter
+//            (harness/room-model.js over roomApi, reached through ?mock=code): the lock, a greedy
+//            answer to round 0's question (must match the chat's token count), a follow-up that
+//            must reuse the whole first step, then one more chat question after the unlock
 //            --wg 64: the cooperative-GEMV workgroup size every tab uses (engine/autotune.js is
 //            replaced by a stub returning it); --real-autotune keeps the real autotune (> 10 min
 //            on SwiftShader)
@@ -132,7 +136,7 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
   const pledges = pledgesFor(nDev);
   const out = { label, devices: nDev, rounds: [], errors: errs };
   const base = `http://127.0.0.1:${PORT}/p2p.html?signal=127.0.0.1:${SIGNAL_PORT}`;
-  const maxNewQ = arg("max-new", ""); const baseQ = (maxNewQ ? `&maxnew=${maxNewQ}` : "") + (arg("netlag") ? `&netlag=${arg("netlag")}` : "") + (arg("query") ? `&${arg("query")}` : "");
+  const maxNewQ = arg("max-new", ""); const baseQ = (maxNewQ ? `&maxnew=${maxNewQ}` : "") + (arg("netlag") ? `&netlag=${arg("netlag")}` : "") + (arg("query") ? `&${arg("query")}` : "") + (flag("code") ? "&mock=code" : "");
   try {
     for (const p of Object.values(tabs)) await p.goto(base + baseQ);
     for (const p of Object.values(tabs)) await p.waitForFunction(() => document.getElementById("join-gb").value !== "", null, { timeout: 60000 });
@@ -257,6 +261,7 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
         await tabs.host.waitForTimeout(500);
       }
     }
+    if (flag("code")) await codeCheck(tabs, out, label);
     // --social: a guest reacts to the last answer and types; the host sees the count and the note
     if (flag("social") && names[1]) {
       const g = tabs[names[1]];
@@ -313,6 +318,58 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
     for (const c of ctxs) await c.close();
   }
   return out;
+}
+
+// --code: the room's generation through Code mode's adapter, on the host tab
+async function codeCheck(tabs, out, label) {
+  const r0 = out.rounds[0];
+  const res = await tabs.host.evaluate(async (p0) => {
+    const api = window.__pooledMock?.api;
+    if (!api) return { error: "no roomApi (?mock=code needs 127.0.0.1)" };
+    const { roomModel } = await import("/harness/room-model.js");
+    if (!api.lock("code")) return { error: "lock refused" };
+    const busyChat = document.getElementById("ai-row").classList.contains("busy");
+    try {
+      const m = roomModel(api, { sampling: "exact", maxNew: 256 });
+      let a = "", b = "", deltas = 0;
+      for await (const d of m.generate({ turns: [{ role: "user", text: p0 }] })) { a += d; deltas++; }
+      const s1 = { ...m.stats.last };
+      for await (const d of m.generate({ turns: [{ role: "user", text: p0 }, { role: "assistant", text: a }, { role: "user", text: "And one more thing?" }] })) b += d;
+      return { a, b, deltas, s1, s2: { ...m.stats.last }, own: m.idsFor(a)?.length, busyChat };
+    } catch (e) { return { error: String(e) }; } finally { api.unlock(); }
+  }, r0.prompt);
+  log(`[${label}] code adapter: ${JSON.stringify(res).slice(0, 600)}`);
+  if (res.error) throw new Error("code adapter: " + res.error);
+  const chatTok = +(/^(\d+) tok/.exec(r0.per.host.stats)?.[1] ?? -1);
+  if (!res.busyChat) throw new Error("code adapter: the lock did not mark the room busy");
+  if (res.s1.generated !== chatTok) throw new Error(`code adapter: ${res.s1.generated} tokens, the chat's greedy answer to the same question had ${chatTok}`);
+  if (res.own !== res.s1.generated) throw new Error("code adapter: the answer's own ids were not kept");
+  if (res.s2.reused !== res.s1.prompt + res.s1.generated) throw new Error(`code adapter: step 2 reused ${res.s2.reused}, expected ${res.s1.prompt + res.s1.generated}`);
+  if (!(res.deltas > 1)) throw new Error("code adapter: the answer did not stream");
+  // chat still works after the unlock
+  const k = await tabs.host.evaluate(() => document.querySelectorAll(".m.bot .stats").length);
+  await tabs.host.fill("#ai-prompt", "Back to the chat?");
+  await tabs.host.click("#ai-send");
+  await tabs.host.waitForFunction((k) => document.querySelectorAll(".m.bot .stats").length > k || /^generation failed/.test(document.getElementById("ai-status").textContent), k, { timeout: TIMEOUT });
+  const st = await tabs.host.textContent("#ai-status");
+  if (!/^ready/.test(st)) throw new Error("chat after the code run: " + st);
+  // code messages: host -> peers through roomApi.broadcast, peer -> host only for ai-pv-want
+  const peers = Object.entries(tabs).slice(1);
+  if (peers.length) {
+    const setup = () => { const api = window.__pooledMock.api; window.__codeGot = []; for (const t of ["ai-code-tok", "ai-pv-want"]) api.on(t, (from, d) => window.__codeGot.push(d.t)); };
+    for (const [, p] of Object.entries(tabs)) await p.evaluate(setup);
+    await tabs.host.evaluate(() => window.__pooledMock.api.broadcast({ t: "ai-code-tok", mid: 1, step: 1, text: "hi" }));
+    for (const [, p] of peers) await p.evaluate(() => { const api = window.__pooledMock.api; api.send(api.hostId(), { t: "ai-code-tok", mid: 9, text: "forged" }); api.send(api.hostId(), { t: "ai-pv-want", port: 5173, rev: 1, hs: [] }); });
+    await tabs.host.waitForTimeout(1500);
+    const got = {};
+    for (const [n, p] of Object.entries(tabs)) got[n] = await p.evaluate(() => window.__codeGot);
+    log(`[${label}] code messages: ${JSON.stringify(got)}`);
+    if (JSON.stringify(got.host) !== JSON.stringify(peers.map(() => "ai-pv-want"))) throw new Error("code messages: the host got " + JSON.stringify(got.host));
+    for (const [n] of peers) if (JSON.stringify(got[n]) !== '["ai-code-tok"]') throw new Error(`code messages: ${n} got ` + JSON.stringify(got[n]));
+    res.messages = got;
+  }
+  out.code = { ...res, chatAfter: st };
+  log(`[${label}] code adapter PASS: ${res.s1.generated} tok like the chat, step 2 reused ${res.s2.reused}; chat after: ${st}`);
 }
 
 // ---------------------------------------------------------------- main
