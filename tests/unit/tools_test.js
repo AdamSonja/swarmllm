@@ -77,3 +77,10 @@ Deno.test("toolResponses and renderCalls round-trip through the parser", () => {
     eq([...r.calls, ...e.calls], calls, style);
   }
 });
+
+Deno.test("ToolCallParser: a call cut before </function> is an error, not a truncated write", () => {
+  const P = new ToolCallParser({ schemaFor });
+  P.feed("<tool_call>\n<function=write_file>\n<parameter=path>\ngame.js\n</parameter>\n<parameter=content>\nfunction a() {\n  retu");
+  const c = P.end().calls[0];
+  ok(c.error && c.open && !c.name, JSON.stringify(c));
+});

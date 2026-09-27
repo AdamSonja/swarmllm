@@ -174,8 +174,17 @@ Deno.test("codingTools with a server: writes under a served dir say the preview 
   const ws = app(), s = server(ws), t = T(s, ws);
   eq(await t.write_file.run({ path: "a.js", content: "x" }), "wrote a.js (1 lines, 1 B)");
   await s.serve({ dir: "notes", port: 5174, entry: "plan.md" });
-  eq(await t.write_file.run({ path: "notes/b.md", content: "x\n" }), "wrote notes/b.md (1 lines, 2 B) · preview :5174 reloaded");
+  eq(await t.write_file.run({ path: "notes/b.md", content: "x\n" }), "wrote notes/b.md (1 lines, 2 B) · preview :5174 reloaded (rev 2)");
+  eq(s.snapshot(5174).rev, 2, "the snapshot is taken before the tool answers");
   eq(await t.write_file.run({ path: "a.js", content: "y" }), "wrote a.js (1 lines, 1 B)");
   await sleep(30);
+  s.close();
+});
+
+Deno.test("codingTools with a server: a snapshot that fails is reported, not 'reloaded'", async () => {
+  const ws = app(), s = server(ws, { maxFile: 64 }), t = T(s, ws);
+  await s.serve({ dir: "notes", port: 5174, entry: "plan.md" });
+  const r = await t.write_file.run({ path: "notes/big.md", content: "x".repeat(100) });
+  ok(/preview :5174 not updated: big\.md is 100 B/.test(r), r);
   s.close();
 });

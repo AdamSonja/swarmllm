@@ -174,3 +174,55 @@ Deno.test("agent: toJSON / from round trip keeps turns, request state and sample
   B.reset();
   eq(B.turns, []);
 });
+
+Deno.test("agent: a call cut by the answer cap is not run; the model is told why", async () => {
+  const log = [];
+  const cut = "<tool_call>\n<function=write_file>\n<parameter=path>\ngame.js\n</parameter>\n<parameter=content>\nfunction a() {\n  retu";
+  const A = new Agent({ generate: scripted([cut, "ok"]), tools: tools(log), usage: () => ({ reason: "max", generated: 4096, prompt: 10 }) });
+  const r = await A.run("go");
+  eq(r.reason, "done");
+  eq(log, [], "no truncated write");
+  ok(/cut at 4096 tokens.*append: true/.test(A.turns[2].text), A.turns[2].text);
+});
+
+Deno.test("agent: stopped requests fold later instead of filling the context for good", async () => {
+  const ac = new AbortController(), ev = [];
+  let budget = Infinity;
+  const A = new Agent({ generate: scripted(["y".repeat(900), "second"], { onPiece: (k, n) => { if (n === 0 && k >= 800) ac.abort(); } }), tools: tools(),
+    count: (t) => t.length, budget: () => budget, onEvent: (e) => ev.push(e) });
+  eq((await A.run("first", { signal: ac.signal })).reason, "stopped");
+  budget = A.count(A.system) + 400;
+  const r = await A.run("next");
+  eq(r.reason, "done", JSON.stringify(ev.filter((e) => e.type === "compacted")));
+  ok(!A.turns.some((t) => !t.folded && t.text.startsWith("yyyy")), "the stopped request was folded or dropped");
+  ok(ev.some((e) => e.type === "compacted" && (e.tier === 2 || e.tier === 3)));
+});
+
+Deno.test("agent: a model error or the step limit never leaves two user turns in a row", async () => {
+  let n = 0;
+  const failing = async function* () { if (n++ === 0) { yield "Starting"; throw new Error("a device left"); } yield "fine"; };
+  const A = new Agent({ generate: failing, tools: tools() });
+  let threw = null;
+  try { await A.run("one"); } catch (e) { threw = e.message; }
+  eq(threw, "a device left");
+  await A.run("two");
+  eq(A.turns.map((t) => t.role), ["user", "assistant", "user", "assistant"]);
+  const B = new Agent({ generate: scripted([call("read_file", { path: "a" }), "after"]), tools: tools(), maxSteps: 1 });
+  eq((await B.run("loop")).reason, "limit");
+  eq(B.turns[B.turns.length - 1].role, "assistant");
+  await B.run("next");
+  const roles = B.turns.map((t) => t.role);
+  ok(roles.every((r, i) => i === 0 || !(r === "user" && roles[i - 1] === "user")), roles.join(","));
+});
+
+Deno.test("agent: saved ids are replayed only under the same tokenizer", async () => {
+  const A = new Agent({ generate: scripted(["hello"]), tools: tools(), idsFor: () => [7, 8], idsTag: () => "qwen:151k" });
+  await A.run("hi");
+  const json = A.toJSON();
+  eq(json.tok, "qwen:151k");
+  const same = [], other = [];
+  Agent.from(json, { generate: scripted([]), tools: tools(), adopt: (t, i) => same.push(i), idsTag: () => "qwen:151k" });
+  Agent.from(json, { generate: scripted([]), tools: tools(), adopt: (t, i) => other.push(i), idsTag: () => "llama:128k" });
+  eq(same, [[7, 8]]);
+  eq(other, [], "another model re-encodes the text");
+});

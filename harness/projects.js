@@ -45,7 +45,7 @@ export async function listProjects() {
 
 // the watched workspace for a project; writes mark it updated (at most every 2 s)
 function open(meta, handle) {
-  const ws = watch(new DirWorkspace(handle));
+  const ws = watch(new DirWorkspace(handle, { private: meta.kind === "folder" }));
   let last = 0;
   ws.onChange(() => {
     const now = Date.now();

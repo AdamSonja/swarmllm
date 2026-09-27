@@ -14,18 +14,21 @@ import { Agent, briefCall } from "../harness/agent.js";
 import { codingTools } from "../harness/codetools.js";
 import { PreviewServer } from "../harness/preview.js";
 import { previewTools } from "../harness/preview-tools.js";
-import { mountPreview } from "../harness/preview-frame.js";
+import { mountPreview, openPreviewTab } from "../harness/preview-frame.js";
 import { PreviewPublisher, PreviewSubscriber } from "../harness/preview-sync.js";
 import { lineDiff } from "../harness/diff.js";
 import { listProjects, createProject, openProject, openFolder, canOpenFolder, saveSession, loadSession } from "../harness/projects.js";
 import { roomModel } from "../harness/room-model.js";
 import { detectStyle } from "../harness/tools.js";
+import { normPath, riskyPath } from "../harness/workspace.js";
 import { CODE_SYSTEM } from "../harness/code-prompt.js";
 
 const $ = (id) => document.getElementById(id);
 const str = (v, n) => String(v ?? "").slice(0, n);
 const cap = (s, n) => (s.length > n ? s.slice(0, n) + `\n…(${s.length - n} chars cut)` : s);
-const HIST = 50, TOK_MS = 50;
+const HIST = 50, TOK_MS = 50, EDGE = 50;
+// tools whose results are the project's own content: for a folder on disk they stay on the host
+const READS = new Set(["read_file", "search", "list_dir"]);
 const WORDS = new Set(("a an the me my us our please build make create write code develop implement simple small little basic new "
   + "game app application website site page web in with using for of to and that js javascript html css plain canvas").split(" "));
 // "build a tetris game" -> "tetris"
@@ -33,25 +36,38 @@ export function projectName(text) {
   const keep = (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter((w) => !WORDS.has(w)).slice(0, 2);
   return keep.join(" ") || "project";
 }
-// the approval card's diff: lineDiff rows as [op, text] / [" ", "", skip]
-function makeDiff({ path, before, after, error }) {
+// the approval card's diff: lineDiff rows as [op, text] / [" ", "", skip]. The path is the one
+// written (normalised). Too long to diff: the first and last EDGE lines, and (host only) the
+// whole proposed file for "view full file".
+export function makeDiff({ path, before, after, error }) {
+  try { path = normPath(path); } catch { /* the tool reports it */ }
   const lines = after ? after.split("\n").length - (after.endsWith("\n") ? 1 : 0) : 0;
   const rows = lineDiff(before ?? "", after ?? "", { max: 400 });
   const d = { path, isNew: before == null, lines, add: 0, del: 0, rows: null };
   if (rows) {
     d.rows = rows.map((r) => (r.skip ? [" ", "", r.skip] : [r.op, r.text]));
     for (const r of rows) { if (r.op === "+") d.add++; else if (r.op === "-") d.del++; }
-  } else d.add = lines;
+  } else {
+    d.add = lines;
+    const all = (after ?? "").split("\n");
+    if (all.length && all[all.length - 1] === "") all.pop();
+    d.head = all.slice(0, EDGE);
+    d.tail = all.length > 2 * EDGE ? all.slice(-EDGE) : [];
+    d.full = after ?? "";
+  }
   if (error) d.error = error;
   return d;
 }
-// ai-code-tool's diff is at most ~4 KB on the wire
+// ai-code-tool's diff is at most ~4 KB on the wire (a long file's edges ~8 KB); never the full file
 function wireDiff(d) {
-  if (!d?.rows) return d;
-  const rows = d.rows.map(([o, t, s]) => (s ? [o, "", s] : [o, t.slice(0, 160)]));
+  if (!d) return d;
+  const { full, ...w } = d;
+  if (w.head) { w.head = w.head.map((t) => t.slice(0, 160)); w.tail = w.tail.map((t) => t.slice(0, 160)); }
+  if (!w.rows) return w;
+  const rows = w.rows.map(([o, t, s]) => (s ? [o, "", s] : [o, t.slice(0, 160)]));
   let k = rows.length;
   while (k > 0 && JSON.stringify(rows.slice(0, k)).length > 3800) k = Math.floor(k * 0.8);
-  return { ...d, rows: rows.slice(0, k), more: rows.length - k };
+  return { ...w, rows: rows.slice(0, k), more: rows.length - k };
 }
 
 export async function initCode(api, { mock = null } = {}) {
@@ -60,8 +76,9 @@ export async function initCode(api, { mock = null } = {}) {
   let sid = crypto.getRandomValues(new Uint32Array(1))[0].toString(36);
 
   // ================================================================ host
-  let project = null, server = null, publisher = null, tools = [], agent = null, agentSrc = null, model = null;
+  let project = null, server = null, publisher = null, tools = [], agent = null, agentSrc = null, agentStyle = null, model = null;
   let sessionJson = null, hist = [], tree = [], running = false, ctrl = null, allowTask = false;
+  let userAuto = null;   // the user's own tick of "auto-approve edits", kept across projects
   let mid = "", toolN = 0;
   const callIdx = new Map();
 
@@ -112,7 +129,8 @@ export async function initCode(api, { mock = null } = {}) {
     sel.replaceChildren(new Option(list.length ? "open a project…" : "no projects yet", ""));
     for (const p of list) sel.add(new Option(p.name + (p.kind === "folder" ? " (folder)" : ""), p.id));
     sel.value = project?.id || "";
-    $("code-proj-kind").textContent = project ? (project.kind === "folder" ? "folder on disk · edits ask first" : "in this browser") : "";
+    $("code-proj-kind").textContent = project ? (project.kind === "folder" ? "folder on disk · edits ask first" : "saved in this browser") : "";
+    $("code-newtask").disabled = !project;
   }
   function closeProject() {
     if (running) ctrl?.abort();
@@ -120,7 +138,8 @@ export async function initCode(api, { mock = null } = {}) {
     for (const port of [...ui.ports.keys()]) ui.dropPort(port);
     project = server = publisher = agent = model = null; agentSrc = null; tools = [];
   }
-  async function useProject(p) {
+  // keepAuto: the project run() made for the first request keeps the box as the user left it
+  async function useProject(p, { keepAuto = false } = {}) {
     if (!p) return;
     closeProject();
     project = p;
@@ -132,7 +151,8 @@ export async function initCode(api, { mock = null } = {}) {
     sessionJson = saved?.agent || null;
     hist = Array.isArray(saved?.hist) ? saved.hist : [];
     sid = crypto.getRandomValues(new Uint32Array(1))[0].toString(36);
-    $("code-auto").checked = p.kind === "opfs";   // scratch files only live here; a real folder asks per edit
+    // scratch files only live here (on unless the user turned it off); a real folder asks per edit
+    if (!keepAuto || p.kind === "folder") $("code-auto").checked = p.kind === "opfs" && userAuto !== false;
     ui.clear();
     for (const m of hist) ui.apply(m);
     if (!hist.length) ui.placeholder(`project <b>${escapeHTML(p.name)}</b> is empty<br>ask for something to build`);
@@ -156,6 +176,7 @@ export async function initCode(api, { mock = null } = {}) {
     if (isHost() && server) { const s = await server.refresh(port); if (!s) P?.mount.reload(); }
     else P?.mount.reload();
   });
+  ui.onOpen((port, path) => { openPreviewTab(isHost() ? server : sub, port, path); });
   ui.onFile(async (path) => {
     if (isHost() && project) {
       try { ui.viewFile(cap(await project.ws.read(path), 200000)); } catch (e) { ui.viewFile(`(${e.message})`); }
@@ -203,6 +224,7 @@ export async function initCode(api, { mock = null } = {}) {
     save();
     ctxMeter();
   });
+  $("code-auto").addEventListener("change", (e) => { if (project?.kind !== "folder") userAuto = e.target.checked; });
   $("pv-to-agent").addEventListener("click", () => { $("code-prompt").value = "Fix the errors in the preview console"; grow(); $("code-prompt").focus(); });
 
   // a line only this screen sees (not part of the session)
@@ -221,29 +243,38 @@ export async function initCode(api, { mock = null } = {}) {
 
   // ---- the agent
   function ensureAgent() {
-    const src = mock?.model || "room";
-    if (agent && agentSrc === src) return;
+    // rebuilt when the model's tool format changes too (a re-deal to another model)
     const style = mock?.model ? "xml" : detectStyle(api.chatTemplate());
+    const src = mock?.model || "room";
+    if (agent && agentSrc === src && agentStyle === style) return;
     model = mock?.model ? (typeof mock.model === "function" ? { generate: mock.model } : mock.model) : roomModel(api, { tools, style });
     const json = agent ? agent.toJSON() : sessionJson;
     agent = Agent.from(json, {
       generate: model.generate, tools, style, system: CODE_SYSTEM, maxSteps: 30, approve, onEvent,
       budget: model.budget || Infinity, count: model.count || null,
-      usage: model.stats ? () => model.stats.last : null, idsFor: model.idsFor || null, adopt: model.adopt || null,
+      usage: model.stats ? () => model.stats.last : null, idsFor: model.idsFor || null, adopt: model.adopt || null, idsTag: model.idsTag || null,
     });
-    agentSrc = src;
+    agentSrc = src; agentStyle = style;
   }
   async function approve(call, info) {
     const i = callIdx.get(call);
     const diff = info ? makeDiff(info) : null;
-    // a failing edit is not worth a question: run() returns the error to the model
-    const auto = $("code-auto").checked || allowTask || info?.error;
+    // a file of a folder on disk that can run commands (package.json, a script, a dotfile) always
+    // asks, whatever auto-approve and "Allow edits for this task" say
+    if (diff && project?.kind === "folder" && riskyPath(diff.path)) diff.risky = true;
+    // a failing edit is not worth a question (run() returns the error to the model), nor is a
+    // write that changes nothing
+    const same = diff && !diff.error && diff.rows && !diff.isNew && !diff.add && !diff.del;
+    const auto = !diff?.risky && ($("code-auto").checked || allowTask || info?.error || same);
     tool(i, { state: auto ? "approved" : "pending", diff }, { diff: wireDiff(diff) });
     if (auto) return true;
-    const v = await Promise.race([ui.ask(mid, i), new Promise((r) => ctrl.signal.addEventListener("abort", () => r({ ok: false, reason: "stopped" }), { once: true }))]);
+    let off = null;
+    const stopped = new Promise((r) => { const f = () => r({ ok: false, reason: "stopped" }); ctrl.signal.addEventListener("abort", f, { once: true }); off = () => ctrl?.signal.removeEventListener("abort", f); });
+    const v = await Promise.race([ui.ask(mid, i, { risky: !!diff?.risky }), stopped]);
+    off?.(); ui.cancelAsk(mid, i);
     if (v === "all") allowTask = true;
     const ok = v === true || v === "all";
-    tool(i, { state: ok ? "approved" : "declined" });
+    tool(i, { state: ok ? "approved" : v?.reason === "stopped" ? "stopped" : "declined" });
     return ok || v;
   }
   function onEvent(e) {
@@ -258,8 +289,11 @@ export async function initCode(api, { mock = null } = {}) {
       }
       case "tool": {
         const i = callIdx.get(e.call), r = String(e.result);
-        const state = /^declined by the user/.test(r) ? "declined" : /^error/.test(r) ? "error" : "done";
-        tool(i, { state, result: cap(r, 4000), ms: e.ms }, { result: cap(r, 600) });
+        const state = r === "declined by the user: stopped" ? "stopped" : /^declined by the user/.test(r) ? "declined" : /^error/.test(r) ? "error" : "done";
+        // a folder on disk: what the agent read stays on the host (peers see its size only)
+        const wire = project?.kind === "folder" && READS.has(e.call.name) && state === "done"
+          ? `(${r.split("\n").length} lines · a folder on disk: the output stays on the host)` : cap(r, 600);
+        tool(i, { state, result: cap(r, 4000), ms: e.ms }, { result: wire });
         if (state === "done" && ["write_file", "edit_file"].includes(e.call.name)) sendFiles();
         ctxMeter();
         break;
@@ -286,7 +320,7 @@ export async function initCode(api, { mock = null } = {}) {
     running = true;
     ui.running(true);
     try {
-      if (!project) await useProject(await createProject(projectName(text)));
+      if (!project) await useProject(await createProject(projectName(text)), { keepAuto: true });
       if (!api.lock("code")) {
         localNote(api.busy() ? "the room is answering a chat question: send again when it is done" : "the room cannot run the agent right now (a device left? re-deal first)", true);
         return;
@@ -322,7 +356,12 @@ export async function initCode(api, { mock = null } = {}) {
   $("code-prompt").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !matchMedia("(pointer: coarse)").matches) { e.preventDefault(); run(); }
   });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && running && ui.mode === "code") api.stop(); });
+  // Esc stops the run, but not from a field or the approval buttons (Esc there backs out of them)
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !running || ui.mode !== "code" || e.defaultPrevented) return;
+    if (e.target?.closest?.("input, textarea, select, .cm-approve")) return;
+    api.stop();
+  });
   api.on("ai-pv-want", (from, d) => { if (isHost()) publisher?.onWant(from, d); });
   api.onPeerJoin((id) => {
     if (!isHost() || (!hist.length && !server?.ports().length)) return;
@@ -355,8 +394,10 @@ export async function initCode(api, { mock = null } = {}) {
     if (d.err) o.err = true;
     if (d.diff && typeof d.diff === "object") {
       const x = d.diff;
+      const lines = (a) => (Array.isArray(a) ? a.slice(0, 50).map((t) => str(t, 200)) : null);
       o.diff = { path: str(x.path, 300), isNew: !!x.isNew, lines: x.lines >>> 0, add: x.add >>> 0, del: x.del >>> 0, more: x.more >>> 0,
-        rows: Array.isArray(x.rows) ? x.rows.slice(0, 400).map((r) => [str(r?.[0], 1), str(r?.[1], 200), r?.[2] >>> 0]) : null };
+        rows: Array.isArray(x.rows) ? x.rows.slice(0, 400).map((r) => [str(r?.[0], 1), str(r?.[1], 200), r?.[2] >>> 0]) : null,
+        head: lines(x.head), tail: lines(x.tail), risky: !!x.risky };
     }
     return o;
   }
@@ -401,6 +442,8 @@ export async function initCode(api, { mock = null } = {}) {
     const host = isHost();
     ui.setHost(host);
     if (!host && running) ctrl?.abort();
+    // a device left mid-run: the next step would wait out the lap timeouts, so stop here
+    else if (running && !api.ready() && !ctrl?.signal.aborted) { note("a device left: stopped · re-deal the layers, then send again", true); ctrl?.abort(); }
   });
   ui.setHost(isHost());
   return { show: (m) => ui.show(m) };

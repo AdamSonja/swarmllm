@@ -37,15 +37,17 @@ export class Agent {
   // budget: tokens the conversation may take (a number, or a function when the context can change,
   // e.g. roomModel().budget); count: text -> tokens (default ~3.5 characters per token).
   // approve(call, info) -> true | false | { ok: false, reason }: info is tool.preview(args).
-  // usage() -> { prompt, reused, generated, tps } after each step (roomModel's stats.last), optional.
-  // idsFor(text) / adopt(text, ids): the model's exact sampled ids, for toJSON / from.
+  // usage() -> { prompt, reused, generated, tps, reason } after each step (roomModel's stats.last),
+  // optional; reason "max" / "ctx" means the answer hit the length cap.
+  // idsFor(text) / adopt(text, ids): the model's exact sampled ids, for toJSON / from; idsTag() names
+  // the tokenizer they belong to, so a session saved under another model re-encodes its text.
   constructor({ generate, tools, style = "xml", system = "", maxSteps = 24, approve = async () => true, onEvent = () => {},
-    budget = Infinity, count = null, maxResultChars = 6000, usage = null, idsFor = null, adopt = null }) {
+    budget = Infinity, count = null, maxResultChars = 6000, usage = null, idsFor = null, adopt = null, idsTag = null }) {
     this.generate = generate; this.tools = tools; this.style = style; this.maxSteps = maxSteps;
     this.budget = typeof budget === "function" ? budget : () => budget;
     this.count = count || ((t) => Math.ceil(t.length / 3.5));
     this.approve = approve; this.onEvent = onEvent; this.maxResultChars = maxResultChars;
-    this.usage = usage; this.idsFor = idsFor; this.adopt = adopt;
+    this.usage = usage; this.idsFor = idsFor; this.adopt = adopt; this.idsTag = idsTag;
     this.system = toolsSystemPrompt(tools.map(({ name, description, parameters }) => ({ name, description, parameters })), { style, system });
     this.byName = new Map(tools.map((t) => [t.name, t]));
     this.reset();
@@ -66,13 +68,15 @@ export class Agent {
       if (last.req === req && !last.calls) { this.turns.pop(); delete this.reqs[req]; }
       else this.turns.push({ role: "assistant", text: STOPPED, req });
     };
+    // a request that ended any way but "done" is still finished history: compaction may fold it
+    const finish = () => { R.done = true; R.answer ||= shown.trim(); };
     const full = (step) => {
-      close();
+      finish(); close();
       this.onEvent({ type: "done", step, reason: "context" });
       return { text: CONTEXT_FULL, steps: step, calls, reason: "context" };
     };
     const stopped = (step) => {
-      close();
+      finish(); close();
       this.onEvent({ type: "stopped", step });
       return { text: shown.trim(), steps: step, calls, reason: "stopped" };
     };
@@ -97,7 +101,13 @@ export class Agent {
           if (raw) this.turns.push({ role: "assistant", text: raw, req });
           return full(step);
         }
-        if (!signal?.aborted) throw err;
+        if (!signal?.aborted) {
+          // the model failed (a device left): keep what it said and close the turn, so the next
+          // request does not follow a dangling user turn
+          if (raw) this.turns.push({ role: "assistant", text: raw, req });
+          finish(); close();
+          throw err;
+        }
       }
       if (signal?.aborted) {
         // keep what was said (the tool calls in it do not run)
@@ -105,10 +115,14 @@ export class Agent {
         return stopped(step);
       }
       const e = P.end();
+      const u = this.usage?.();
+      // a call left open by the length cap: its last value is a fragment, so say why instead of running it
+      if (u && (u.reason === "max" || u.reason === "ctx")) {
+        for (const c of e.calls) if (c.open) c.error = `your answer was cut at ${u.generated} tokens before the call was complete; write long files in parts (write_file with append: true)`;
+      }
       shown += e.text; found.push(...e.calls);
       if (e.text) this.onEvent({ type: "text", text: e.text, step });
       this.turns.push({ role: "assistant", text: raw, req });
-      const u = this.usage?.();
       if (u) this.onEvent({ type: "usage", step, prompt: u.prompt, reused: u.reused, generated: u.generated, tps: u.tps });
       if (!found.length) {
         R.done = true; R.answer = shown.trim();
@@ -125,6 +139,7 @@ export class Agent {
       this.turns.push({ role: "user", text: toolResponses(results), req, calls: briefs });
       if (signal?.aborted) return stopped(step);
     }
+    finish(); close();
     this.onEvent({ type: "limit", steps: this.maxSteps });
     return { text: `(stopped after ${this.maxSteps} steps)`, steps: this.maxSteps, calls, reason: "limit" };
   }
@@ -133,7 +148,7 @@ export class Agent {
     let result;
     const t0 = Date.now();
     this.onEvent({ type: "tool-start", call: c, step });
-    if (c.error) result = `error: ${c.error}. Write the call again in the format the system prompt shows.`;
+    if (c.error) result = c.open && !/^unterminated/.test(c.error) ? `error: ${c.error}` : `error: ${c.error}. Write the call again in the format the system prompt shows.`;
     else {
       const t = this.byName.get(c.name);
       if (!t) result = `error: there is no tool called ${c.name}; the tools are ${[...this.byName.keys()].join(", ")}`;
@@ -185,7 +200,7 @@ export class Agent {
     }
     if (cut) this.onEvent({ type: "trimmed", turns: cut });
     // 2. fold earlier finished requests, oldest first
-    const earlier = [...new Set(this.turns.map((t) => t.req))].filter((r) => r !== cur && this.reqs[r]?.done);
+    const earlier = [...new Set(this.turns.map((t) => t.req))].filter((r) => r !== cur && this.reqs[r]);
     for (const r of earlier) {
       if (this._size() <= target) break;
       const idx = this.turns.map((t, i) => (t.req === r ? i : -1)).filter((i) => i >= 0);
@@ -228,8 +243,9 @@ export class Agent {
 
   // Session state. Assistant turns carry the ids they were sampled as when the model knows them.
   toJSON() {
+    const tag = this._tag();
     return {
-      v: 1, req: this.req, reqs: this.reqs,
+      v: 1, req: this.req, reqs: this.reqs, ...(tag ? { tok: tag } : {}),
       turns: this.turns.map((t) => {
         const o = { ...t };
         if (t.role === "assistant") { const ids = this.idsFor?.(t.text); if (ids) o.ids = Array.from(ids); }
@@ -237,12 +253,14 @@ export class Agent {
       }),
     };
   }
+  _tag() { try { return this.idsTag?.() ?? null; } catch { return null; } }
   static from(json, opts) {
     const a = new Agent(opts);
     if (json?.v !== 1) return a;
     a.req = json.req || 0; a.reqs = json.reqs || {};
+    const same = (json.tok ?? null) === a._tag();   // ids from another tokenizer (or an untagged save) are noise
     a.turns = (json.turns || []).map(({ ids, ...t }) => {
-      if (ids && t.role === "assistant") a.adopt?.(t.text, ids);
+      if (same && ids && t.role === "assistant") a.adopt?.(t.text, ids);
       return t;
     });
     return a;

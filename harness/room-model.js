@@ -146,6 +146,8 @@ export function roomModel(api, {
       return n;
     },
     idsFor: (text) => own.get(text),       // for Agent.toJSON
+    // which tokenizer those ids belong to: the vocabulary size and how a fixed probe encodes
+    idsTag: () => { const T = tok(); return `${vocabSize}:` + T.encode("Tabby ids · fn(x) => 1024 ✓").join(","); },
     adopt: (text, ids) => { tok(); own.set(text, ids); },   // Agent.from
     stats,
   };

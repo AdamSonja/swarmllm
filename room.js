@@ -1766,6 +1766,8 @@ const MAXNEW_PARAM = Math.max(0, parseInt(new URLSearchParams(location.search).g
 //      tPre, tDecode, preFrames, stats }
 async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, sample = pickSampler(ai.settings.sampling), signal, onStatus = () => {} } = {}) {
   if (!ai.engine) throw new Error("the model is not loaded");
+  // a device in the chain is gone: its frames would go nowhere and wait out the lap timeouts
+  if (ai.degraded) throw new Error("a device left: re-deal the layers first");
   const aborted = () => ai.abort || !!signal?.aborted;
   const eos = (t) => stop.has(t);
   const tokens = [];
@@ -2567,5 +2569,6 @@ $("read-aloud").addEventListener("click", () => {
 $("ai-prompt").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !myMeta?.phone) { e.preventDefault(); aiSubmit(); }
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("ai-send").classList.contains("stop")) aiStop(); });
+// (Code mode handles its own Esc: one in a field there backs out of the field, not the run)
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented && !e.target?.closest?.("#code-pane") && $("ai-send").classList.contains("stop")) aiStop(); });
 mascot("Hi! I'm Swarmy. Create a room, or type a friend's code to join one.");

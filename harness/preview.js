@@ -67,6 +67,17 @@ export class PreviewServer {
   }
   // re-read every file (edits made outside this tab, e.g. on disk in a picked folder)
   refresh(port) { return this._resnap(+port, true); }
+  // re-snapshot now instead of after the debounce (a tool about to say "reloaded"):
+  // -> { rev } the port now serves, or { error } when the snapshot failed, or null (not served)
+  async flush(port) {
+    const st = this.served.get(+port);
+    if (!st) return null;
+    clearTimeout(st.timer);
+    st.err = null;
+    const snap = await this._resnap(+port, false);
+    if (st.err) return { error: st.err };
+    return { rev: (snap || this.served.get(+port)?.snap)?.rev || 0 };
+  }
   close() { this.unwatch?.(); for (const p of [...this.served.keys()]) this.stop(p); }
 
   _snap(port, dir, entry, rev, files) {
@@ -110,7 +121,7 @@ export class PreviewServer {
       const old = st.snap;
       let files;
       try { files = await this._read(old.dir, all ? null : old.files, all ? null : dirty); }
-      catch (e) { this.pushLog(port, { level: "error", text: `preview not updated: ${e.message}`, src: "(server)" }); return null; }
+      catch (e) { st.err = e.message; this.pushLog(port, { level: "error", text: `preview not updated: ${e.message}`, src: "(server)" }); return null; }
       const changed = [];
       for (const [p, f] of files) if (old.files.get(p)?.hash !== f.hash) changed.push(p);
       for (const p of old.files.keys()) if (!files.has(p)) changed.push(p);

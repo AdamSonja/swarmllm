@@ -56,13 +56,16 @@ export class PreviewPublisher {
 }
 
 export class PreviewSubscriber {
-  constructor({ send, hostId = null, maxBytes = 8 << 20, maxFile = 2 << 20, maxFiles = 400 } = {}) {
+  // maxPorts / maxHeld bound what a host can make a peer hold in total (every port's snapshot and
+  // pending rev, blobs and half-received parts): the per-port limits alone allow ~64k ports.
+  constructor({ send, hostId = null, maxBytes = 8 << 20, maxFile = 2 << 20, maxFiles = 400, maxPorts = 4, maxHeld = 2 * maxBytes } = {}) {
     this.sendHost = send; this.hostId = typeof hostId === "function" ? hostId : () => hostId;
-    this.limits = { maxBytes, maxFile, maxFiles };
+    this.limits = { maxBytes, maxFile, maxFiles, maxPorts, maxHeld };
+    this.retries = new Map();  // hash -> times re-asked after a bad copy
     this.snaps = new Map();    // port -> Snapshot (last complete rev)
     this.wants = new Map();    // port -> the manifest being completed
     this.blobs = new Map();    // hash -> Uint8Array
-    this.parts = new Map();    // hash -> { n, got, chunks: [], size }
+    this.parts = new Map();    // hash -> { n, got, recv, chunks: [], size }
     this.fns = new Set();
   }
   _from(from) { const h = this.hostId(); return !h || from === h; }
@@ -75,6 +78,8 @@ export class PreviewSubscriber {
     if (!this._from(from) || !d) return;
     const port = Number(d.port), L = this.limits;
     if (!Number.isInteger(port) || port < 1024 || port > 65535 || !Array.isArray(d.manifest) || d.manifest.length > L.maxFiles) return;
+    if (!Number.isInteger(d.rev) || d.rev < 1) return;
+    if (!this.snaps.has(port) && !this.wants.has(port) && new Set([...this.snaps.keys(), ...this.wants.keys()]).size >= L.maxPorts) return;
     let total = 0;
     const files = [];
     for (const row of d.manifest) {
@@ -86,10 +91,11 @@ export class PreviewSubscriber {
     }
     if (total > L.maxBytes || !okPath(d.entry || "index.html")) return;
     if ((this.snaps.get(port)?.rev || 0) >= d.rev) return;   // stale or repeated
-    const want = { port, dir: typeof d.dir === "string" ? d.dir.slice(0, 300) : "", entry: d.entry || "index.html", rev: Number(d.rev) || 0, files };
+    const want = { port, dir: typeof d.dir === "string" ? d.dir.slice(0, 300) : "", entry: d.entry || "index.html", rev: d.rev, files };
     this.wants.set(port, want);
+    this._gc();   // parts of a rev this one replaces are not coming any more
     const missing = [...new Set(files.filter((f) => !this.blobs.has(f.h)).map((f) => f.h))];
-    for (const h of missing) if (!this.parts.has(h)) this.parts.set(h, { n: 0, got: 0, chunks: [], size: files.find((f) => f.h === h).size });
+    for (const h of missing) if (!this.parts.has(h)) this.parts.set(h, { n: 0, got: 0, recv: 0, chunks: [], size: files.find((f) => f.h === h).size });
     if (missing.length) this.sendHost({ t: "ai-pv-want", port, rev: want.rev, hs: missing });
     else this._complete(port);
   }
@@ -98,15 +104,19 @@ export class PreviewSubscriber {
     const P = this.parts.get(d.h), n = d.n >>> 0, i = d.i >>> 0;
     const b = d.b instanceof ArrayBuffer ? new Uint8Array(d.b) : ArrayBuffer.isView(d.b) ? new Uint8Array(d.b.buffer, d.b.byteOffset, d.b.byteLength) : null;
     if (!b || !n || i >= n || n > Math.ceil(this.limits.maxFile / CHUNK) + 1 || (P.n && P.n !== n) || P.chunks[i]) return;
-    P.n = n; P.chunks[i] = b; P.got++;
+    // sizes are checked per chunk, before anything is kept: a chunk over CHUNK, a file growing past
+    // its manifest size, or everything held going past maxHeld is refused
+    if (b.length > CHUNK || P.recv + b.length > P.size) { this._bad(d.h, "a file came bigger than its manifest said"); return; }
+    if (this._held() + b.length > this.limits.maxHeld) { this.parts.delete(d.h); console.warn("preview: over the memory limit; a file was dropped"); return; }
+    P.n = n; P.chunks[i] = b.slice(); P.got++; P.recv += b.length;
     if (P.got < n) return;
     this.parts.delete(d.h);
-    const len = P.chunks.reduce((k, c) => k + c.length, 0);
-    if (len !== P.size) return;
-    const u8 = new Uint8Array(len);
+    if (P.recv !== P.size) { this._bad(d.h, "a file came smaller than its manifest said"); return; }
+    const u8 = new Uint8Array(P.recv);
     let o = 0;
     for (const c of P.chunks) { u8.set(c, o); o += c.length; }
-    if ((await hashBytes(u8)) !== d.h) { console.warn("preview: a file did not match its hash; dropped"); return; }
+    if ((await hashBytes(u8)) !== d.h) { this._bad(d.h, "a file did not match its hash"); return; }
+    this.retries.delete(d.h);
     this.blobs.set(d.h, u8);
     for (const port of [...this.wants.keys()]) this._complete(port);
   }
@@ -132,11 +142,31 @@ export class PreviewSubscriber {
     this._gc();
     this._emit({ port, rev: w.rev, changed: changed.sort() });
   }
-  // keep only blobs some snapshot or pending manifest still uses
+  _held() {
+    let n = 0;
+    for (const u8 of this.blobs.values()) n += u8.length;
+    for (const P of this.parts.values()) n += P.recv;
+    return n;
+  }
+  // a bad copy (lost or corrupted on the way): ask for it again, twice at most, else the pending
+  // rev would never complete and the peer would stay on the old one
+  _bad(h, why) {
+    const P = this.parts.get(h);
+    this.parts.delete(h);
+    const k = (this.retries.get(h) || 0) + 1;
+    const w = [...this.wants.values()].find((x) => x.files.some((f) => f.h === h));
+    if (k > 2 || !w) { console.warn(`preview: ${why}; dropped`); return; }
+    this.retries.set(h, k);
+    this.parts.set(h, { n: 0, got: 0, recv: 0, chunks: [], size: P?.size ?? w.files.find((f) => f.h === h).size });
+    this.sendHost({ t: "ai-pv-want", port: w.port, rev: w.rev, hs: [h] });
+  }
+  // keep only blobs and parts some snapshot or pending manifest still uses
   _gc() {
-    const live = new Set();
+    const live = new Set(), wanted = new Set();
     for (const s of this.snaps.values()) for (const f of s.files.values()) live.add(f.hash);
-    for (const w of this.wants.values()) for (const f of w.files) live.add(f.h);
+    for (const w of this.wants.values()) for (const f of w.files) { live.add(f.h); wanted.add(f.h); }
     for (const h of this.blobs.keys()) if (!live.has(h)) this.blobs.delete(h);
+    for (const h of this.parts.keys()) if (!wanted.has(h)) this.parts.delete(h);
+    for (const h of this.retries.keys()) if (!wanted.has(h)) this.retries.delete(h);
   }
 }

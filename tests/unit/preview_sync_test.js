@@ -80,3 +80,31 @@ Deno.test("preview sync: want for a hash outside the manifest is ignored", async
   eq(sent.map((m) => m.t), ["ai-pv"]);
   server.close();
 });
+
+Deno.test("preview sync: a copy corrupted once on the way is asked for again", async () => {
+  let bad = 1;
+  const L = link({ tamper: (m) => { if (m.t === "ai-pv-blob" && m.n === 1 && bad > 0) { bad--; new Uint8Array(m.b)[0] ^= 1; } } });
+  const s1 = await L.server.serve({ port: 5173 });
+  ok(await settle(L.sub, 5173, s1.rev), "completes after one re-ask: " + L.log.join(" "));
+  ok(L.log.includes("ai-pv-want:1"), L.log.join(" "));
+  L.server.close();
+});
+
+Deno.test("preview sync: a host cannot make a peer hold more than the limits", () => {
+  const sent = [];
+  const sub = new PreviewSubscriber({ hostId: "H", send: (m) => sent.push(m), maxPorts: 2 });
+  const man = (port, h, size = 100) => ({ t: "ai-pv", port, rev: 1, entry: "index.html", manifest: [["index.html", "text/html", h, size]] });
+  sub.onManifest("H", man(2000, "a".repeat(20)));
+  sub.onManifest("H", man(2001, "b".repeat(20)));
+  sub.onManifest("H", man(2002, "c".repeat(20)));
+  eq(sent.map((m) => m.port), [2000, 2001], "a third port is refused");
+  sub.onManifest("H", { ...man(2000, "d".repeat(20)), rev: "2" });
+  eq(sent.length, 2, "a rev that is not an integer is refused");
+  // a chunk bigger than the file it claims to be is dropped before it is kept
+  sub.onBlob("H", { h: "a".repeat(20), i: 0, n: 1, b: new ArrayBuffer(4096) });
+  eq(sub._held(), 0);
+  eq(sent.length, 3, "and asked for again");
+  // a replaced rev's parts are let go
+  sub.onManifest("H", { ...man(2000, "e".repeat(20)), rev: 2 });
+  ok(!sub.parts.has("a".repeat(20)) && sub.parts.has("e".repeat(20)), [...sub.parts.keys()].join(","));
+});

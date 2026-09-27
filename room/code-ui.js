@@ -12,16 +12,31 @@ const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) 
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const CON_MAX = 300;   // console rows kept per port
 
-// rows: lineDiff output as [[op, text, skip?]] (the wire form)
-function diffBlock(d) {
+// rows: lineDiff output as [[op, text, skip?]] (the wire form). Too long to diff: head / tail
+// (the first and last lines of the proposed file) and, on the host, full for "view full file".
+function diffBlock(d, onFull) {
   const box = h("div", "cm-diff" + (d.isNew ? " new" : ""));
   const head = h("div", "dh");
   head.append(h("b", null, d.path));
   if (d.isNew) head.append(h("span", null, `new file · ${plural(d.lines, "line")}`));
   else { head.append(h("span", "add", `+${d.add}`), h("span", "del", `-${d.del}`)); }
+  if (d.full != null && onFull) {
+    const b = h("button", "full", "view full file"); b.type = "button";
+    b.onclick = () => onFull(d.path, d.full);
+    head.append(b);
+  }
   const rows = h("div", "rows");   // as wide as the longest line, so every row's tint spans it
+  if (d.risky) box.append(h("div", "risk", "this file can run commands on your machine (a script, a hook, an npm script): read it before approving"));
   box.append(head, rows);
-  if (!d.rows) { rows.append(h("div", "r r-skip", d.isNew ? `(${plural(d.lines, "line")}, too long to show)` : "(too many changes to show)")); return box; }
+  if (!d.rows) {
+    const all = [...(d.head || [])], tail = d.tail || [];
+    for (const t of all) rows.append(h("div", "r r-add", t || " "));
+    const hidden = d.lines - all.length - tail.length;
+    if (hidden > 0 || !all.length) rows.append(h("div", "r r-skip", all.length ? `… ${plural(hidden, "more line")} (view full file to read them)` : d.isNew ? `(${plural(d.lines, "line")}, too long to show)` : "(too many changes to show)"));
+    for (const t of tail) rows.append(h("div", "r r-add", t || " "));
+    return box;
+  }
+  if (!d.isNew && !d.add && !d.del) { rows.append(h("div", "r r-skip", "(no changes)")); return box; }
   for (const [op, text, skip] of d.rows) {
     if (skip) { rows.append(h("div", "r r-skip", `… ${plural(skip, "unchanged line")}`)); continue; }
     rows.append(h("div", "r" + (op === "+" ? " r-add" : op === "-" ? " r-del" : ""), text || " "));
@@ -32,7 +47,10 @@ function diffBlock(d) {
 
 export function codeUI({ onMode = () => {} } = {}) {
   const pane = $("chatpane"), log = $("code-log");
-  let host = false, mode = "chat", empty = null;
+  let host = false, mode = "chat", empty = null, waiting = 0;
+  const title0 = document.title;
+  // short announcements for screen readers (the streamed log itself is not live)
+  const say = (text) => { const s = $("code-status"); if (s) s.textContent = text; };
 
   // ---------------- mode switch
   function show(m) {
@@ -40,10 +58,19 @@ export function codeUI({ onMode = () => {} } = {}) {
     pane.classList.toggle("code-mode", m === "code");
     $("mode-chat").setAttribute("aria-selected", String(m === "chat"));
     $("mode-code").setAttribute("aria-selected", String(m === "code"));
-    if (m === "code") $("mode-code").classList.remove("fresh");
+    if (m === "code" && !waiting) $("mode-code").classList.remove("fresh");
     onMode(m);
   }
   $("mode-chat").addEventListener("click", () => show("chat"));
+  // Left / Right move between the tabs of a tablist
+  const arrows = (list) => list.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const tabs = [...list.querySelectorAll('[role="tab"]')].filter((t) => !t.hidden), i = tabs.indexOf(document.activeElement);
+    if (i < 0) return;
+    const t = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+    e.preventDefault(); t.focus(); t.click();
+  });
+  arrows($("mode-bar")); arrows($("code-out-tabs"));
   const poke = () => { $("mode-bar").hidden = false; if (mode !== "code") $("mode-code").classList.add("fresh"); };
 
   // ---------------- timeline
@@ -57,11 +84,12 @@ export function codeUI({ onMode = () => {} } = {}) {
     empty.innerHTML = text;
     log.append(empty);
   }
-  function clear() { log.replaceChildren(); empty = null; }
+  function clear() { log.replaceChildren(); empty = null; viewFile(null); }
 
   function apply(d) {
     switch (d.t) {
       case "ai-code-start": {
+        say("the agent started");
         const u = h("div", "cm-user");
         u.append(h("div", "who", d.name || "host"), h("div", "bubble", d.text));
         add(u);
@@ -70,7 +98,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       case "ai-code-tok": {
         const k = key("t", d.mid, d.step);
         let el = find(k);
-        if (!el) { el = add(h("div", "cm-text")); el.dataset.k = k; el.dataset.raw = ""; }
+        if (!el) { el = add(h("div", "cm-text")); el.dataset.k = k; el.dataset.raw = ""; el.setAttribute("aria-busy", "true"); }
         el.dataset.raw += d.text;
         const stick = near();
         el.innerHTML = mdChat(el.dataset.raw.replace(/^\s+/, ""));
@@ -80,7 +108,13 @@ export function codeUI({ onMode = () => {} } = {}) {
       }
       case "ai-code-tool": toolCard(d); break;
       case "ai-code-note": add(h("div", "cm-note" + (d.err ? " err" : ""), d.text)); break;
-      case "ai-code-done": add(h("div", "cm-stats", d.stats || `${plural(d.steps || 0, "step")} · ${d.reason || "done"}`)); break;
+      case "ai-code-done": {
+        for (const t of log.querySelectorAll('.cm-text[aria-busy="true"]')) t.removeAttribute("aria-busy");
+        const text = d.stats || `${plural(d.steps || 0, "step")} · ${d.reason || "done"}`;
+        add(h("div", "cm-stats", text));
+        say("the agent finished: " + text);
+        break;
+      }
     }
   }
 
@@ -88,6 +122,8 @@ export function codeUI({ onMode = () => {} } = {}) {
     const k = key("c", d.mid, d.i);
     let el = find(k);
     if (!el) {
+      // the model's text before a tool call is complete once the call starts
+      for (const t of log.querySelectorAll('.cm-text[aria-busy="true"]')) t.removeAttribute("aria-busy");
       el = add(h("div", "cm-tool"));
       el.dataset.k = k;
       el.dataset.name = d.name || "?";
@@ -105,6 +141,9 @@ export function codeUI({ onMode = () => {} } = {}) {
     if (d.state) {
       chip.className = "chip " + d.state.replace(/[^a-z]/g, "");
       chip.textContent = d.state === "pending" ? "needs approval" : d.state;
+      if (d.state === "running") say(`running ${el.dataset.name}`);
+      else if (d.state === "pending") say(`${el.dataset.name} needs approval`);
+      else if (d.state === "done" || d.state === "error") say(`${el.dataset.name} ${d.state}`);
     }
     if (d.ms != null) sum.querySelector(".ms").textContent = d.ms < 1000 ? `${d.ms} ms` : `${(d.ms / 1000).toFixed(1)} s`;
     if (d.result != null) {
@@ -112,7 +151,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       if (!pre) { pre = h("pre", "res"); det.append(pre); }
       pre.textContent = d.result;
     }
-    if (d.diff && !el.querySelector(".cm-diff")) el.append(diffBlock(d.diff));
+    if (d.diff && !el.querySelector(".cm-diff")) el.append(diffBlock(d.diff, host ? viewFull : null));
     // peers (and the host's own record) see the pending state; the host adds buttons with ask()
     let ap = el.querySelector(".cm-approve");
     if (d.state === "pending" && !host && !ap) { ap = h("div", "cm-approve"); ap.append(h("span", "wait", "waiting for the host's approval")); el.append(ap); }
@@ -122,19 +161,30 @@ export function codeUI({ onMode = () => {} } = {}) {
     return el;
   }
 
-  // host only: Approve / Reject… / Allow edits for this task, on the card of call i
-  function ask(mid, i) {
+  // host only: Approve / Reject… / Allow edits for this task, on the card of call i. While it
+  // waits, the Code tab carries a dot and the page title says so (the host may be in Chat).
+  function waitMark(on) {
+    waiting = Math.max(0, waiting + (on ? 1 : -1));
+    if (waiting) { $("mode-code").classList.add("fresh"); document.title = "(needs approval) " + title0; }
+    else { if (mode === "code") $("mode-code").classList.remove("fresh"); document.title = title0; }
+  }
+  function ask(mid, i, { risky = false } = {}) {
     const el = find(key("c", mid, i));
-    if (!el) return Promise.resolve(true);
+    if (!el) return Promise.resolve({ ok: false, reason: "approval card missing" });
     el.querySelector(".cm-approve")?.remove();
     const ap = h("div", "cm-approve");
     const yes = h("button", "ok", "Approve"), no = h("button", null, "Reject…"), all = h("button", null, "Allow edits for this task");
     yes.type = no.type = all.type = "button";
-    ap.append(yes, no, all);
+    ap.append(yes, no);
+    if (!risky) ap.append(all);   // a risky file asks every time anyway
     el.append(ap);
     el.scrollIntoView({ block: "nearest" });
+    if (mode === "code") yes.focus({ preventScroll: true });
+    waitMark(true);
+    let settled = false;
     return new Promise((res) => {
-      const done = (v) => { ap.remove(); res(v); };
+      const done = (v) => { ap.remove(); if (!settled) { settled = true; waitMark(false); } res(v); };
+      ap.cancel = () => { if (!settled) { settled = true; waitMark(false); } ap.remove(); };
       yes.onclick = () => done(true);
       all.onclick = () => done("all");
       no.onclick = () => {
@@ -146,11 +196,15 @@ export function codeUI({ onMode = () => {} } = {}) {
         why.focus();
         const go = () => done({ ok: false, reason: why.value.trim() });
         send.onclick = go;
-        why.onkeydown = (e) => { if (e.key === "Enter") go(); };
-        back.onclick = () => { ap.remove(); ask(mid, i).then(res); };
+        const cancel = () => { if (!settled) { settled = true; waitMark(false); } ap.remove(); ask(mid, i, { risky }).then(res); };
+        why.onkeydown = (e) => { if (e.key === "Enter") go(); else if (e.key === "Escape") { e.preventDefault(); cancel(); } };
+        back.onclick = cancel;
       };
     });
   }
+
+  // the run was stopped while the card waited: take the buttons away
+  function cancelAsk(mid, i) { find(key("c", mid, i))?.querySelector(".cm-approve")?.cancel?.(); }
 
   // ---------------- files
   let fileClick = () => {};
@@ -167,7 +221,8 @@ export function codeUI({ onMode = () => {} } = {}) {
         prev = parts.slice(0, i + 1);
       }
       prev = parts.slice(0, -1);
-      const f = h("div", "f", parts[parts.length - 1]);
+      const f = h("button", "f", parts[parts.length - 1]);
+      f.type = "button";
       f.style.paddingLeft = 12 + (parts.length - 1) * 14 + "px";
       f.dataset.path = p;
       f.onclick = () => { t.querySelectorAll(".f.on").forEach((x) => x.classList.remove("on")); f.classList.add("on"); fileClick(p); };
@@ -175,16 +230,28 @@ export function codeUI({ onMode = () => {} } = {}) {
     }
     if (paths.length > 500) t.append(h("div", "none", `(+${paths.length - 500} more)`));
   }
-  function viewFile(text) {
+  function viewFile(text, label = null) {
     const v = $("code-view");
     v.replaceChildren();
-    if (text == null) return;
+    if (text == null) { v.append(h("span", "hint", "select a file to view it")); return; }
+    if (label) v.append(h("span", "hint", label + "\n"));
     const lines = text.split("\n");
     if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
     lines.slice(0, 5000).forEach((l, i) => { v.append(h("span", "ln", String(i + 1)), l + "\n"); });
   }
+  // a long proposed file, from its approval card (host only): shown in the Files tab
+  function viewFull(path, text) {
+    outTab("files");
+    $("code-tree").querySelectorAll(".f.on").forEach((x) => x.classList.remove("on"));
+    viewFile(text, `proposed ${path} (not written yet)`);
+    $("code-view").scrollIntoView({ block: "nearest" });
+  }
   function outTab(name) {
-    for (const b of $("code-out-tabs").children) b.classList.toggle("on", b.dataset.tab === name);
+    for (const b of $("code-out-tabs").children) {
+      b.classList.toggle("on", b.dataset.tab === name);
+      b.setAttribute("aria-selected", String(b.dataset.tab === name));
+      b.tabIndex = b.dataset.tab === name ? 0 : -1;
+    }
     $("pv-panel").hidden = name !== "preview";
     $("files-panel").hidden = name !== "files";
   }
@@ -192,29 +259,32 @@ export function codeUI({ onMode = () => {} } = {}) {
 
   // ---------------- preview: tabs per port, one mounted view each, the console strip
   const ports = new Map();   // port -> { tab, view (div), mount, rows: [], rev, path, state }
-  let active = null, onClose = null, onReload = () => {};
+  let active = null, onClose = null, onReload = () => {}, onOpen = () => {};
   function portTab(port, { mount, closable }) {
     let P = ports.get(port);
     if (P) return P;
-    const tab = h("button", "pv-tab"); tab.type = "button";
-    tab.append(h("span", null, ":" + port));
-    if (closable) { const x = h("span", "x", "×"); x.title = `stop serving :${port}`; x.onclick = (e) => { e.stopPropagation(); onClose?.(port); }; tab.append(x); }
+    const wrap = h("span", "pv-tabw");
+    const tab = h("button", "pv-tab", ":" + port); tab.type = "button";
     tab.onclick = () => activate(port);
-    $("pv-tabs").append(tab);
+    wrap.append(tab);
+    // its own button, so the keyboard reaches it and a click on the tab never stops the port
+    if (closable) { const x = h("button", "pv-x", "×"); x.type = "button"; x.title = `stop serving :${port}`; x.setAttribute("aria-label", x.title); x.onclick = () => onClose?.(port); wrap.append(x); }
+    $("pv-tabs").append(wrap);
     const view = h("div", "pv-view"); view.hidden = true;
     $("pv-frame-wrap").append(view);
-    P = { tab, view, rows: [], rev: 0, path: "", state: "", mount: null };
+    P = { tab, wrap, view, rows: [], rev: 0, path: "", state: "", mount: null };
     ports.set(port, P);
     P.mount = mount(view, P);
     $("pv-empty").hidden = true;
+    $("pv-console").hidden = false;
     return P;
   }
   function dropPort(port) {
     const P = ports.get(port);
     if (!P) return;
-    P.mount?.destroy(); P.tab.remove(); P.view.remove();
+    P.mount?.destroy(); P.wrap.remove(); P.view.remove();
     ports.delete(port);
-    if (active === port) { active = null; const next = ports.keys().next().value; if (next != null) activate(next); else { $("pv-empty").hidden = false; bar(); renderConsole(); } }
+    if (active === port) { active = null; const next = ports.keys().next().value; if (next != null) activate(next); else { $("pv-empty").hidden = false; $("pv-console").hidden = true; bar(); renderConsole(); } }
   }
   function activate(port) {
     active = port;
@@ -222,9 +292,12 @@ export function codeUI({ onMode = () => {} } = {}) {
     bar(); renderConsole();
   }
   function bar() {
-    const P = ports.get(active);
-    $("pv-addr").textContent = P ? `:${active}/${P.path || "index.html"}` : "no port served";
-    $("pv-state").textContent = P ? (P.state === "ready" ? `rev ${P.rev}` : P.state === "loading" ? "loading…" : P.state === "waiting" ? "not running" : P.state === "stopped" ? "stopped" : "") : "";
+    const P = ports.get(active), a = $("pv-addr");
+    a.replaceChildren();
+    if (P) a.append(h("span", "host", "localhost"), `:${active}/${P.path || "index.html"}`);
+    else a.textContent = "no port served";
+    $("pv-open").hidden = !P || !P.rev;
+    $("pv-state").textContent = P ? (P.state === "ready" ? `rev ${P.rev}` : P.state === "loading" ? "loading…" : P.state === "waiting" ? "click to run" : P.state === "stopped" ? "stopped" : P.state === "hung" ? "hung" : "") : "";
   }
   function status(port, s) {
     const P = ports.get(port);
@@ -260,6 +333,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       if (warns) c.append(h("b", "w", plural(warns, "warning")), " · ");
       c.append(plural(logs, "log"));
       c.dataset.errors = String(errs);
+      $("pv-to-agent").hidden = !host || !errs;   // only when there is something to fix
       for (const r of P?.rows || []) {
         if (r.sep) { rows.append(h("div", "pv-row rev", r.sep)); continue; }
         const row = h("div", `pv-row ${r.level}${r.old ? " old" : ""}`);
@@ -279,6 +353,7 @@ export function codeUI({ onMode = () => {} } = {}) {
   $("pv-con-toggle").onclick = () => conOpen($("pv-console").classList.contains("closed"));
   $("pv-clear").onclick = () => { const P = ports.get(active); if (P) { P.rows = []; renderConsole(); } };
   $("pv-reload").onclick = () => { if (active != null) onReload(active); };
+  $("pv-open").onclick = () => { if (active != null) onOpen(active, ports.get(active)?.path || null); };
 
   // ---------------- host vs peer chrome
   function setHost(v) {
@@ -287,17 +362,19 @@ export function codeUI({ onMode = () => {} } = {}) {
     $("code-row").hidden = !host;
     $("code-bar").hidden = !host;
     $("code-driver").hidden = host;
-    $("pv-to-agent").hidden = !host;
+    $("pv-to-agent").hidden = !host || !(+$("pv-counts").dataset.errors > 0);
   }
   setHost(false);
+  viewFile(null);
 
   return {
-    show, poke, apply, ask, clear, placeholder, setHost, tree, viewFile, outTab,
+    show, poke, apply, ask, cancelAsk, clear, placeholder, setHost, tree, viewFile, outTab,
     get mode() { return mode; },
     get activePort() { return active; },
     onFile(fn) { fileClick = fn; },
     onClosePort(fn) { onClose = fn; },
     onReload(fn) { onReload = fn; },
+    onOpen(fn) { onOpen = fn; },
     portTab, dropPort, activate, status, logRow, ports,
     ctx(text, warn) { $("code-ctx").textContent = text || ""; $("code-ctx").classList.toggle("warn", !!warn); },
     running(on) { $("code-send").hidden = !!on; $("code-stop").hidden = !on; },

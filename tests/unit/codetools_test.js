@@ -104,3 +104,54 @@ Deno.test("prompt size: the 8 code tools in the xml block plus the Code system p
   ok(p.length <= 4200, `system prompt + tool block is ${p.length} chars`);
   s.close();
 });
+
+Deno.test("read_file: a binary file is named, not dumped", async () => {
+  const ws = new MemoryWorkspace({ "a.txt": "hi\n" });
+  await ws.writeBytes("img.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 13, 0xff, 0xfe]));
+  eq(await T(ws).read_file.run({ path: "img.png" }), "(img.png is a binary file, 10 B)");
+});
+
+Deno.test("write_file / edit_file: the card's path is the written path; long paths refused", async () => {
+  const ws = new MemoryWorkspace({ "a.js": "x\n" }), t = T(ws);
+  eq((await t.write_file.preview({ path: ".\\\\sub//./b.js", content: "y" })).path, "sub/b.js");
+  eq(await t.write_file.run({ path: "./sub//b.js", content: "y" }), "wrote sub/b.js (1 lines, 1 B)");
+  const long = "./".repeat(140) + "a/".repeat(110) + "c.js";
+  ok((await t.write_file.preview({ path: long, content: "z" })).error, "preview reports it");
+  ok(/path is \d+ characters \(max 200\)/.test(await t.write_file.run({ path: long, content: "z" }).catch((e) => e.message)));
+});
+
+// a FileSystemDirectoryHandle in memory, enough for DirWorkspace
+function fakeDir() {
+  const dir = (m = new Map()) => ({
+    kind: "directory", m,
+    async getDirectoryHandle(n, { create } = {}) { let h = m.get(n); if (!h && create) m.set(n, h = dir()); if (!h || h.kind !== "directory") throw new DOMException(n, "NotFoundError"); return h; },
+    async getFileHandle(n, { create } = {}) { let h = m.get(n); if (!h && create) m.set(n, h = file()); if (!h || h.kind !== "file") throw new DOMException(n, "NotFoundError"); return h; },
+    async removeEntry(n) { if (!m.delete(n)) throw new DOMException(n, "NotFoundError"); },
+    async *entries() { yield* m.entries(); },
+  });
+  const file = () => { let data = new Uint8Array(); return { kind: "file",
+    async getFile() { return { text: async () => new TextDecoder().decode(data), arrayBuffer: async () => data.slice().buffer }; },
+    async createWritable() { let next; return { write: async (v) => { next = typeof v === "string" ? new TextEncoder().encode(v) : new Uint8Array(v); }, close: async () => { data = next; } }; } }; };
+  return dir();
+}
+
+Deno.test("DirWorkspace private (a folder on disk): hidden and secret files do not exist for the agent", async () => {
+  const { DirWorkspace } = await import("../../harness/workspace.js");
+  const root = fakeDir(), open = new DirWorkspace(root);
+  for (const [p, v] of [[".env", "OPENAI_API_KEY=sk-1"], [".git/config", "[core]"], ["keys/id_rsa", "k"], ["src/a.js", "let a;"], ["server.pem", "p"]]) await open.write(p, v);
+  const ws = watch(new DirWorkspace(root, { private: true })), t = T(ws);
+  eq(await ws.walk(), ["src/a.js"]);
+  eq((await ws.list("")).map((e) => e.name), ["keys", "src"]);
+  eq(await ws.exists(".env"), false);
+  ok(/off limits/.test(await t.read_file.run({ path: ".env" }).catch((e) => e.message)));
+  const pv = await t.write_file.preview({ path: ".git/config", content: "[core]\n\tfsmonitor = x" });
+  ok(/off limits/.test(pv.error), "no approval card for it: " + JSON.stringify(pv));
+  ok(/off limits/.test(await t.write_file.run({ path: ".git/hooks/pre-commit", content: "x" }).catch((e) => e.message)));
+  eq(await t.search.run({ pattern: "sk-|core" }), "no matches");
+  eq(await open.read(".git/config"), "[core]", "untouched");
+});
+
+Deno.test("search: long lines are tested only up to MAX_LINE characters", async () => {
+  const ws = new MemoryWorkspace({ "a.js": "x".repeat(5000) + "NEEDLE\nNEEDLE here\n" });
+  eq(await T(ws).search.run({ pattern: "NEEDLE" }), "a.js:2: NEEDLE here");
+});

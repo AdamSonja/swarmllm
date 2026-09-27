@@ -6,9 +6,12 @@
 // to recover. Tools that change files are marked `mutates` so the agent can ask the user first;
 // preview() gives the approval card its before/after without touching the file.
 //
-// codingTools(ws, { server }): with a PreviewServer, a write under a served folder says the
-// preview reloads, so the model knows to check preview_logs rather than serve again.
+// codingTools(ws, { server }): with a PreviewServer, a write under a served folder waits for the
+// preview's new snapshot and says its rev (or why it did not update), so the model knows to check
+// preview_logs rather than serve again.
+import { normPath } from "./workspace.js";
 
+export const MAX_PATH = 200, SEARCH_MS = 2000;
 export const MAX_LINES = 200, MAX_CHARS = 8000, MAX_LINE = 1000, MAX_HITS = 30, HIT_CHARS = 160, MAX_ENTRIES = 200;
 
 const kb = (n) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
@@ -26,15 +29,66 @@ function applyEdit(text, path, o, n) {
   return { after: text.slice(0, at) + n + text.slice(at + o.length), line: text.slice(0, at).split("\n").length };
 }
 
+// a path the approval card shows exactly as it is written (normalised, not too long to read)
+function cleanPath(p) {
+  const n = normPath(p);
+  if (!n) throw new Error("path is empty");
+  if (n.length > MAX_PATH) throw new Error(`path is ${n.length} characters (max ${MAX_PATH})`);
+  return n;
+}
+const isBinary = (u8, text) => u8.includes(0) || text.includes("\uFFFD");
+
+// The search itself; runs in a Worker in a page (below) so a pathological pattern cannot freeze the
+// room's tab. Serialized with toString(): must not close over anything.
+export function grepFiles(files, pattern, flags, { maxLine, maxHits, hitChars }) {
+  const re = new RegExp(pattern, flags), hits = [];
+  let total = 0;
+  for (const [f, text] of files) {
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i].length > maxLine ? lines[i].slice(0, maxLine) : lines[i];
+      if (!re.test(l)) continue;
+      if (++total <= maxHits) { const t = lines[i].trim(); hits.push(`${f}:${i + 1}: ${t.length > hitChars ? t.slice(0, hitChars) + `…(${t.length - hitChars} chars cut)` : t}`); }
+    }
+    if (total > 2000) break;   // enough to say "(+N more)"; a runaway pattern stops here
+  }
+  return { hits, total };
+}
+// In a page: a Worker, terminated after `ms` (a catastrophic backtracking pattern otherwise holds
+// the main thread, and with it the room, for minutes). Elsewhere (Deno tests): inline.
+function grep(files, pattern, flags, ms) {
+  const opts = { maxLine: MAX_LINE, maxHits: MAX_HITS, hitChars: HIT_CHARS };
+  if (typeof document === "undefined" || typeof Worker === "undefined") return Promise.resolve(grepFiles(files, pattern, flags, opts));
+  const src = `const grepFiles = ${grepFiles.toString()};\nonmessage = (e) => { try { postMessage(grepFiles(e.data.files, e.data.pattern, e.data.flags, e.data.opts)); } catch (err) { postMessage({ error: String(err && err.message || err) }); } };`;
+  const url = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+  const w = new Worker(url);
+  return new Promise((res) => {
+    const fin = (v) => { clearTimeout(t); w.terminate(); URL.revokeObjectURL(url); res(v); };
+    const t = setTimeout(() => fin({ slow: true }), ms);
+    w.onmessage = (e) => fin(e.data);
+    w.onerror = (e) => { e.preventDefault?.(); fin({ error: e.message || "search failed" }); };
+    w.postMessage({ files, pattern, flags, opts });
+  });
+}
+
 // the xml tool format trims one newline at each end of a parameter; either name is accepted
 const oldOf = (a) => a.old ?? a.old_string ?? "", newOf = (a) => a.new ?? a.new_string ?? "";
 
-export function codingTools(ws, { server = null } = {}) {
-  const reloadNote = (path) => {
+export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
+  // after a write: wait for each served port's new snapshot, and say what the preview now runs
+  const reloadNote = async (path) => {
     const ports = server?.servedPorts?.(path) || [];
-    return ports.length ? ` · preview ${ports.map((p) => ":" + p).join(" ")} reloaded` : "";
+    if (!ports.length) return "";
+    const out = [];
+    for (const port of ports) {
+      const r = server.flush ? await server.flush(port) : null;
+      out.push(r?.error ? `preview :${port} not updated: ${r.error}` : `preview :${port} reloaded${r?.rev ? ` (rev ${r.rev})` : ""}`);
+    }
+    return " · " + out.join(" · ");
   };
   const readOr = async (p) => ((await ws.exists(p)) ? ws.read(p) : null);
+  // normalised, and allowed by the workspace (a folder on disk refuses hidden and secret files)
+  const clean = (p) => { const n = cleanPath(p); ws.check?.(n); return n; };
   return [
     {
       name: "list_dir", mutates: false,
@@ -53,7 +107,8 @@ export function codingTools(ws, { server = null } = {}) {
       description: `Read a file with line numbers, at most ${MAX_LINES} lines per call; use start_line/end_line for more.`,
       parameters: { type: "object", properties: { path: { type: "string" }, start_line: { type: "integer" }, end_line: { type: "integer" } }, required: ["path"] },
       async run({ path, start_line, end_line }) {
-        const text = await ws.read(path);
+        const u8 = await ws.readBytes(path), text = new TextDecoder().decode(u8);
+        if (isBinary(u8, text)) return `(${path} is a binary file, ${kb(u8.length)})`;
         if (text === "") return `(${path} is empty)`;
         const lines = text.split("\n");
         if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();   // a final newline is not a line
@@ -76,23 +131,21 @@ export function codingTools(ws, { server = null } = {}) {
       description: "Search the project for a JavaScript regular expression; returns path:line: text.",
       parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string", description: "only under this folder" }, ignore_case: { type: "boolean" } }, required: ["pattern"] },
       async run({ pattern, path = "", ignore_case = false }) {
-        let re;
-        try { re = new RegExp(pattern, ignore_case ? "i" : ""); } catch (e) { return `error: bad pattern: ${e.message}`; }
+        const flags = ignore_case ? "i" : "";
+        try { new RegExp(pattern, flags); } catch (e) { return `error: bad pattern: ${e.message}`; }
         const pre = path && path !== "." ? path.replace(/\/+$/, "") + "/" : "";
-        const hits = [];
-        let total = 0;
+        const files = [];
         for (const f of await ws.walk()) {
           if (pre && !f.startsWith(pre)) continue;
           let text;
           try { text = await ws.read(f); } catch { continue; }
-          if (text.includes("\u0000") || text.includes("�")) continue;   // binary
-          const lines = text.split("\n");
-          for (let i = 0; i < lines.length; i++) {
-            if (!re.test(lines[i])) continue;
-            if (++total <= MAX_HITS) hits.push(`${f}:${i + 1}: ${cut(lines[i].trim(), HIT_CHARS)}`);
-          }
-          if (total > 2000) break;   // enough to say "(+N more)"; a runaway pattern stops here
+          if (text.includes("\u0000") || text.includes("\uFFFD")) continue;   // binary
+          files.push([f, text]);
         }
+        const r = await grep(files, pattern, flags, searchMs);
+        if (r.slow) return `error: pattern too slow (over ${searchMs / 1000} s); use a simpler pattern without nested repeats`;
+        if (r.error) return `error: ${r.error}`;
+        const { hits, total } = r;
         if (!hits.length) return "no matches";
         return hits.join("\n") + (total > MAX_HITS ? `\n(+${total - MAX_HITS}${total > 2000 ? "+" : ""} more; narrow the pattern or path)` : "");
       },
@@ -102,17 +155,21 @@ export function codingTools(ws, { server = null } = {}) {
       description: "Replace one exact piece of text in a file. old must appear exactly once (add surrounding lines to make it unique).",
       parameters: { type: "object", properties: { path: { type: "string" }, old: { type: "string" }, new: { type: "string" } }, required: ["path", "old", "new"] },
       async preview(args) {
-        const before = await ws.read(args.path), r = applyEdit(before, args.path, oldOf(args), newOf(args));
-        return { path: args.path, before, after: r.error ? before : r.after, ...(r.error ? { error: r.error } : {}) };
+        let path;
+        try { path = clean(args.path); } catch (e) { return { path: String(args.path ?? "").slice(0, MAX_PATH), before: null, after: "", error: `error: ${e.message}` }; }
+        let before;
+        try { before = await ws.read(path); } catch (e) { return { path, before: null, after: "", error: `error: ${e.message}` }; }
+        const r = applyEdit(before, path, oldOf(args), newOf(args));
+        return { path, before, after: r.error ? before : r.after, ...(r.error ? { error: r.error } : {}) };
       },
       async run(args) {
-        const { path } = args, o = oldOf(args), n = newOf(args);
+        const path = clean(args.path), o = oldOf(args), n = newOf(args);
         if (!(await ws.exists(path))) return `error: no such file: ${path}; use write_file to create it`;
         const r = applyEdit(await ws.read(path), path, o, n);
         if (r.error) return r.error;
         await ws.write(path, r.after);
         const a = o.split("\n").length, b = n.split("\n").length, end = r.line + Math.max(b, 1) - 1;
-        return `edited ${path} ${end > r.line ? `lines ${r.line}-${end}` : `line ${r.line}`} (${a} -> ${b} lines)` + reloadNote(path);
+        return `edited ${path} ${end > r.line ? `lines ${r.line}-${end}` : `line ${r.line}`} (${a} -> ${b} lines)` + await reloadNote(path);
       },
     },
     {
@@ -120,15 +177,18 @@ export function codingTools(ws, { server = null } = {}) {
       description: "Create or overwrite a file. append: true adds to its end (write long files in parts).",
       parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" }, append: { type: "boolean" } }, required: ["path", "content"] },
       async preview({ path, content = "", append = false }) {
-        const before = await readOr(path);
+        try { path = clean(path); } catch (e) { return { path: String(path ?? "").slice(0, MAX_PATH), before: null, after: "", error: `error: ${e.message}` }; }
+        let before;
+        try { before = await readOr(path); } catch (e) { return { path, before: null, after: "", error: `error: ${e.message}` }; }
         return { path, before, after: append && before != null ? before + content : content };
       },
       async run({ path, content = "", append = false }) {
+        path = clean(path);
         const before = append ? await readOr(path) : null;
         const text = before != null ? before + content : String(content);
         await ws.write(path, text);
         const size = `${lineCount(text)} lines, ${kb(new TextEncoder().encode(text).length)}`;
-        return (before != null ? `appended to ${path} (now ${size})` : `wrote ${path} (${size})`) + reloadNote(path);
+        return (before != null ? `appended to ${path} (now ${size})` : `wrote ${path} (${size})`) + await reloadNote(path);
       },
     },
   ];

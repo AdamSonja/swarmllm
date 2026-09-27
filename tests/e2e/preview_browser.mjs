@@ -1,6 +1,8 @@
 // The Code-mode preview sandbox alone (docs/design/harness-app.md G.2): a PreviewServer over an
-// in-memory project, mounted with mountPreview in a sandboxed srcdoc iframe, driven through the
-// serve / preview_logs tools. No WebGPU, no room, no PeerJS; takes a few seconds.
+// in-memory project, mounted with mountPreview, driven through the serve / preview_logs tools.
+// The page is on 127.0.0.1, so the preview runs isolated in harness/preview-relay.html on localhost
+// (another site: its own process with --site-per-process, the default in desktop Chrome); one mount
+// runs in local mode (a blob: frame of the page). No WebGPU, no room, no PeerJS; ~20 seconds.
 //   node tests/e2e/preview_browser.mjs
 import { loadPlaywright, chromiumPath, serveRepo } from "./engine_synth.mjs";
 const PORT = 18986;
@@ -49,7 +51,7 @@ setTimeout(() => {
 
 const srv = serveRepo(PORT, {});
 const { chromium } = await loadPlaywright();
-const browser = await chromium.launch({ executablePath: chromiumPath(), args: ["--no-sandbox"] });
+const browser = await chromium.launch({ executablePath: chromiumPath(), args: ["--no-sandbox", "--site-per-process"] });
 const results = [];
 const check = (n, ok, d = "") => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"} ${n}${d && !ok ? "  " + String(d).slice(0, 400) : ""}`); };
 let code = 1;
@@ -63,7 +65,10 @@ try {
   check("serve reports the port and files", /^serving \. on :5173 \(index\.html, 8 files, [\d.]+ (KB|B)\)/.test(serveOut), serveOut);
   check("serve reports the load and the error with its file:line", /loaded in \d+ ms · 1 error:/.test(serveOut) && /error game\.js:6:\d+ ReferenceError: boom is not defined/.test(serveOut), serveOut);
 
-  const frame = () => page.frames().find((f) => f !== page.mainFrame());
+  // the app's document: in the relay a srcdoc child, in local mode a blob: frame
+  const frame = () => page.frames().find((f) => /^(about:srcdoc|blob:)/.test(f.url()));
+  check("relay mode: the preview runs in the relay on the other site", await page.evaluate(() => window.__view.mode) === "relay"
+    && page.frames().some((f) => f.url().startsWith(`http://localhost:${PORT}/harness/preview-relay.html`)), page.frames().map((f) => f.url()).join(" "));
   const F = await frame().evaluate(async (port) => {
     const out = {};
     const px = document.getElementById("board").getContext("2d").getImageData(5, 5, 1, 1).data;
@@ -71,6 +76,7 @@ try {
     out.bg = getComputedStyle(document.body).backgroundColor;
     out.img = document.getElementById("spr").naturalWidth;
     out.origin = window.origin;
+    out.base = document.baseURI;
     out.level = window.__level;
     const threw = (f) => { try { f(); return false; } catch { return true; } };
     out.parentDoc = threw(() => parent.document.title);
@@ -92,6 +98,7 @@ try {
   check("image from the project loaded", F.img === 4, F.img);
   check("fetch of a project file through the shim", F.level?.rows === 20, JSON.stringify(F.level));
   check("opaque origin", F.origin === "null", F.origin);
+  check("the document's base URL is not the room page's", !F.base.includes("__blank") && !F.base.includes("127.0.0.1"), F.base);
   check("parent.document blocked", F.parentDoc);
   check("parent localStorage blocked", F.parentStorage);
   check("cookies blocked", F.cookie);
@@ -110,10 +117,15 @@ try {
   check("sandbox escapes logged as errors, alert as info", L.some((e) => /404 p2p\.html \(fetch\)/.test(e.text)) && L.some((e) => e.level === "info" && e.text === "alert: hello"), JSON.stringify(L));
 
   // live reload: an edit through the tools bumps the rev and the frame redraws
-  const edit = await page.evaluate(() => window.__T.edit_file.run({ path: "lib/color.js", old: "rgb(255, 0, 0)", new: "rgb(0, 0, 255)" }));
-  check("edit result says the preview reloads", edit === "edited lib/color.js line 1 (1 -> 1 lines) · preview :5173 reloaded", edit);
-  const rev2 = await page.evaluate(() => new Promise((res) => { const off = window.__server.onUpdate((u) => { off(); res(u); }); }));
-  check("update after the debounce with the changed file", rev2.rev === 2 && rev2.changed.join() === "lib/color.js", JSON.stringify(rev2));
+  const [edit, rev2] = await page.evaluate(async () => {
+    let u = null;
+    const off = window.__server.onUpdate((e) => { u ||= e; });
+    const r = await window.__T.edit_file.run({ path: "lib/color.js", old: "rgb(255, 0, 0)", new: "rgb(0, 0, 255)" });
+    off();
+    return [r, u];
+  });
+  check("edit result names the preview's new rev", edit === "edited lib/color.js line 1 (1 -> 1 lines) · preview :5173 reloaded (rev 2)", edit);
+  check("the update landed before the tool answered, with the changed file", rev2?.rev === 2 && rev2.changed.join() === "lib/color.js", JSON.stringify(rev2));
   await page.evaluate(() => window.__server.whenIdle(5173, 3000));
   const px2 = await frame().evaluate(() => [...document.getElementById("board").getContext("2d").getImageData(5, 5, 1, 1).data].join());
   check("frame reloaded with the edit", px2 === "0,0,255,255", px2);
@@ -145,16 +157,56 @@ try {
   const gated = await page.evaluate(async () => {
     const el = document.createElement("div"); document.body.append(el);
     const v = window.__mountPreview(el, window.__server, 5173, { autorun: false });
-    const before = !v.frame.getAttribute("srcdoc") && el.querySelector(".pv-run")?.textContent;
+    const before = !v.loaded && el.querySelector(".pv-run")?.textContent;
     el.querySelector(".pv-run").click();
-    const after = (v.frame.getAttribute("srcdoc") || "").length > 0;
+    const after = v.loaded;
     v.destroy();
     return { before, after };
   });
   check("click-to-run gate", gated.before === "Run preview :5173" && gated.after, JSON.stringify(gated));
 
+  // local mode (no other site): a blob: document, whose base URL is not the page's either, and a
+  // page that navigates itself away is put back, then stopped
+  const local = await page.evaluate(async () => {
+    await window.__ws.write("away/index.html", `<p id=a>stay</p><script>console.log("base " + document.baseURI); setTimeout(() => { location.href = "http://127.0.0.1:1/?u=" + encodeURIComponent(document.baseURI); }, 200)</script>`);
+    const el = document.createElement("div"); document.body.append(el);
+    const logs = [];
+    let v = null, src = "";
+    v = window.__mountPreview(el, window.__server, 5175, { relay: null, onLog: (e) => logs.push(e.text), onStatus: (s) => { if (s.state === "loading" && !src) src = v?.frame.src.slice(0, 5); } });
+    await window.__T.serve.run({ dir: "away", port: 5175 });
+    for (let i = 0; i < 60 && !logs.some((t) => /preview stopped/.test(t)); i++) await new Promise((r) => setTimeout(r, 100));
+    const out = { mode: v.mode, src, logs };
+    v.destroy();
+    window.__T.stop_serve.run({ port: 5175 });
+    return out;
+  });
+  check("local mode: a blob: document", local.mode === "local" && local.src === "blob:", JSON.stringify(local));
+  check("local mode: base URL is a blob URL, not the room page", local.logs.some((t) => /^base blob:/.test(t) || t === "base index.html") && !local.logs.some((t) => /__blank/.test(t)), JSON.stringify(local.logs));
+  check("a page navigating away is put back, then stopped", local.logs.filter((t) => /navigation blocked/.test(t)).length === 3 && local.logs.some((t) => /preview stopped/.test(t)), JSON.stringify(local.logs));
+
+  // an infinite loop in the app hangs the relay's process, not this page: the heartbeat stops, the
+  // frame is removed and the agent reads why
+  const hang = await page.evaluate(async () => {
+    await window.__ws.write("loop/index.html", `<p>spin</p><script>setTimeout(() => { for (;;) {} }, 300)</script>`);
+    const el = document.createElement("div"); document.body.append(el);
+    const states = [];
+    const v = window.__mountPreview(el, window.__server, 5176, { onStatus: (s) => states.push(s.state) });
+    await window.__T.serve.run({ dir: "loop", port: 5176 });
+    let ticks = 0;
+    const t0 = performance.now(), iv = setInterval(() => ticks++, 100);
+    for (let i = 0; i < 80 && !states.includes("hung"); i++) await new Promise((r) => setTimeout(r, 100));
+    clearInterval(iv);
+    const ms = Math.round(performance.now() - t0);
+    const logs = await window.__T.preview_logs.run({ port: 5176 });
+    const out = { states, ticks, ms, frame: !!v.frame, gate: el.querySelector(".pv-run")?.textContent, logs };
+    v.destroy();
+    return out;
+  });
+  check("an infinite loop is detected; the room page kept running", hang.states.includes("hung") && hang.ticks >= hang.ms / 250 && !hang.frame, JSON.stringify(hang));
+  check("the hang is in preview_logs and the pane offers to run it again", /preview hung \(infinite loop\?\)/.test(hang.logs) && /run :5176 again/.test(hang.gate || ""), JSON.stringify(hang));
+
   const stop = await page.evaluate(() => window.__T.stop_serve.run({ port: 5173 }));
-  check("stop_serve", stop === "stopped :5173" && (await page.evaluate(() => !window.__view.frame.getAttribute("srcdoc"))), stop);
+  check("stop_serve", stop === "stopped :5173" && (await page.evaluate(() => !window.__view.loaded)), stop);
   check("no errors in the room page", !pageErrors.length, pageErrors.join("\n"));
   code = results.every(Boolean) ? 0 : 1;
   console.log(`\n${results.filter(Boolean).length}/${results.length} checks passed`);

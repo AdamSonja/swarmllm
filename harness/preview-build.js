@@ -137,12 +137,17 @@ function scanJs(src) {
 function capture(C) {
   const P = window.parent, send = (d) => { try { P.postMessage(Object.assign({ pv: C.nonce }, d), "*"); } catch {} };
   const key = (u) => u.length + ":" + u.slice(-48);
-  // a srcdoc document has the room page's base URL, so a ref left relative shows up as a room
-  // URL (the CSP refuses it); name it as the project path it was meant to be
-  const B = document.baseURI.replace(/[?#].*$/, "").replace(/[^/]*$/, ""), OR = B.replace(/^(\w+:\/\/[^/]+).*$/, "$1/");
-  const name = (u) => (!u ? "" : u.startsWith("data:") ? C.keys[key(u)] || "(inline)" : u === "about:srcdoc" ? C.path
+  // the document is a blob: URL (or, in the isolated relay, a srcdoc under the relay page's URL):
+  // name that URL as the page's path, and a ref left relative (the relay's folder, which the CSP
+  // refuses) as the project path it was meant to be
+  const SELF = location.href.replace(/#.*$/, "");
+  const B = /^https?:/.test(document.baseURI) ? document.baseURI.replace(/[?#].*$/, "").replace(/[^/]*$/, "") : "\u0000";
+  const OR = B.replace(/^(\w+:\/\/[^/]+).*$/, "$1/");
+  const name = (u) => (!u ? "" : u.startsWith("data:") ? C.keys[key(u)] || "(inline)" : u === "about:srcdoc" || u === SELF ? C.path
     : u.startsWith(B) ? u.slice(B.length) : u.startsWith(OR) ? u.slice(OR.length) : u);
-  const clean = (s) => String(s).replace(/data:[\w/+.-]+(?:;[\w=.-]+)*,[A-Za-z0-9+/=]+/g, name).replace(/about:srcdoc/g, C.path).split(B).join("");
+  const clean = (s) => String(s).replace(/data:[\w/+.-]+(?:;[\w=.-]+)*,[A-Za-z0-9+/=]+/g, name).replace(/about:srcdoc/g, C.path).split(SELF).join(C.path).split(B).join("");
+  // WebRTC's STUN traffic is outside the CSP's connect-src: no peer connections from the app
+  for (const k of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel"]) { try { Object.defineProperty(window, k, { value: undefined, configurable: false }); } catch {} }
   const O = {};
   for (const l of ["log", "info", "warn", "error", "debug"]) O[l] = console[l].bind(console);
   let win = 0, n = 0, dropped = 0;

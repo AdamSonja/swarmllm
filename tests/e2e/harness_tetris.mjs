@@ -170,7 +170,8 @@ for (let i = 0; ; i++) {
 }
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch({ executablePath: chromiumPath(), headless: !flag("headed"),
-  args: ["--no-sandbox", "--allow-loopback-in-peer-connection", "--disable-features=WebRtcHideLocalIpsWithMdns"] });
+  // --site-per-process as in desktop Chrome: the preview relay (localhost, another site) gets its own process
+  args: ["--no-sandbox", "--site-per-process", "--allow-loopback-in-peer-connection", "--disable-features=WebRtcHideLocalIpsWithMdns"] });
 const results = [];
 const check = (name, ok, detail = "") => { results.push({ name, ok: !!ok }); console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail && !ok ? "  " + String(detail).slice(0, 600) : ""}`); };
 let code = 1;
@@ -179,6 +180,7 @@ try {
   await ctx.route("**/*", (route) => {
     const url = route.request().url();
     if (url.startsWith(`http://127.0.0.1:${PORT}/`) || url.startsWith(`http://127.0.0.1:${SIGNAL_PORT}/`)) return route.continue();
+    if (url === `http://localhost:${PORT}/harness/preview-relay.html`) return route.continue();   // the preview's isolated host
     if (url.split("?")[0] === PEERJS_URL) return route.fulfill({ status: 200, contentType: "text/javascript", body: peerjsJs });
     if (url.startsWith("https://fonts.googleapis.com/")) return route.fulfill({ status: 200, contentType: "text/css", body: "" });
     return route.abort();
@@ -226,6 +228,13 @@ try {
   await peer.waitForFunction(() => /waiting for the host's approval/.test(document.getElementById("code-log")?.textContent || ""), null, { timeout: 10000 })
     .then(() => check("peer sees the pending approval", true), () => check("peer sees the pending approval", false));
   check("the approval card shows the new file's diff", await host.evaluate(() => { const d = document.querySelector(".cm-tool .cm-diff"); return !!d && /index\.html/.test(d.textContent) && d.querySelectorAll(".r-add").length > 5; }));
+  check("the approval has focus and marks the page title", await host.evaluate(() => document.activeElement?.textContent === "Approve" && /needs approval/.test(document.title)));
+  // Esc in the reason field backs out of Reject…, it does not stop the run
+  await host.click("text=Reject…");
+  await host.press(".cm-approve input", "Escape");
+  await host.waitForTimeout(200);
+  const esc = await host.evaluate(() => ({ ok: !!document.querySelector(".cm-approve button.ok"), running: !document.getElementById("code-stop").hidden, done: !!document.querySelector(".cm-stats"), log: document.getElementById("code-log").innerText.slice(-400) }));
+  check("Esc in the reject reason cancels the reject, not the run", esc.ok && esc.running && !esc.done, JSON.stringify(esc));
   await host.click("text=Allow edits for this task");
   await host.waitForSelector(".cm-stats", { timeout: 60000 });
   log("agent run finished");
@@ -250,7 +259,10 @@ try {
   check(".cm-stats present", /7 steps · 6 tool calls/.test(H.stats || ""), H.stats);
   check("console showed the error, then a new rev with none", H.oldErrors >= 1 && H.curErrors === "0", JSON.stringify(H));
   check("file tree lists the 3 files", H.tree.join(",") === "game.js,index.html,style.css", H.tree);
-  const hostFrame = host.frames().find((f) => f !== host.mainFrame());
+  // the app's document (a srcdoc in the relay on localhost, or a blob: frame without one)
+  const appFrame = (p) => p.frames().find((f) => /^(about:srcdoc|blob:)/.test(f.url()));
+  check("host preview runs isolated in the relay on another site", host.frames().some((f) => f.url() === `http://localhost:${PORT}/harness/preview-relay.html`), host.frames().map((f) => f.url()).join(" "));
+  const hostFrame = appFrame(host);
   const hostPx = await hostFrame.evaluate(() => {
     const c = document.getElementById("board");
     const g = c.getContext("2d"), d = g.getImageData(0, 0, c.width, c.height).data;
@@ -281,7 +293,7 @@ try {
   await peer.waitForFunction(() => /^rev \d+$/.test(document.getElementById("pv-state").textContent), null, { timeout: 10000 });
   await peer.waitForTimeout(700);
   const peerRev = +(/rev (\d+)/.exec(await peer.textContent("#pv-state"))?.[1] || 0);
-  const peerFrame = peer.frames().find((f) => f !== peer.mainFrame());
+  const peerFrame = appFrame(peer);
   const peerPx = await peerFrame.evaluate(() => {
     const c = document.getElementById("board"), d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
     let drawn = 0;
