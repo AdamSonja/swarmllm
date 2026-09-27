@@ -1362,6 +1362,12 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
       // MoE bits, so every device of a room should run the same setting; ?moednrows=1|2|4 tunes it
       moeFuse: new URLSearchParams(location.search).get("moefuse") !== "0",
       moeDnRows: parseInt(new URLSearchParams(location.search).get("moednrows"), 10) || 1,
+      // ?gpusample=1: sample on the GPU (argmax / top-k of the head in the same submit, 16-520 bytes
+      // back instead of the 1 MB logits vector); a masked sampler (tool-name constraint) still gets
+      // the logits. ?argmaxwide=1 (default: same as gpusample): the draft argmax as the two-stage
+      // multi-workgroup kernel. Experimental (exp/gpu-sample), off by default.
+      gpuSample: GPU_SAMPLE,
+      argmaxWide: ARGMAX_WIDE,
     });
   } else if (M.kind === "gguf") {
     aiStatus("reading model index\u2026");
@@ -1710,7 +1716,9 @@ const FILL_DRAFTS = new URLSearchParams(location.search).get("fill") !== "0";
 const MTP_REFILL = new URLSearchParams(location.search).get("mtprefill") !== "0";
 const PRE_DRAFT = new URLSearchParams(location.search).get("predraft") !== "0";
 const DRAFT_VOCAB = (() => { const v = new URLSearchParams(location.search).get("draftvocab"); return v === null ? 65536 : parseInt(v, 10) || 0; })();
-const MTP_BATCH = new URLSearchParams(location.search).get("mtpbatch") !== "0";   // ?mtpbatch=0: one draft-cache row per submit, for A/B
+const MTP_BATCH = new URLSearchParams(location.search).get("mtpbatch") !== "0";
+const GPU_SAMPLE = new URLSearchParams(location.search).get("gpusample") === "1";   // see the engine options in aiLoadShard
+const ARGMAX_WIDE = (new URLSearchParams(location.search).get("argmaxwide") ?? (GPU_SAMPLE ? "1" : "0")) === "1";   // ?mtpbatch=0: one draft-cache row per submit, for A/B
 function fillDrafts(h, ids, i0, basePos, n) {
   if (!FILL_DRAFTS || !ai.engine?.mtp) return;
   const dim = ai.engine.dims.dim, E = ai.engine;
@@ -1730,7 +1738,9 @@ function fillDrafts(h, ids, i0, basePos, n) {
 
 // run one token through the whole pipeline, returns logits (or null for a prompt token).
 // fillNext: the prompt token after this one, to fill the draft cache with this position's hidden.
-async function aiPipeToken(id, needLogits = true, fillNext) {
+// desc: GPU sampling descriptor (engine.gpuDescFor(sample)): returns the sampler's candidates
+// { ids, vals, bad } instead of the logits (the sampler reads either).
+async function aiPipeToken(id, needLogits = true, fillNext, desc = null) {
   const pos = ai.pos;
   if (!ai.chain.length && !needLogits) {
     // solo prefill: layers only, no head, no readback; sync every 8 tokens
@@ -1755,6 +1765,11 @@ async function aiPipeToken(id, needLogits = true, fillNext) {
   } // solo mode: engine holds every layer, embedRun already produced the final hidden
   ai.pos++; ai.fed?.push(id);
   if (!needLogits) return null;   // prefill: skip the head entirely
+  if (desc) {
+    const c = await ai.engine.headFromHiddenIds(h, desc);
+    if (c.bad) throw new Error(`NaN in logits (pos ${ai.pos}) — head/lm_head kernel issue on host`);
+    return c;
+  }
   const logits = await ai.engine.headFromHidden(h);
   if (badF32(logits)) throw new Error(`NaN in logits (pos ${ai.pos}) — head/lm_head kernel issue on host`);
   return logits;
@@ -1768,14 +1783,14 @@ const TAIL_FRAME = new URLSearchParams(location.search).get("tail") !== "0";   /
 // aborted / onStatus: the caller's stop test and status line (roomGenerate passes its own). On
 // abort no new round is issued, the rounds in flight are awaited, and it returns null with ai.fed
 // and ai.pos matching exactly what the caches hold, so the next request reuses that prefix.
-async function aiPrefill(ids, { aborted = () => ai.abort, onStatus = aiStatus } = {}) {
+async function aiPrefill(ids, { aborted = () => ai.abort, onStatus = aiStatus, desc = null } = {}) {
   if (!ai.chain.length && ai.engine.prefillTokens && ids.length > 1) {
     // solo: batched prefill, several prompt tokens per GPU pass
     ai.engine.pos = ai.pos;
     await ai.engine.prefillTokens(ids.slice(0, -1));
     ai.pos = ai.engine.pos;
     ai.fed.push(...ids.slice(0, -1));
-    return aiPipeToken(ids[ids.length - 1]);
+    return aiPipeToken(ids[ids.length - 1], true, undefined, desc);
   }
   let i = 0;
   // the hybrid engine takes any column count per frame (speculative verifies already send 2..8),
@@ -1830,8 +1845,11 @@ async function aiPrefill(ids, { aborted = () => ai.abort, onStatus = aiStatus } 
         fillDrafts(h, ids, i0, basePos, n);
         const dim = ai.engine.dims.dim;
         ai.lastHidden = h.slice((n - 1) * dim, n * dim);
-        tailLogits = await ai.engine.headFromHidden(ai.lastHidden);
-        if (badF32(tailLogits)) throw new Error(`NaN in logits (pos ${ai.pos}) — head/lm_head kernel issue on host`);
+        if (desc) {
+          tailLogits = await ai.engine.headFromHiddenIds(ai.lastHidden, desc);
+          if (tailLogits.bad) throw new Error(`NaN in logits (pos ${ai.pos}) — head/lm_head kernel issue on host`);
+        } else tailLogits = await ai.engine.headFromHidden(ai.lastHidden);
+        if (!desc && badF32(tailLogits)) throw new Error(`NaN in logits (pos ${ai.pos}) — head/lm_head kernel issue on host`);
       }
       for (const p of inflight) await p;
     } catch (err) { failWaiters(err); throw err; }
@@ -1841,7 +1859,7 @@ async function aiPrefill(ids, { aborted = () => ai.abort, onStatus = aiStatus } 
   let logits = null;
   for (; i < ids.length; i++) {
     if (aborted()) return null;
-    logits = await aiPipeToken(ids[i], i === ids.length - 1, ids[i + 1]);
+    logits = await aiPipeToken(ids[i], i === ids.length - 1, ids[i + 1], desc);
   }
   return logits;
 }
@@ -2022,6 +2040,10 @@ async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, s
   const tokens = [];
   let count = 0, capped = false, acc = null, copied = 0, first = null;
   let tPre = 0, tDecode = 0, reused = 0, prefilled = 0, preFrames = 0;
+  // GPU sampling (?gpusample=1): the head's top-k / argmax runs on the GPU and "logits" below are
+  // the sampler's candidates. Only for a sampler that says it reads them (.gpu); a wrapper that
+  // masks logits has no .gpu and keeps the full-logits path. specStep checks the same itself.
+  const desc = ai.engine.gpuDescFor?.(sample) || null;
   try {
     reused = ckptResume(ids, reusablePrefix(ai.fed, ids));
     // Continue after a cap that landed on a written token: the caches hold the whole open answer,
@@ -2041,7 +2063,7 @@ async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, s
     onStatus(reused ? `prefill: ${rest.length} new tokens (${reused} already in the room's caches)…` : `prefill: ${rest.length} tokens…`);
     const t0Pre = performance.now();
     ai.frames = 0;
-    let logits = rest.length ? await aiPrefill(rest, { aborted, onStatus }) : null;
+    let logits = rest.length ? await aiPrefill(rest, { aborted, onStatus, desc }) : null;
     tPre = performance.now() - t0Pre;
     if (prefilled) compute.pass(prefilled);
     preFrames = ai.frames;
@@ -2157,12 +2179,13 @@ async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, s
         if (eos(next)) break;
         emit(next, false);
         if (ai.pos >= ctxMax() - 1) { capped = true; break; }   // no position left for another token
-        logits = await aiPipeToken(next);
+        logits = await aiPipeToken(next, true, undefined, desc);
         if (ai.chain.length) pushMap(count / ((performance.now() - t0) / 1000), null, true);
       }
       if (count >= maxNew) {
         capped = true;
-        if (logits && !aborted() && ai.pos < ctxMax() - 1) ai.pending = { next: sample(logits), at: ai.pos };   // for Continue
+        // for Continue: the chosen id (sample reads logits or GPU candidates alike)
+        if (logits && !aborted() && ai.pos < ctxMax() - 1) ai.pending = { next: sample(logits), at: ai.pos };
       }
     }
     tDecode = performance.now() - t0;

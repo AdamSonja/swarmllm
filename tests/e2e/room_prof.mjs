@@ -4,7 +4,7 @@
 // host compute, pack, send, wire, deliver, queue, unpack, GPU, readback, pack, send ... head.
 // Manual trigger only (research branch exp/base).
 //
-//   node tests/e2e/room_prof.mjs --model qwen3.6-35b-moe --devices 2 [--maxnew 48] [--modes plain,spec] [--out f.json]
+//   node tests/e2e/room_prof.mjs --model qwen3.6-35b-moe --devices 2 [--maxnew 48] [--modes plain,spec] [--out f.json] [--query gpusample=1]
 //
 // room.js and room/transport.js on disk are not changed: this harness serves them with trace marks
 // added (patchRoom / patchTransport below; they fail loudly if the anchors move), plus the dev-only
@@ -49,6 +49,9 @@ function patchRoom(s) {
   s = rep(s, "    sendChain({ t: \"ai-hidden\", pos, ...packWire(h) });\n    h = await returned;",
     "    { const __w = packWire(h); __HP('h.pack1', 'ai-hidden', pos); sendChain({ t: \"ai-hidden\", pos, ...__w }); }\n    h = await returned; __HP('h.ret', 'ai-hidden', pos);", f);
   s = rep(s, "  const logits = await ai.engine.headFromHidden(h);", "  __HP('h.head0', 'ai-hidden', pos); const logits = await ai.engine.headFromHidden(h); __HP('h.head1', 'ai-hidden', pos);", f);
+  // GPU sampling (exp/gpu-sample, --query gpusample=1): the same marks around the candidates head
+  if (s.includes("    const c = await ai.engine.headFromHiddenIds(h, desc);"))
+    s = rep(s, "    const c = await ai.engine.headFromHiddenIds(h, desc);", "    __HP('h.head0', 'ai-hidden', pos); const c = await ai.engine.headFromHiddenIds(h, desc); __HP('h.head1', 'ai-hidden', pos);", f);
   // host, speculative verify lap
   s = rep(s, "          const tLap = performance.now();", "          const tLap = performance.now(); __HP('h.lap0', 'ai-hidden-b', pos, tokens.length);", f);
   s = rep(s, "          const hostMs = performance.now() - tLap;", "          const hostMs = performance.now() - tLap; __HP('h.emb1', 'ai-hidden-b', pos, tokens.length);", f);
@@ -153,7 +156,8 @@ const wsrv = https.createServer({ key: fs.readFileSync(`${tlsDir}/k.pem`), cert:
 }).listen(TLS_PORT, "127.0.0.1");
 const peerServer = spawn(path.join(ROOT, "node_modules/.bin/peerjs"), ["--port", String(SIGNAL_PORT), "--path", "/"], { stdio: "ignore" });
 await new Promise((r) => setTimeout(r, 1500));
-const BASE = `http://127.0.0.1:${PORT}/p2p.html?signal=127.0.0.1:${SIGNAL_PORT}&maxnew=${MAXNEW}&peerweights=0&wire=${WIRE}`;
+// --query "a=1&b=2": extra room URL parameters on every tab (e.g. gpusample=1)
+const BASE = `http://127.0.0.1:${PORT}/p2p.html?signal=127.0.0.1:${SIGNAL_PORT}&maxnew=${MAXNEW}&peerweights=0&wire=${WIRE}` + (arg("query") ? "&" + arg("query") : "");
 
 // One Chromium per device, each with its own on-disk profile (as tests/e2e/room_latency.mjs on
 // bench/latency does: with every tab in one off-the-record context the Cache API weight store lives

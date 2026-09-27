@@ -36,8 +36,34 @@ export function greedy(logits) {
   return best;
 }
 
-// logits -> token id for a preset key (unknown keys fall back to creative)
+// The same draw as aiSample, over the top pairs the GPU already picked (engine headFromHiddenIds:
+// { ids, vals } sorted by value descending, index ascending on ties). With the same Math.random()
+// it returns what aiSample returns on the full logits, except in exact ties at the cut.
+export function aiSampleTop(cands, temp = 0.8) {
+  const { ids, vals } = cands, n = ids.length;
+  if (!n) return 0;
+  const mx = vals[0];
+  const ps = new Array(n);
+  let sum = 0;
+  for (let i = 0; i < n; i++) { ps[i] = Math.exp((vals[i] - mx) / temp); sum += ps[i]; }
+  let r = Math.random() * sum;
+  for (let i = 0; i < n; i++) { r -= ps[i]; if (r <= 0) return ids[i]; }
+  return ids[0];
+}
+
+// candidates object (GPU sampling) or logits vector?
+const isCands = (x) => !!x && x.ids instanceof Uint32Array && !!x.vals;
+
+// logits -> token id for a preset key (unknown keys fall back to creative).
+// The returned function carries .gpu = { kind: "greedy" } | { kind: "topk", k, temp }: an engine
+// with gpuSample on then samples on the GPU and hands it { ids, vals, bad } (k pairs) instead of
+// the logits, and it accepts either. A wrapper that masks the logits first (the tool-name
+// constraint) is a new function without .gpu, so it still gets the full logits.
 export function pickSampler(key) {
   const p = SAMPLING[key] || SAMPLING.creative;
-  return p.temp === 0 ? greedy : (logits) => aiSample(logits, p.temp, p.topk);
+  const f = p.temp === 0
+    ? (x) => (isCands(x) ? x.ids[0] : greedy(x))
+    : (x) => (isCands(x) ? aiSampleTop(x, p.temp) : aiSample(x, p.temp, p.topk));
+  f.gpu = p.temp === 0 ? { kind: "greedy" } : { kind: "topk", k: p.topk, temp: p.temp };
+  return f;
 }

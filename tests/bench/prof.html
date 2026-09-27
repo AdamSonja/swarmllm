@@ -18,8 +18,10 @@ try {
   G.streamEntry = (info) => streamEntryToGPU(device, info, (i) => fetch(MODEL, { headers: { Range: `bytes=${i.byteOffset}-${i.byteOffset + i.byteLength - 1}` } }));
   const t0 = performance.now();
   const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true });
-  const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512, draftVocab: +(q.get("draftvocab") || 0) });
-  log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, adapter ${ad.info?.vendor}, mtp ${!!eng.mtp}, moeFuse ${!!eng.moeFuse}, draftVocab ${eng.draftVocab || "off"}, timestamps ${feats.length > 0}`);
+  const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512, draftVocab: +(q.get("draftvocab") || 0),
+    // ?gpusample=1: GPU sampling (exp/gpu-sample); ?argmaxwide=1 alone: only the two-stage draft argmax
+    gpuSample: q.get("gpusample") === "1", argmaxWide: (q.get("argmaxwide") ?? q.get("gpusample")) === "1" });
+  log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, adapter ${ad.info?.vendor}, mtp ${!!eng.mtp}, moeFuse ${!!eng.moeFuse}, draftVocab ${eng.draftVocab || "off"}, gpuSample ${eng.gpuSample}, argmaxWide ${eng.argmaxWide}, timestamps ${feats.length > 0}`);
   const out = await profileDecode({ eng, device, tok, argmax, log, N: +(q.get("tokens") || 24), STEPS: +(q.get("steps") || 12), K: +(q.get("k") || 3) });
   window.RESULT = { runtime: "chrome", arch, ...out };
 } catch (e) { log("ERROR " + (e.stack || e)); window.RESULT = { error: String(e) }; }

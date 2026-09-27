@@ -4,6 +4,7 @@
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { makeTokenizer, argmax } from "../engine/engine.js";
 import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
+import { GPU_SAMPLE, gpuGreedy, checkHeadIds } from "./gpusample_check.js";
 const N = +(Deno.env.get("TOKENS") || 40);
 const K = +(Deno.env.get("K") || 3);
 const openFile = async (path) => {
@@ -22,7 +23,9 @@ const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength)
 const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,
   batchCols: +(Deno.env.get("BCOLS") || 4), coopRowsB: +(Deno.env.get("ROWSB") || 4),
   // DRAFTCHAIN=0 / SPECFUSE=0: per-submit drafts / separate verify submits (A/B; same output)
-  draftChain: Deno.env.get("DRAFTCHAIN") !== "0", specFuse: Deno.env.get("SPECFUSE") !== "0" });
+  draftChain: Deno.env.get("DRAFTCHAIN") !== "0", specFuse: Deno.env.get("SPECFUSE") !== "0",
+  // GPU_SAMPLE=1: sampling on the GPU and the two-stage draft argmax (ARGMAX_WIDE=1 alone: only the latter)
+  gpuSample: GPU_SAMPLE, argmaxWide: GPU_SAMPLE || Deno.env.get("ARGMAX_WIDE") === "1" });
 console.log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}`);
 console.log(`loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s; mtp=${!!eng.mtp}`);
 const V = tok.vocab;
@@ -33,7 +36,7 @@ await eng.prefillTokens(prompt.slice(0, -1));
 let logits = await eng.forwardToken(prompt[prompt.length - 1]);
 let next = argmax(logits); const plain = [next];
 const tp0 = performance.now();
-for (let i = 1; i < N; i++) { logits = await eng.forwardToken(next); next = argmax(logits); plain.push(next); }
+for (let i = 1; i < N; i++) { logits = GPU_SAMPLE ? await eng.forwardTokenIds(next) : await eng.forwardToken(next); next = gpuGreedy(logits); plain.push(next); }
 const plainTs = (N - 1) / ((performance.now() - tp0) / 1000);
 // ---- speculative greedy ----
 eng.reset(); eng.mtpFill = true; eng.mtp.stats = { drafts: 0, accepted: 0 };
@@ -42,7 +45,7 @@ logits = await eng.forwardToken(prompt[prompt.length - 1]);
 next = argmax(logits); const spec = [next];
 const ts0 = performance.now();
 while (spec.length < N) {
-  const got = await eng.specStep(next, argmax, K);
+  const got = await eng.specStep(next, GPU_SAMPLE ? gpuGreedy : argmax, K);
   for (const t of got) spec.push(t);
   next = spec[spec.length - 1];
 }
@@ -53,4 +56,5 @@ console.log(`K=${K} plain: ${plainTs.toFixed(2)} tok/s   spec: ${specTs.toFixed(
 console.log("plain:", JSON.stringify(tok.decode(plain).slice(0, 120)));
 console.log("spec: ", JSON.stringify(tok.decode(spec.slice(0, N)).slice(0, 120)));
 console.log(same ? "MTP SPEC PASS ✓ (identical output)" : "MTP SPEC FAIL (output differs)");
+if (GPU_SAMPLE && await checkHeadIds(eng)) { console.log("GPU SAMPLING FAIL (head check)"); Deno.exit(1); }
 if (!same) Deno.exit(1);

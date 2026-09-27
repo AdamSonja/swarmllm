@@ -15,10 +15,15 @@ export async function profileDecode({ eng, device, tok, argmax, log, N = 24, STE
   const out = { plain: {}, spec: {}, kernels: {} };
   const hasMtp = !!(eng.mtp && eng.specStep);
   if (!eng.B) eng._initBatch();
-  const startPlain = async () => { eng.reset(); if (eng.mtp) eng.mtpFill = false; await eng.prefillTokens(ids.slice(0, -1)); return argmax(await eng.forwardToken(ids.at(-1))); };
-  const startSpec = async () => { eng.reset(); eng.mtpFill = true; eng.mtp.stats = { drafts: 0, accepted: 0 }; await eng.prefillTokens(ids.slice(0, -1)); return argmax(await eng.forwardToken(ids.at(-1))); };
-  const plainRun = async (n, next) => { const times = []; for (let i = 0; i < n; i++) { const t = performance.now(); next = argmax(await eng.forwardToken(next)); times.push(performance.now() - t); } return { next, times }; };
-  const specRun = async (n, next) => { const steps = []; for (let i = 0; i < n; i++) { const t = performance.now(); const toks = await eng.specStep(next, argmax, K); steps.push({ ms: performance.now() - t, toks: toks.length }); next = toks.at(-1); } return { next, steps }; };
+  // eng.gpuSample (exp/gpu-sample, ?gpusample=1): greedy on the GPU, 16 bytes back per head instead of the logits
+  const GS = !!eng.gpuSample;
+  const pick = Object.assign((x) => (x && x.ids instanceof Uint32Array ? x.ids[0] : argmax(x)), GS ? { gpu: { kind: "greedy" } } : {});
+  const fwd = GS ? (t) => eng.forwardTokenIds(t) : (t) => eng.forwardToken(t);
+  out.gpuSample = GS; out.argmaxWide = !!eng.argmaxWide;
+  const startPlain = async () => { eng.reset(); if (eng.mtp) eng.mtpFill = false; await eng.prefillTokens(ids.slice(0, -1)); return pick(await fwd(ids.at(-1))); };
+  const startSpec = async () => { eng.reset(); eng.mtpFill = true; eng.mtp.stats = { drafts: 0, accepted: 0 }; await eng.prefillTokens(ids.slice(0, -1)); return pick(await fwd(ids.at(-1))); };
+  const plainRun = async (n, next) => { const times = []; for (let i = 0; i < n; i++) { const t = performance.now(); next = pick(await fwd(next)); times.push(performance.now() - t); } return { next, times }; };
+  const specRun = async (n, next) => { const steps = []; for (let i = 0; i < n; i++) { const t = performance.now(); const toks = await eng.specStep(next, pick, K); steps.push({ ms: performance.now() - t, toks: toks.length }); next = toks.at(-1); } return { next, steps }; };
   const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
 
   // 1. clean wall

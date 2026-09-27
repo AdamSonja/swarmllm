@@ -17,7 +17,8 @@ const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer); const tok = makeT
 const arch = G.meta["general.architecture"], nBlk = G.meta[arch + ".block_count"], L = nBlk - (G.meta[arch + ".nextn_predict_layers"] || 0);
 const t0 = performance.now();
 const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true });
-const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512 });
+const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,
+  gpuSample: Deno.env.get("GPU_SAMPLE") === "1", argmaxWide: (Deno.env.get("ARGMAX_WIDE") ?? Deno.env.get("GPU_SAMPLE")) === "1" });   // exp/gpu-sample
 console.log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!!eng.mtp}, moeFuse ${!!eng.moeFuse}, fuseProj ${eng.fuseProj}, draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}, timestamps ${feats.length > 0}`);
 const out = await profileDecode({ eng, device, tok, argmax, log: (s) => console.log(s), N: +(Deno.env.get("TOKENS") || 24), STEPS: +(Deno.env.get("STEPS") || 12), K: +(Deno.env.get("K") || 3) });
 if (Deno.args[0]) Deno.writeTextFileSync(Deno.args[0], JSON.stringify({ runtime: "deno", arch, ...out }, null, 1));

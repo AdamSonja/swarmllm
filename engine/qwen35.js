@@ -10,6 +10,7 @@ import { coopWGSL, probeUnpack } from "./wgsl/coop.js";
 import { WGSL2 } from "./wgsl/qwen35.js";
 import { moeWGSL, moeFusedWGSL, moeKernelConfig } from "./wgsl/moe.js";
 import { f16ToF32 } from "./gguf.js";
+import { TOPK_MAX, topkK, readCands } from "./topk.js";
 
 
 
@@ -124,7 +125,13 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true, gpuSample = false, argmaxWide = false }) {
+    // GPU sampling (see headFromHiddenIds): argmax / top-k on the GPU, k (idx, value) pairs back
+    // instead of the logits. Off by default until the GPU suites pass with it on.
+    this.gpuSample = !!gpuSample;
+    // argmaxWide: the draft argmax as the two-stage multi-workgroup kernel (topk_a/b, k = 1) instead
+    // of the single-workgroup one. Same tie rule, same result; false keeps the old kernel (A/B).
+    this.argmaxWide = !!argmaxWide;
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -321,6 +328,7 @@ export class Qwen35Engine {
       kv_store_q8: ["ro", "ro", "rw", "rw", "rw", "rw", "u"], attn_flash_q8: ["ro", "ro", "ro", "ro", "ro", "rw", "rw", "u"], attn_flash_t2: ["ro", "ro", "ro", "rw", "rw", "u"],
       attn_scores_mc: ["ro", "ro", "rw", "u"], attn_softmax_wg_mc: ["rw"], attn_out_mc: ["ro", "ro", "rw", "u"],
       argmax: ["ro", "rw", "u"], emb_gather: ["ro", "ro", "ro", "rw", "u"],
+      topk_a: ["ro", "rw", "u"], topk_b: ["ro", "rw", "u"],
     };
     if (this.moe) Object.assign(G1, {
       moe_router: ["ro", "rw", "rw", "u"], moe_combine: ["rw", "ro", "ro", "ro", "ro", "u"],
@@ -687,6 +695,18 @@ export class Qwen35Engine {
       this.bgArgmax = this._bg(this.pipes.argmax, 1, [this.logits, this.argBuf, this._buf(new Uint32Array([vocab, 0, 0, 0]), GPUBufferUsage.UNIFORM)]);
       this.bgFinalNorm = bgNorm(this.x, this.finalNorm, this.xn);
       this.headOp = mv(this.headEntry, this.xn, this.logits, vocab, dim);
+      // GPU sampling buffers (topk_a/topk_b): the stage-a partials (NC columns x nw workgroups x
+      // (2k + 2) u32 at k <= 64), the per-column results (NC x (2k + 2) u32) and their staging buffers
+      {
+        const R = 2 * TOPK_MAX + 2, nc = Math.max(1, this.NC), nw = Math.ceil(vocab / 4096);
+        const SU = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC;
+        this.tkPart = device.createBuffer({ size: nc * nw * R * 4, usage: SU });
+        this.topBuf = device.createBuffer({ size: nc * R * 4, usage: SU });
+        this.stageTop = device.createBuffer({ size: R * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+        // + 8 x 16 B tail for the fused speculative step's drafts (as stageLogitsN)
+        this.stageTopN = device.createBuffer({ size: nc * R * 4 + 128, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+        this._tkOps = new Map();
+      }
       // Draft head over the first `draftVocab` rows only (BPE ids roughly follow frequency, so the
       // prefix holds the common tokens): the head is the biggest matrix a draft reads (0.7 GB on
       // the 27B), and drafts only need to be good guesses. The verify pass still uses the full
@@ -1572,6 +1592,102 @@ export class Qwen35Engine {
     return out;
   }
 
+  // ---- GPU sampling ----
+  // The sampler's GPU descriptor ({ kind: "greedy" } | { kind: "topk", k, temp }) when this engine
+  // samples on the GPU, else null (the caller gets full logits). A sampler that carries .gpu must
+  // accept both a logits vector and a candidates object { ids, vals, bad } (room/sampling.js).
+  gpuDescFor(sample) { return this.gpuSample && this.hasHead && sample && sample.gpu ? sample.gpu : null; }
+  // bind groups and grid of a top-k over the columns of `src` (n logits each, column stride in
+  // floats) into `out` (2k + 2 u32 per column), through the shared stage-a partials (tkPart)
+  _tkOp(key, src, n, stride, k, out) {
+    const id = key + ":" + n + ":" + k;
+    let op = this._tkOps.get(id);
+    if (!op) {
+      const nw = Math.ceil(n / 4096);
+      const uA = this._buf(new Uint32Array([n, stride, k, nw]), GPUBufferUsage.UNIFORM);
+      const uB = this._buf(new Uint32Array([nw, k, 0, 0]), GPUBufferUsage.UNIFORM);
+      op = { k, nw, R: 2 * k + 2,
+        bgA: this._bg(this.pipes.topk_a, 1, [src, this.tkPart, uA]),
+        bgB: this._bg(this.pipes.topk_b, 1, [this.tkPart, out, uB]) };
+      this._tkOps.set(id, op);
+    }
+    return op;
+  }
+  _dTopk(pass, op, cols = 1) {
+    this._dxyz(pass, "topk_a", op.bgA, op.nw, cols, 1);
+    this._dxyz(pass, "topk_b", op.bgB, 1, cols, 1);
+  }
+  // the draft head's argmax into argBuf ([idx, bits, ...], idx read by emb_gather and the host):
+  // two-stage multi-workgroup (argmaxWide) or the old single-workgroup kernel
+  _dArgmax(p, small) {
+    if (this.argmaxWide) this._dTopk(p, this._tkOp(small ? "argD" : "arg", this.logits, small ? this.draftVocab : this.dims.vocab, 0, 1, this.argBuf));
+    else this._d(p, "argmax", small ? this.bgArgmaxDraft : this.bgArgmax, 256, 256);
+  }
+  // final norm + LM head + top-k of this.x (one column) into topBuf, copied to stageTop
+  _encodeHeadIds(enc, desc) {
+    const op = this._tkOp("one", this.logits, this.dims.vocab, 0, topkK(desc), this.topBuf);
+    const p = enc.beginComputePass();
+    this._d(p, "rmsnorm", this.bgFinalNorm, 256, 256);
+    this._dop(p, this.headOp);
+    this._dTopk(p, op, 1);
+    p.end();
+    enc.copyBufferToBuffer(this.topBuf, 0, this.stageTop, 0, op.R * 4);
+    return op;
+  }
+  async _readTop(op) {
+    await this.stageTop.mapAsync(GPUMapMode.READ, 0, op.R * 4);
+    const c = readCands(new Uint32Array(this.stageTop.getMappedRange(0, op.R * 4)), 0, op.k);
+    this.stageTop.unmap();
+    return c;
+  }
+  // headFromHidden with the sampling on the GPU: 16 B (greedy) or 8k + 8 B (top-k) back instead of
+  // vocab * 4. -> { ids, vals, bad }: ids/vals the top pairs, value descending (index ascending on
+  // ties); bad the column's count of non-finite logits (NaN / Inf), so callers keep their NaN check.
+  async headFromHiddenIds(xIn, desc = { kind: "greedy" }) {
+    this._pre = null;
+    this.device.queue.writeBuffer(this.x, 0, xIn);
+    const enc = this.device.createCommandEncoder();
+    const op = this._encodeHeadIds(enc, desc);
+    this.device.queue.submit([enc.finish()]);
+    return await this._readTop(op);
+  }
+  // forwardToken with the sampling on the GPU (see headFromHiddenIds)
+  async forwardTokenIds(tokenId, desc = { kind: "greedy" }) {
+    this._pre = null;
+    this._setFrame(this.pos, this.pos + 1);
+    this.device.queue.writeBuffer(this.x, 0, this._embedRowF32(tokenId));
+    const enc = this.device.createCommandEncoder();
+    for (let i = 0; i < this.layers.length; i++) this._encodeLayer(enc, i);
+    const op = this._encodeHeadIds(enc, desc);
+    this.device.queue.submit([enc.finish()]);
+    const c = await this._readTop(op);
+    this.pos++;
+    return c;
+  }
+  // headBatch with the sampling on the GPU: an array of n candidates objects
+  async headBatchIds(hs, n = hs ? hs.length / this.dims.dim : this.NC, desc = { kind: "greedy" }) {
+    if (!this.B) this._initBatch();
+    const { dim, vocab } = this.dims;
+    if (hs) for (let c = 0; c < n; c++) this.device.queue.writeBuffer(this.B.x.buf, c * this.B.x.stride, hs.subarray(c * dim, (c + 1) * dim));
+    this.device.queue.writeBuffer(this.frameBufsB[0], 0, new Uint32Array([this.pos, this.pos + 1, n, 0]));
+    const op = this._tkOpB(desc);
+    const enc = this.device.createCommandEncoder();
+    const p = enc.beginComputePass();
+    this._dMC(p, "rmsnorm_mc", this.bgFinalNormMC, 256, 256, n);
+    this._dop(p, this.headB, n);
+    this._dTopk(p, op, n);
+    p.end();
+    enc.copyBufferToBuffer(this.topBuf, 0, this.stageTopN, 0, n * op.R * 4);
+    this.device.queue.submit([enc.finish()]);
+    await this.stageTopN.mapAsync(GPUMapMode.READ, 0, n * op.R * 4);
+    const u = new Uint32Array(this.stageTopN.getMappedRange(0, n * op.R * 4));
+    const out = [];
+    for (let c = 0; c < n; c++) out.push(readCands(u, c * op.R, op.k));
+    this.stageTopN.unmap();
+    return out;
+  }
+  _tkOpB(desc) { return this._tkOp("B", this.B.logits.buf, this.dims.vocab, this.B.logits.stride / 4, topkK(desc), this.topBuf); }
+
   // draft with the reduced-vocabulary head? (see draftVocabAuto in _init)
   _smallHead() { return !!this.headOpDraft && (!this.draftVocabAuto || this._dvSmall); }
   _noteDV(ids) {
@@ -1609,7 +1725,7 @@ export class Qwen35Engine {
       this._d(p, "rmsnorm", M2.bgHeadNorm, 256, 256);
       const small = wantLogits === "argmax" && this._smallHead();
       this._dop(p, small ? this.headOpDraft : this.headOp);
-      if (wantLogits === "argmax") this._d(p, "argmax", small ? this.bgArgmaxDraft : this.bgArgmax, 256, 256);
+      if (wantLogits === "argmax") this._dArgmax(p, small);
       p.end();
     }
     if (wantLogits === "argmax") enc.copyBufferToBuffer(this.argBuf, 0, this.stageArg, 0, 16);
@@ -1627,7 +1743,8 @@ export class Qwen35Engine {
   // verify tokens[k] at positions pos+k (2..4 tokens): trunk (local batched
   // pass with DeltaNet snapshots, or a caller-supplied runTrunk for a device
   // chain) then one batched head pass -> logits per column.
-  async verifyN(tokens, pos, runTrunk = null) {
+  // desc (a GPU sampling descriptor, see gpuDescFor): candidates per column instead of logits
+  async verifyN(tokens, pos, runTrunk = null, desc = null) {
     const n = tokens.length, { dim } = this.dims;
     let hs;
     if (runTrunk) hs = await runTrunk(tokens, pos);
@@ -1641,7 +1758,8 @@ export class Qwen35Engine {
     }
     const lgs = [];
     for (let c0 = 0; c0 < n; c0 += this.NC)
-      lgs.push(...await this.headBatch(hs.subarray(c0 * dim, Math.min(n, c0 + this.NC) * dim), Math.min(this.NC, n - c0)));
+      lgs.push(...await (desc ? this.headBatchIds(hs.subarray(c0 * dim, Math.min(n, c0 + this.NC) * dim), Math.min(this.NC, n - c0), desc)
+        : this.headBatch(hs.subarray(c0 * dim, Math.min(n, c0 + this.NC) * dim), Math.min(this.NC, n - c0))));
     return { lgs, hs };
   }
   _restoreDN(k) {   // recurrent state as it was after verify column k
@@ -1703,7 +1821,7 @@ export class Qwen35Engine {
         const p2 = enc.beginComputePass();
         this._d(p2, "rmsnorm", M2.bgHeadNorm, 256, 256);
         this._dop(p2, small ? this.headOpDraft : this.headOp);
-        this._d(p2, "argmax", small ? this.bgArgmaxDraft : this.bgArgmax, 256, 256);
+        this._dArgmax(p2, small);
         p2.end();
         enc.copyBufferToBuffer(this.argBuf, 0, stage, stageOff + k * 16, 16);
         if (toB) {
@@ -1732,7 +1850,10 @@ export class Qwen35Engine {
   // gathered on the GPU (emb_gather, bit-exact with _embedRowF32), the trunk hiddens stay in B.x
   // (the separate path reads them to the CPU and writes the same bytes back for the head), and one
   // mapAsync returns the logits plus the drafts. Returns { lgs, drafts }; B.x keeps the hiddens.
-  async _verifyFused(tokens, pos, chainK = 0) {
+  // desc (GPU sampling): the head's top-k runs in the same pass and the map shrinks from
+  // n * vocab * 4 + 128 B to n * (8k + 8) + 128 B; lgs are then candidates objects.
+  async _verifyFusedIds(tokens, pos, chainK = 0, desc = { kind: "greedy" }) { return this._verifyFused(tokens, pos, chainK, desc); }
+  async _verifyFused(tokens, pos, chainK = 0, desc = null) {
     const { dim, vocab } = this.dims, n = tokens.length + chainK, q = this.device.queue;
     if (chainK) q.writeBuffer(this.mtp.emb, 0, this._embedRowF32(tokens[0]));
     this.pos = pos;
@@ -1740,25 +1861,28 @@ export class Qwen35Engine {
     for (let c = 0; c < n; c++) q.writeBuffer(this.frameBufsB[c], 0, new Uint32Array([pos + c, pos + c + 1, n, sp]));
     for (let c = 0; c < tokens.length; c++) q.writeBuffer(this.B.x.buf, c * this.B.x.stride, this._embedRowF32(tokens[c]));
     const enc = this.device.createCommandEncoder();
-    const tail = n * vocab * 4;   // drafts go right after the n logits rows
-    if (chainK) this._encodeDraftChain(enc, pos, chainK, this.stageLogitsN, tail, true);
+    const op = desc ? this._tkOpB(desc) : null, stage = op ? this.stageTopN : this.stageLogitsN;
+    const tail = op ? n * op.R * 4 : n * vocab * 4;   // drafts go right after the n logits rows (or candidate rows)
+    if (chainK) this._encodeDraftChain(enc, pos, chainK, stage, tail, true);
     for (let l = 0; l < this.layers.length; l++) this._encodeLayerBatch(enc, l, pos, n);
     const p = enc.beginComputePass();
     this._dMC(p, "rmsnorm_mc", this.bgFinalNormMC, 256, 256, n);
     this._dop(p, this.headB, n);
+    if (op) this._dTopk(p, op, n);
     p.end();
-    for (let c = 0; c < n; c++) enc.copyBufferToBuffer(this.B.logits.buf, c * this.B.logits.stride, this.stageLogitsN, c * vocab * 4, vocab * 4);
+    if (op) enc.copyBufferToBuffer(this.topBuf, 0, stage, 0, tail);
+    else for (let c = 0; c < n; c++) enc.copyBufferToBuffer(this.B.logits.buf, c * this.B.logits.stride, stage, c * vocab * 4, vocab * 4);
     q.submit([enc.finish()]);
     const bytes = tail + chainK * 16;
-    await this.stageLogitsN.mapAsync(GPUMapMode.READ, 0, bytes);
-    const m = this.stageLogitsN.getMappedRange(0, bytes);
-    const all = new Float32Array(m, 0, n * vocab).slice();
+    await stage.mapAsync(GPUMapMode.READ, 0, bytes);
+    const m = stage.getMappedRange(0, bytes);
+    const lgs = [];
+    if (op) { const u = new Uint32Array(m, 0, tail / 4); for (let c = 0; c < n; c++) lgs.push(readCands(u, c * op.R, op.k)); }
+    else { const all = new Float32Array(m, 0, n * vocab).slice(); for (let c = 0; c < n; c++) lgs.push(all.subarray(c * vocab, (c + 1) * vocab)); }
     const ids = new Uint32Array(m, tail, chainK * 4);
     const drafts = Array.from({ length: chainK }, (_, k) => ids[k * 4]);
-    this.stageLogitsN.unmap();
+    stage.unmap();
     this.pos = pos + n;
-    const lgs = [];
-    for (let c = 0; c < n; c++) lgs.push(all.subarray(c * vocab, (c + 1) * vocab));
     return { lgs, drafts };
   }
   _canFuse(n, runTrunk) {   // solo verify that fits one batch pass
@@ -1770,6 +1894,8 @@ export class Qwen35Engine {
   async specStep(tNext, sample, K = 3, { runTrunk = null, onReject = null } = {}) {
     const pos = this.pos, M2 = this.mtp;
     K = Math.max(1, Math.min(7, K));
+    // GPU sampling: lgs are candidates objects ({ ids, vals, bad }) that `sample` reads directly
+    const desc = this.gpuDescFor(sample);
     // the chain gathers draft embeddings from a table of the first draftVocab rows, so it drafts with
     // the small head; while the draftvocab fallback wants the full head (e.g. a Chinese chat), the
     // drafts go through _mtpRun instead
@@ -1777,7 +1903,7 @@ export class Qwen35Engine {
     let drafts = [], lgs, hs = null;
     // the previous step may already have run the draft block for (tNext, pos) (see _mtpRefill)
     const pre = chain ? this._takePre(-1, -1) : this._takePre(tNext, pos);
-    if (chain && this._canFuse(K + 1, runTrunk)) ({ lgs, drafts } = await this._verifyFused([tNext], pos, K));
+    if (chain && this._canFuse(K + 1, runTrunk)) ({ lgs, drafts } = await this._verifyFused([tNext], pos, K, desc));
     else {
       const d0 = pre ? await this._preDraft0(pre) : null;
       if (d0 !== null) drafts.push(d0);   // this.x now holds the draft block's output for column 0
@@ -1787,8 +1913,8 @@ export class Qwen35Engine {
         // which is what chained drafting feeds back in
         drafts.push(await this._mtpRun(null, k === 0 ? tNext : drafts[k - 1], pos + k, "argmax"));
       }
-      if (this._canFuse(K + 1, runTrunk)) ({ lgs } = await this._verifyFused([tNext, ...drafts], pos));
-      else ({ lgs, hs } = await this.verifyN([tNext, ...drafts], pos, runTrunk));
+      if (this._canFuse(K + 1, runTrunk)) ({ lgs } = await this._verifyFused([tNext, ...drafts], pos, 0, desc));
+      else ({ lgs, hs } = await this.verifyN([tNext, ...drafts], pos, runTrunk, desc));
     }
     const out = [];
     let a = 0;   // accepted drafts
@@ -1817,11 +1943,12 @@ export class Qwen35Engine {
     const pos = this.pos, M2 = this.mtp, { dim } = this.dims;
     const K = Math.max(1, Math.min(this.maxDrafts || 7, drafts.length));
     drafts = drafts.slice(0, K);
+    const desc = this.gpuDescFor(sample);   // GPU sampling (see specStep)
     // tNext's draft-cache row: already written if the previous step ran its draft block column
     if (M2 && !this._takePre(tNext, pos)) await this._mtpRun(null, tNext, pos, false);
     let lgs, hs = null;
-    if (this._canFuse(K + 1, runTrunk)) ({ lgs } = await this._verifyFused([tNext, ...drafts], pos));
-    else ({ lgs, hs } = await this.verifyN([tNext, ...drafts], pos, runTrunk));
+    if (this._canFuse(K + 1, runTrunk)) ({ lgs } = await this._verifyFused([tNext, ...drafts], pos, 0, desc));
+    else ({ lgs, hs } = await this.verifyN([tNext, ...drafts], pos, runTrunk, desc));
     const out = [];
     let a = 0;
     for (let k = 0; k <= K; k++) {
@@ -1932,7 +2059,7 @@ export class Qwen35Engine {
       const p = enc.beginComputePass();
       this._d(p, "rmsnorm", M2.bgHeadNorm, 256, 256);
       this._dop(p, small ? this.headOpDraft : this.headOp);
-      this._d(p, "argmax", small ? this.bgArgmaxDraft : this.bgArgmax, 256, 256);
+      this._dArgmax(p, small);
       p.end();
     }
     if (!this.stagePre) this.stagePre = dev.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -1971,7 +2098,7 @@ export class Qwen35Engine {
       const p = enc.beginComputePass();
       this._d(p, "rmsnorm", M2.bgHeadNorm, 256, 256);
       this._dop(p, small ? this.headOpDraft : this.headOp);
-      this._d(p, "argmax", small ? this.bgArgmaxDraft : this.bgArgmax, 256, 256);
+      this._dArgmax(p, small);
       p.end();
     }
     enc.copyBufferToBuffer(this.argBuf, 0, this.stageArg, 0, 16);
