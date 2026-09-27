@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="A room where your devices run one open AI model together, in browser tabs.">
-<meta property="og:title" content="Pooled · room">
+<meta property="og:title" content="pooled · room">
 <meta property="og:description" content="Peer-to-peer inference in the browser. Models too big for one device run across many.">
 <meta property="og:url" content="https://pooled.run/room">
 <meta property="og:image" content="https://pooled.run/site/og.png">
@@ -22,7 +22,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="manifest" href="/site.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<title>Pooled · room</title>
+<title>pooled · room</title>
 <script>if (/[?&](dev=1|signal=)/.test(location.search) && !/[?&]dev=0/.test(location.search)) document.documentElement.classList.add("dev");</script>
 <meta name="theme-color" content="#F6F5F1">
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -762,8 +762,7 @@
   #card-canvas { width: 100%; height: auto; margin-top: 20px; border-radius: 12px; border: 1px solid var(--border); }
 
   /* ---- this device's screen: full screen, lending its memory and GPU (room/compute.js) ---- */
-  #compute-screen { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: var(--game); color: var(--on-game); overflow: hidden; animation: csin .5s var(--ease);
-    background-image: radial-gradient(ellipse 70% 50% at 50% 42%, rgba(42,69,224,.16), transparent 70%); }
+  #compute-screen { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: #000; color: var(--on-game); overflow: hidden; animation: csin .5s var(--ease); }
   @keyframes csin { from { opacity: 0; } }
   html.computing header, html.computing #room-screen, html.computing #join-screen { visibility: hidden; }
   .cs-top { flex: none; display: flex; align-items: center; gap: 14px; padding: 16px 20px; padding-top: max(16px, env(safe-area-inset-top)); }
@@ -779,7 +778,7 @@
   /* each pass: a ring leaves the logo */
   .cs-ring { position: absolute; left: 50%; top: 50%; width: clamp(128px, 30vmin, 216px); aspect-ratio: 1; margin: 0; transform: translate(-50%, -50%) scale(.9); border-radius: 50%; border: 1.5px solid var(--blue-400); opacity: 0; pointer-events: none; }
   #compute-screen[data-phase="idle"] .cs-ring { display: none; }
-  #cs-logo { position: relative; width: clamp(128px, 30vmin, 216px); height: auto; overflow: visible; filter: drop-shadow(0 0 40px rgba(42,69,224,.25)); }
+  #cs-logo { position: relative; width: clamp(128px, 30vmin, 216px); height: auto; overflow: visible; }
   #cs-logo circle { fill: var(--on-game); transform-box: fill-box; transform-origin: center; }
   #cs-logo circle.lit { fill: var(--blue-400); }
   #compute-screen:not([data-phase="serving"]) #cs-logo circle { animation: breathe 2.8s var(--ease) infinite; animation-delay: calc(var(--rc) * .18s); }

@@ -734,7 +734,7 @@ async function keepAwake() {
     if (!wakeLock) awakeStatus("screen stays awake (video) \u2713");
   } catch (e) { if (!wakeLock) awakeStatus("\u26a0 can\u2019t keep the screen awake: set Auto-Lock to Never"); }
 }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "Pooled \u00b7 room"; } });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "pooled \u00b7 room"; } });
 document.addEventListener("touchstart", keepAwake, { passive: true });
 // Lend this device: this device as a full screen that shows its layers and the passes going through it
 function computeState() {
@@ -1194,7 +1194,7 @@ function chatBotEnd(note, stats) {
   renderBot(botEl, false);
   botEl.classList.remove("live");
   // a finished answer in a background tab: say so in the tab title until the tab is looked at
-  if (!note && document.hidden) { document.title = "\u2713 answer ready \u00b7 Pooled"; }
+  if (!note && document.hidden) { document.title = "\u2713 answer ready \u00b7 pooled"; }
   // under the answer: a copy icon (answers only, not notes), then the numbers
   const acts = document.createElement("div");
   acts.className = "m-acts";
