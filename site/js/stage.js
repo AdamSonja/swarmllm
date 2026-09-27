@@ -19,7 +19,7 @@
     const W = demo.offsetWidth; H = demo.offsetHeight;
     const top = pageTop(demo);
     // big: nearly the full width, never wider than the viewport (no horizontal scroll)
-    S0 = vw < 760 ? 1 : Math.max(1, Math.min(1.34, (vw - Math.max(32, vw * .045)) / W));
+    S0 = vw < 760 ? 1 : Math.max(1, Math.min(1.42, (vw - Math.max(32, vw * .045)) / W));
     // settled once the framed demo would sit comfortably in view
     R = Math.max(220, Math.min(top - 20, vh * .62));
     cur = -1;

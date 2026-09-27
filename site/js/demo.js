@@ -33,8 +33,8 @@
   const ANSWER = $("a1").textContent;
   const WORDS = ANSWER.split(" ");
   const DL = 4.3, SPLIT = 6.45, FILL0 = 6.9, FILL1 = 8.9;  // the model card; Download pressed; the halves fill
-  const CH = 9.55;                                             // chat
-  const A0 = CH + 1.55;                                         // the answer starts
+  const CH = 9.55;                                            // chat
+  const A0 = CH + 1.55;                                       // the answer starts
   const DUR = i => [1.6, .85, .5, .34][i] || .17;             // each word's trip; the first is slow enough to follow
   const WT = [A0]; WORDS.forEach((_, i) => WT.push(WT[i] + DUR(i)));
   const A1 = WT[WORDS.length];                                // the answer ends
