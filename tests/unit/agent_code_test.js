@@ -177,12 +177,22 @@ Deno.test("agent: toJSON / from round trip keeps turns, request state and sample
 
 Deno.test("agent: a call cut by the answer cap is not run; the model is told why", async () => {
   const log = [];
-  const cut = "<tool_call>\n<function=write_file>\n<parameter=path>\ngame.js\n</parameter>\n<parameter=content>\nfunction a() {\n  retu";
+  const cut = "<tool_call>\n<function=edit_file>\n<parameter=path>\ngame.js\n</parameter>\n<parameter=old>\nfunction a() {\n  retu";
   const A = new Agent({ generate: scripted([cut, "ok"]), tools: tools(log), usage: () => ({ reason: "max", generated: 4096, prompt: 10 }) });
   const r = await A.run("go");
   eq(r.reason, "done");
-  eq(log, [], "no truncated write");
+  eq(log, [], "no truncated edit");
   ok(/cut at 4096 tokens.*append: true/.test(A.turns[2].text), A.turns[2].text);
+});
+
+Deno.test("agent: a write_file cut by the answer cap keeps its complete lines and says where to continue", async () => {
+  const log = [];
+  const cut = "<tool_call>\n<function=write_file>\n<parameter=path>\ngame.js\n</parameter>\n<parameter=content>\nconst a = 1;\nfunction b() {\n  retu";
+  const A = new Agent({ generate: scripted([cut, "ok"]), tools: tools(log), usage: () => ({ reason: "max", generated: 4096, prompt: 10 }) });
+  const r = await A.run("go");
+  eq(r.reason, "done");
+  eq(log, [["write", "game.js"]], "the complete lines were written");
+  ok(/first 2 lines of game\.js[\s\S]*function b\(\) \{[\s\S]*append: true/.test(A.turns[2].text), A.turns[2].text);
 });
 
 Deno.test("agent: stopped requests fold later instead of filling the context for good", async () => {

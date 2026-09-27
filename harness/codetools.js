@@ -107,7 +107,14 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
       description: `Read a file with line numbers, at most ${MAX_LINES} lines per call; use start_line/end_line for more.`,
       parameters: { type: "object", properties: { path: { type: "string" }, start_line: { type: "integer" }, end_line: { type: "integer" } }, required: ["path"] },
       async run({ path, start_line, end_line }) {
-        const u8 = await ws.readBytes(path), text = new TextDecoder().decode(u8);
+        let u8;
+        try { u8 = await ws.readBytes(path); }
+        catch (e) {
+          // the browser's own "A requested file or directory could not be found..." says nothing useful to the model
+          if (e?.name === "NotFoundError" || /could not be found|not found|no such file/i.test(e?.message || "")) return `error: ${path} does not exist yet; list_dir shows what does`;
+          throw e;
+        }
+        const text = new TextDecoder().decode(u8);
         if (isBinary(u8, text)) return `(${path} is a binary file, ${kb(u8.length)})`;
         if (text === "") return `(${path} is empty)`;
         const lines = text.split("\n");

@@ -13,7 +13,7 @@
 //         preview?(args) -> { path, before, after } }   (shown to approve() for mutating tools)
 // Events (onEvent): step, delta (raw streamed text), text (visible text), tool-start, tool,
 // usage, compacted, trimmed, stopped, done, limit.
-import { toolsSystemPrompt, toolResponses, ToolCallParser } from "./tools.js";
+import { toolsSystemPrompt, toolResponses, ToolCallParser, parseCallBody } from "./tools.js";
 
 const STOPPED = "(stopped by the user)";
 export const CONTEXT_FULL = "context full: start a new task (the files are kept)";
@@ -118,7 +118,16 @@ export class Agent {
       const u = this.usage?.();
       // a call left open by the length cap: its last value is a fragment, so say why instead of running it
       if (u && (u.reason === "max" || u.reason === "ctx")) {
-        for (const c of e.calls) if (c.open) c.error = `your answer was cut at ${u.generated} tokens before the call was complete; write long files in parts (write_file with append: true)`;
+        for (let i = 0; i < e.calls.length; i++) {
+          const c = e.calls[i];
+          if (!c.open) continue;
+          // a write_file cut mid-content: keep its complete lines instead of losing the whole answer,
+          // and tell the model exactly where to pick up (otherwise it retries the same long write and
+          // is cut at the same place again)
+          const part = salvageWrite(c.raw, (n) => this.byName.get(n)?.parameters);
+          if (part) { e.calls[i] = part; continue; }
+          c.error = `your answer was cut at ${u.generated} tokens before the call was complete; write long files in parts (write_file with append: true)`;
+        }
       }
       shown += e.text; found.push(...e.calls);
       if (e.text) this.onEvent({ type: "text", text: e.text, step });
@@ -164,6 +173,7 @@ export class Agent {
         else {
           try { result = String(await t.run(c.arguments || {}, { signal, step })); }
           catch (err) { result = `error: ${err.message}`; }
+          if (c.salvage && !/^error/.test(result)) result += `\nYour answer hit the length limit, so only the first ${c.salvage.lines} lines of ${c.arguments.path} were saved. The last saved line is:\n${c.salvage.last}\nContinue with write_file(path: ${c.arguments.path}, append: true) starting with the line after it. Keep each part under ~120 lines.`;
         }
       }
     }
@@ -265,4 +275,19 @@ export class Agent {
     });
     return a;
   }
+}
+
+// A write_file call cut by the length cap: its content up to the last complete line, as a call that
+// can run (appending when the model asked to append), with where it stopped. null when the cut
+// call is anything else or has no complete line yet.
+export function salvageWrite(raw, schemaFor = () => null) {
+  if (!raw) return null;
+  const c = parseCallBody(raw, schemaFor);
+  const a = c?.arguments;
+  if (c?.name !== "write_file" || !a || typeof a.path !== "string" || !a.path.trim() || typeof a.content !== "string") return null;
+  const cut = a.content.lastIndexOf("\n");
+  if (cut < 0) return null;
+  const content = a.content.slice(0, cut + 1), lines = content.split("\n").length - 1;
+  const last = content.slice(0, -1).split("\n").pop();
+  return { name: "write_file", arguments: { path: a.path.trim(), content, append: a.append === true }, salvage: { lines, last } };
 }

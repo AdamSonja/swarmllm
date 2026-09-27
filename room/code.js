@@ -247,7 +247,7 @@ export async function initCode(api, { mock = null } = {}) {
     const style = mock?.model ? "xml" : detectStyle(api.chatTemplate());
     const src = mock?.model || "room";
     if (agent && agentSrc === src && agentStyle === style) return;
-    model = mock?.model ? (typeof mock.model === "function" ? { generate: mock.model } : mock.model) : roomModel(api, { tools, style });
+    model = mock?.model ? (typeof mock.model === "function" ? { generate: mock.model } : mock.model) : roomModel(api, { tools, style, maxNew: 8192 });
     const json = agent ? agent.toJSON() : sessionJson;
     agent = Agent.from(json, {
       generate: model.generate, tools, style, system: CODE_SYSTEM, maxSteps: 30, approve, onEvent,
