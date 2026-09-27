@@ -579,6 +579,34 @@
   useApp("tetris"); labelDots();
   if (RM) tl.final(); else { tl.reset(); tl.final(); }
 
+  /* ---------- first load: glide the demo to the middle of the screen, once, if the visitor hasn't scrolled
+     (asked for by the user: the demo, and the opening game, are the first thing a visitor sees) ---------- */
+  (() => {
+    if (RM || location.hash || scrollY > 4) return;
+    let cancelled = false;
+    const evs = ["wheel", "touchstart", "keydown", "pointerdown"];
+    const stop = () => { cancelled = true; };
+    evs.forEach(e => addEventListener(e, stop, { passive: true, once: true }));
+    const go = () => {
+      if (cancelled || scrollY > 4) return evs.forEach(e => removeEventListener(e, stop));
+      const nav = document.querySelector(".nav"), navH = nav ? nav.offsetHeight : 0;
+      const r = demo.getBoundingClientRect(), room = innerHeight - navH;
+      const target = Math.max(0, Math.round(scrollY + r.top - navH - Math.max(8, (room - r.height) / 2)));
+      if (target < 24) return evs.forEach(e => removeEventListener(e, stop));
+      const from = scrollY, t0 = performance.now(), dur = 950;
+      const ease = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+      const tick = now => {
+        const k = Math.min(1, (now - t0) / dur);
+        if (!cancelled) scrollTo(0, from + (target - from) * ease(k));
+        if (k < 1 && !cancelled) requestAnimationFrame(tick);
+        else { if (hook > 0) hook = Math.max(hook, 2.2); evs.forEach(e => removeEventListener(e, stop)); }
+      };
+      requestAnimationFrame(tick);
+    };
+    const ready = document.fonts && document.fonts.ready ? Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 700))]) : Promise.resolve();
+    ready.then(() => setTimeout(go, 150));
+  })();
+
   // tests and screenshots: jump to a moment, pick an app
   window.__demo = {
     seek(s, freeze) { seek(s, freeze); },
