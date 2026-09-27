@@ -101,14 +101,9 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     kick();
   }
 
-  function renderStats() {
+  function renderStats() {   // the screen shows no counters now; keep the pass window for the quiet state
     const now = performance.now();
     while (stamps.length && now - stamps[0][0] > 4000) stamps.shift();
-    const s = state();
-    $("cs-tok").textContent = fmt(tokens);
-    $("cs-rate").textContent = stamps.length > 1 ? (stamps.reduce((t, x) => t + x[1], 0) / Math.max(1, (now - stamps[0][0]) / 1000)).toFixed(1) : "0";
-    $("cs-ms").textContent = lastMs != null ? Math.round(lastMs) + " ms" : "-";
-    $("cs-rate-k").textContent = "tokens per second";
   }
   function refresh() {
     if (!open) return;
@@ -117,23 +112,20 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     $("cs-devs").textContent = `${s.devices} device${s.devices === 1 ? "" : "s"}`;
     const has = s.lo != null && s.hi != null;
     const lay = has ? `${s.lo + 1}–${s.hi}` : "";
-    let k, title, sub;
-    const of = s.total ? ` of ${s.total}` : "";
-    if (s.phase === "serving" && has) {
-      k = `This device is helping run ${s.model}`; title = `Serving layers ${lay}`;
-      sub = s.role === "host" ? `${s.hi - s.lo}${of} layers here. It also picks each next word (the model's last step).` : `${s.hi - s.lo}${of} layers here. Every word passes through them.`;
-    }
-    else if (s.phase === "loading") { k = `Getting ready to run ${s.model}`; title = has ? `Loading layers ${lay}` : "Loading the model"; sub = `${s.pct != null ? `${Math.round(s.pct)}% · ` : ""}only this device's layers download`; }
-    else if (s.phase === "serving") { k = `The room is running ${s.model}`; title = "No layers here"; sub = "The other devices hold the model. This one can still ask."; }
-    else { k = "Not serving yet"; title = "Standing by"; sub = "This device starts helping as soon as someone in the room starts a model."; }
+    // one status line and one small line: this screen is for the person whose device it is
+    let title, sub;
+    const model = s.model || "the model";
+    if (s.phase === "serving" && has) { title = "Working"; sub = `Layers ${lay} · ${model}`; }
+    else if (s.phase === "loading") { title = s.pct != null ? `Loading ${Math.round(s.pct)}%` : "Loading"; sub = has ? `Layers ${lay} · ${model}` : model; }
+    else if (s.phase === "serving") { title = "Not holding layers"; sub = `The other devices run ${model}`; }
+    else { title = "Standing by"; sub = ""; }
     root.dataset.phase = s.phase;
     if (s.color) root.style.setProperty("--me", onDark(s.color));
     // serving, and no pass for a moment: say so, and let the logo rest
     const quiet = s.phase === "serving" && has && (!stamps.length || performance.now() - stamps[stamps.length - 1][0] > 2500);
     root.toggleAttribute("data-quiet", quiet);
-    if (quiet) k = `This device is helping run ${s.model} · waiting for a question`;
-    $("cs-k").textContent = k; $("cs-title").textContent = title; $("cs-sub").textContent = sub;
-    if ($("cs-ex")) $("cs-ex").hidden = s.phase === "serving" && !has;
+    if (quiet) title = "Ready";
+    $("cs-title").textContent = title; $("cs-sub").textContent = sub;
     // this device's slice of the model
     const strip = $("cs-strip"), total = s.total || 0;
     const n = total ? Math.min(total, 64) : 0, per = total ? total / n : 1;

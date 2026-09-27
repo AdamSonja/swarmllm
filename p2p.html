@@ -782,14 +782,9 @@
   #compute-screen[data-phase="loading"] #cs-logo circle { animation-duration: 1.4s; }
   /* serving, but no token for a moment: the logo breathes slowly until the next pass */
   #compute-screen[data-phase="serving"][data-quiet] #cs-logo circle { animation: breathe 4.2s var(--ease) infinite; animation-delay: calc(var(--rc) * .22s); }
-  #compute-screen[data-quiet] .cs-stats { opacity: .6; }
   @keyframes breathe { 0%, 100% { opacity: .28; transform: scale(.86); } 45% { opacity: 1; transform: none; } }
   .cs-text { flex: none; display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0 20px; }
-  #cs-k { display: inline-flex; align-items: center; gap: 9px; font: 500 15px/1.3 var(--sans); letter-spacing: -.005em; color: var(--blue-200); margin-bottom: 14px; text-wrap: balance; }
-  #cs-k::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: blink 1.6s infinite; }
-  #compute-screen[data-phase="idle"] #cs-k { color: var(--on-game-2); }
   #cs-title { font: 400 clamp(34px, 6.4vw, 60px)/1.04 var(--display); letter-spacing: -.035em; text-wrap: balance; }
-  #cs-ex { margin-top: 8px; font-size: 14px; color: var(--on-game-2); opacity: .75; }
   #cs-sub { margin-top: 10px; font-size: clamp(16px, 1.6vw, 19px); color: var(--on-game-2); text-wrap: balance; }
   #cs-strip { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; width: min(520px, 100%); height: 10px; margin-top: 26px; }
   #cs-strip i { border-radius: 2px; background: rgba(255,255,255,.08); }
@@ -798,14 +793,8 @@
   #cs-strip i.mine.wait { background: color-mix(in srgb, var(--me) 28%, transparent); box-shadow: none; }
   #cs-strip.sweep i.mine:not(.wait) { animation: cssweep .55s var(--ease) both; animation-delay: calc(var(--j, 0) * 14ms); }
   @keyframes cssweep { 30% { background: var(--blue-200); box-shadow: 0 0 14px rgba(124,143,255,.8); transform: scaleY(1.6); } }
-  #compute-screen[data-phase="idle"] #cs-k::before { animation-duration: 3.2s; }
-  .cs-stats { flex: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(560px, calc(100% - 40px)); margin: 28px auto 0; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; background: rgba(255,255,255,.02); }
-  .cs-stats > div { display: flex; flex-direction: column-reverse; justify-content: flex-start; padding: 14px 12px; text-align: center; min-width: 0; }
-  .cs-stats > div + div { border-left: 1px solid rgba(255,255,255,.1); }
-  .cs-stats dd { font: 500 clamp(22px, 3vw, 28px)/1.1 var(--mono); font-variant-numeric: tabular-nums; color: var(--on-game); }
-  .cs-stats dt { margin-top: 6px; font-size: 12px; color: var(--on-game-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #compute-screen[data-phase="idle"] .cs-stats { opacity: .45; }
-  .cs-stats { margin-bottom: auto; }
+  .cs-text { margin-bottom: auto; }
+  #cs-sub:empty { display: none; }
   #compute-exit { white-space: nowrap; }
   .cs-foot { flex: none; padding: 18px 20px; padding-bottom: max(18px, env(safe-area-inset-bottom)); text-align: center; font-size: 12px; color: var(--on-game-2); }
   /* ---- Code mode (room/code.js, room/code-ui.js; docs/design/harness-app.md E): the landing's Code step.
@@ -1181,7 +1170,6 @@
     .cs-top { padding: 12px 14px; padding-top: max(12px, env(safe-area-inset-top)); gap: 10px; }
     .cs-brand span { display: none; }
     .cs-room { padding-left: 10px; font-size: 13px; }
-    .cs-stats dt { font-size: 11px; white-space: normal; text-wrap: balance; line-height: 1.3; }
   }
   @media (pointer: coarse) {
     input, select, textarea, #ai-prompt, #code-prompt, #ed-text, #ed-hl, #ed-ln, #code-pane select, #code-pane input[type="text"] { font-size: 16px; }
@@ -1489,18 +1477,11 @@
   </div>
   <div class="cs-stage"><canvas id="cs-flow" aria-hidden="true"></canvas><span class="cs-ring" id="cs-ring" aria-hidden="true"></span><svg id="cs-logo" viewBox="0 0 24 24" aria-hidden="true"></svg></div>
   <div class="cs-text" aria-live="polite">
-    <p id="cs-k">Not serving yet</p>
     <h1 id="cs-title">Standing by</h1>
-    <p id="cs-sub">This device starts helping as soon as someone in the room starts a model.</p>
-    <p id="cs-ex">This device does part of every answer.</p>
+    <p id="cs-sub"></p>
     <div id="cs-strip" aria-hidden="true"></div>
   </div>
-  <dl class="cs-stats">
-    <div><dt>tokens here</dt><dd id="cs-tok">0</dd></div>
-    <div><dt id="cs-rate-k">tokens per second</dt><dd id="cs-rate">0</dd></div>
-    <div><dt>time for its layers</dt><dd id="cs-ms">-</dd></div>
-  </dl>
-  <p class="cs-foot">This screen stays on. Plug in and leave it be: this device is part of the model.</p>
+  <p class="cs-foot">Keep this screen on.</p>
 </div>
 <div id="toasts" role="status" aria-live="polite"></div>
 <script src="/site/js/sparkle.js"></script>
