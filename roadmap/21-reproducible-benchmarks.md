@@ -9,7 +9,7 @@ Thirteen proposals describe one gap: every number comes from one GB10 and one Ma
 
 ## Design
 
-See the merged proposals in [docs/roadmap-review.md](../docs/archive/roadmap-review.md) under item 21; turn them into a design note before building.
+See the merged proposals in [docs/archive/roadmap-review.md](../docs/archive/roadmap-review.md) under item 21; turn them into a design note before building.
 
 ## Done when
 

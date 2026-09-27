@@ -9,7 +9,7 @@ Master plan NOW #4 is a stated launch gate with no roadmap file. It cannot ship 
 
 ## Design
 
-See the merged proposals in [docs/roadmap-review.md](../docs/archive/roadmap-review.md) under item 20; turn them into a design note before building.
+See the merged proposals in [docs/archive/roadmap-review.md](../docs/archive/roadmap-review.md) under item 20; turn them into a design note before building.
 
 ## Done when
 

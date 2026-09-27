@@ -9,7 +9,7 @@ The only code that turns a prompt into tokens is `aiGenerate`, which reads the D
 
 ## Design
 
-See the merged proposals in [docs/roadmap-review.md](../docs/archive/roadmap-review.md) under item 22; turn them into a design note before building.
+See the merged proposals in [docs/archive/roadmap-review.md](../docs/archive/roadmap-review.md) under item 22; turn them into a design note before building.
 
 ## Done when
 

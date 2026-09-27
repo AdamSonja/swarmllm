@@ -9,7 +9,7 @@ All 13 URLs in room/models.js are `resolve/main`, the cache key is URL + range a
 
 ## Design
 
-See the merged proposals in [docs/roadmap-review.md](../docs/archive/roadmap-review.md) under item 19; turn them into a design note before building.
+See the merged proposals in [docs/archive/roadmap-review.md](../docs/archive/roadmap-review.md) under item 19; turn them into a design note before building.
 
 ## Done when
 
