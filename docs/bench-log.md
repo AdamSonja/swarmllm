@@ -502,3 +502,88 @@ flag-off with no keep verdict), `exp/chain-fuse`, `exp/tail-head` and `exp/k-pro
 by the cut-off, and each conflicts with v1 in `engine/qwen35.js` / `room.js` / the test harnesses. `exp/one-sync-hop`
 (no speedup; its one-submit readback overlaps v1's encode-ahead, conflicts in 5 files) and `exp/wire-rtt` (nothing
 to gain) are left out too.
+
+## 2026-09-27: first Apple M5 Max results (Mac Studio, Metal), main at cef5cd3
+
+Mac Studio, Apple M5 Max (32-core GPU, Metal 4), 36 GB unified memory, macOS 27.0. Deno 2.9.7 (wgpu on Metal) for
+the Deno tests; Chrome 154 headless over SSH for the browser runs. Headless Chrome gets WebGPU over SSH without a GUI
+session (`--headless=new --enable-unsafe-webgpu`, adapter `apple` / `metal-3`, 4 GB buffers and bindings, 32 KB
+workgroup memory, `shader-f16`, `subgroups`, `chromium-experimental-subgroup-matrix`). Models copied from the GB10.
+
+### Correctness
+
+| Check | Result on the M5 Max |
+|---|---|
+| `test_selftest.js`, `deno test tests/unit` (228) | pass |
+| `run.sh quick` (Qwen3 0.6B / SmolLM goldens, stream, batch, reset, splits) | all pass; Qwen3 0.6B 45.4 tok/s, batched prefill 209.8 tok/s |
+| `run.sh q38` (27B, one process per file) | **all 9 pass** (test_q38, batch_q38, mtp, b4, twins, gemm, q38_split, mtp_split, ctx) |
+| `run.sh q38once` (27B, one process, shared upload) | **4 fail** (test_q38, test_b4, test_q38_split, test_ctx): every logit NaN. Test-runner problem, see below |
+| `test_q38_bits.js` `ATTN_PREFILL_TILE=0` | BITS plain **b72e4d1f** hidden **ac403b4e** (GB10: 85b12667 / eba0b8d5, different GPU, different sums); spec == plain, text `\nexport const TENSOR_BYTES = {\n  [GGML` |
+| `test_moe.js`, engine defaults | **FAIL**: garbage text on all 3 prompts, spec != plain. Cause: the tiled expert-grouped prefill kernel, see below |
+| `test_moe.js`, `MOEGROUP=0`, `MOEGROUP_TILED=0` or `MOE_FUSE=0` | MATCH llama.cpp 3/3, spec == plain |
+| `test_moe.js`, tiled kernel with the scratch fix (below) | MATCH llama.cpp 3/3, spec == plain; plain 36.4 tok/s, spec 75.0 / 67.5 / 57.1 |
+| `test_moe_split.js` `SOLO=0` (scratch fix) | pass: split spec == split plain on 5 prompts incl. the tool prompt, checkpoint after rollback ok, 0 GPU errors (solo skipped: two 21 GB engines do not fit in 36 GB) |
+| `test_prefill_opts.js` MoE, defaults | 150 tokens: relDiff on vs off **4.35e-1**, greedy 24 differs, spec after all-on prefill != plain; then `OperationError: validation error occurred` at `forwardToken` `mapAsync` in the 700-token case |
+| `test_prefill_opts.js` MoE, scratch fix, `PREFILL_UBATCH=0` | 150 tokens: relDiff 2.2e-5, argmax equal, greedy 24 identical, spec == plain; the same `mapAsync` validation error at 700 |
+| `bench_ctx.js` MoE, wide prefill and grouped prefill both on | the same `mapAsync` validation error at the first fill (either one alone: no error). Deno does not report the underlying validation message; Chrome runs the same config with 0 GPU errors |
+| `bench_ctx.js` 27B at 16384 | **spec != plain** (acceptance 10/63, spec 8.4 tok/s vs plain 12.2); at 512 and 4096 spec == plain |
+
+**MoE: tiled expert-grouped prefill is wrong on Apple GPUs, in Chrome too.** `moeGroupPrefill` with
+`moeGroupTiled` (the MoE default since integ/kernels) gives garbage from the first token. In Chrome 154 on the
+same Mac, `chrome_bench.mjs` with defaults also fails (golden false, spec != plain, 0 GPU errors), and
+`&moegrouptiled=0` passes. So a Mac solo MoE or a Mac room host gets garbage on pooled.run. A Mac worker in a
+room does not run the grouped kernels, since they only run on the engine that holds the embedding. The A/B points
+at `tiledKernel` in `engine/wgsl/moe_group.js`: its reduction scratch `var<workgroup> xt: array<vec4<f32>>` is
+written one component per thread (`xt[ri >> 2u][ri & 3u] = a...`, threads t..t+3 write the 4 components of one
+vec4). On Metal that store appears to become a read-modify-write of the whole vec4, so neighbouring threads' writes
+are lost. A scratch copy that declared `xt` as `array<f32, 4 * XT>` (vec4 loads built from 4 scalars) passed
+`test_moe`, `test_moe_split` and the 150-token prefill check above. It is the only component-wise write into a
+workgroup vec4 array in `engine/wgsl`. The fix is not in this PR.
+
+**27B one-process runner (`run_q38_once.js`) loses its f32 weights on Metal.** `sharedQ38Context` →
+`preuploadWeights` creates every f32 tensor with `mappedAtCreation` and writes the Q4/Q8 matrices with
+`writeBuffer`, 15.14 GB in all (64 layers + head), with no GPU work in between. Read back afterwards, all 448 f32
+buffers (norms, `wBeta`, `wAlpha`, `dtBias`, ...) are zero, even layer 0's. At 32 layers + head (8.4 GB) or 64
+layers without the head (13.9 GB) they are intact, and so are they at 64 layers when each layer's upload is
+followed by a readback. `onSubmittedWorkDone` after each layer does not help. Every per-file 27B test passes, so
+this is a runner (or wgpu Metal) issue, not an engine one. Two gates did not catch it: `test_batch_q38`
+("relDiff 0.00e+0", argmax 0 == 0) and `test_twins` ("identical") both pass when every logit is NaN.
+
+### Speed
+
+Deno (`bench_ctx.js`, fills 512 / 4096 / 16384, 32 tokens; the 512 prefill includes first-use shader compiles):
+
+| | prefill 512 / 4k / 16k | plain decode 512 / 4k / 16k | spec decode 512 / 4k / 16k |
+|---|---|---|---|
+| 27B, defaults | 27.1 / 58.4 / 53.6 | 14.93 / 14.67 / 12.15 | 21.66 / 22.24 / 8.36 (16k: spec != plain) |
+| MoE, scratch fix, `PREFILL_UBATCH=0` | 44.9 / 218.7 / 194.1 | 32.63 / 27.78 / 28.66 | 46.91 / 49.68 / 43.95 |
+| GB10 for scale (above, combined default) | 27B 70.0 / 74.4 / 66.1, MoE 153 / 140 / 89 | 27B 8.8 / 8.5 / 7.6, MoE 24.2 / 22.4 / 21.8 | 27B 16.9 / 11.4 / 12.8, MoE 33.7 / 39.5 / 28.9 |
+
+Decode is 1.3..1.7x the GB10's. The M5 Max has about twice the GB10's memory bandwidth. Prefill is behind on the
+27B. `test_mtp` 27B: plain 15.8, spec 34.9 tok/s (85%). `test_moe` MoE: plain 35-36 tok/s.
+
+Chrome 154 (`chrome_bench.mjs`, MoE, 40 tokens, `&moegrouptiled=0` so the output is right): plain **80.5 / 83.5**,
+spec **127.6 / 115.3** tok/s (two-sum / hash-map, acceptance 28/33 and 28/39), golden, spec == plain, 0 GPU errors.
+Decode in Chrome is 2.3x Deno's on the same GPU. Prefill at 2048 tokens (`prefilllen=2048&prefillall=1`): all off
+178.5, all on 210.4 tok/s, relDiff 0.217 with argmax 713 vs 460. With the tiled kernel (defaults) it is 258 tok/s
+but relDiff 1.02.
+
+### First cross-machine room: GB10 + M5 Max
+
+GB10 (headless Chromium 131, Vulkan) hosts, and the M5 Max (headless Chrome 154, Metal) joins over Tailscale, both
+on the same LAN. Each machine serves its own checkout of cef5cd3 and loads its layers from its own disk
+(`peerweights=0`). Signaling is a PeerJS server on the GB10, and the WebRTC link is direct (mDNS host-candidate
+hiding off). The harness is a two-machine version of `room_latency.mjs` (one browser per machine, no emulated lag).
+Qwen3.6 35B MoE, split by pledge: GB10 layers 1-20 + embed/head, M5 Max layers 21-40. Online 109 s after Start. The
+prompt is `japan` (172 tokens with the template), exact sampling, a new chat per answer, 128 tokens.
+
+| Mode | Answer | Prefill | Decode | TTFT | Ping RTT |
+|---|---|---|---|---|---|
+| plain | 1 | 172 tok in 1.2 s | 22.3 tok/s | 55 ms | 6 ms |
+| plain | 2 | 172 tok in 0.5 s | 26.2 tok/s | 5 ms | 7 ms |
+| spec | 1 | 172 tok in 0.5 s | 31.7 tok/s (43% accepted) | 7 ms | 10 ms |
+| spec | 2 | 172 tok in 0.5 s | 27.2 tok/s (40% accepted) | 5 ms | 6 ms |
+
+All four answers start with the same text (greedy). At 26 tok/s plain, one lap (GB10 20 layers → M5 Max 20 layers
+→ back) is about 38 ms, including a ~6-7 ms WebRTC round trip. The GB10-only 2-device emulation at 0 ms (above)
+gave 27.9 / 32.7.
