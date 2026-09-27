@@ -30,6 +30,11 @@ Deno.test("pickCard: each trigger", () => {
   eq(pickCard({ call: { name: "serve" }, result: "serving . on :5173\nloaded in 5 ms · 1 error:\n[0.1s] error game.js:3 x" }), "errors");
   eq(pickCard({ call: { name: "serve" }, result: "serving . on :5173\nloaded in 5 ms · no errors" }), null);
   eq(pickCard({ call: { name: "read_file" }, result: "1|x" }), null);
+  // app code run with run_js instead of written into the page; a short probe is fine
+  const game = "const c = document.getElementById('g');\n" + "let x = 1;\n".repeat(20) + "requestAnimationFrame(loop);";
+  eq(pickCard({ call: { name: "run_js", arguments: { code: game } }, result: "ok in 5 ms (no output)" }), "scratch");
+  eq(pickCard({ call: { name: "run_js", arguments: { code: "console.log(document.title)" } }, result: "ok in 5 ms\nx" }), null);
+  eq(pickCard({ call: { name: "run_js", arguments: { code: game } }, result: "error: x is not defined" }), "runjs");
   for (const [id, t] of Object.entries(CARDS)) ok(t.length <= 245, `card ${id}: ${t.length} chars`);
 });
 

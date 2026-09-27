@@ -75,11 +75,21 @@ export function parseCallBody(body, schemaFor = () => null) {
     return { name, arguments: args };
   }
   try {
-    const o = parseLooseJSON(b);
-    if (!o || typeof o.name !== "string") return { error: "tool call has no name", raw };
-    let a = o.arguments ?? o.parameters ?? {};
-    if (typeof a === "string") { try { a = JSON.parse(a); } catch { /* leave as text */ } }
-    return { name: o.name, arguments: a };
+    let o = parseLooseJSON(b);
+    if (Array.isArray(o) && o.length === 1) o = o[0];   // [{"name": ...}]
+    if (o && typeof o.function === "object" && o.function) o = o.function;   // OpenAI's {"type": "function", "function": {...}}
+    const name = o && [o.name, o.tool, o.function, o.tool_name].find((v) => typeof v === "string");
+    if (!name) return { error: "tool call has no name", raw };
+    const k = ["arguments", "parameters", "args", "input", "params"].find((x) => o[x] !== undefined);
+    let a;
+    if (k) a = o[k];
+    else {
+      // the arguments written next to the name: {"name": "serve", "dir": "."}
+      a = {};
+      for (const [x, v] of Object.entries(o)) if (!["name", "tool", "function", "tool_name", "type", "id"].includes(x)) a[x] = v;
+    }
+    if (typeof a === "string") { try { a = parseLooseJSON(a); } catch { /* leave as text */ } }
+    return { name: name.trim(), arguments: a ?? {} };
   } catch (e) {
     return { error: "tool call is not valid JSON: " + e.message, raw };
   }
@@ -87,21 +97,39 @@ export function parseCallBody(body, schemaFor = () => null) {
 
 // JSON.parse, then the near misses small models write for a call: extra or missing closing braces,
 // and a stray "{" before "arguments" ({"name": "x", {"arguments": {...}}}). Strings are respected.
-export function parseLooseJSON(s) {
+// Also: raw newlines / tabs inside strings (escaped), trailing commas, and with { open: true } a
+// string the answer ended inside (closed there, for salvaging a cut write).
+export function parseLooseJSON(s, { open = false } = {}) {
   try { return JSON.parse(s); } catch (first) {
     let t = s.trim().replace(/("name"\s*:\s*"[^"]*"\s*,\s*)\{\s*(?="(?:arguments|parameters)"\s*:)/, "$1");
     // balance braces outside strings: drop unmatched closers, close what is still open
     let out = "", depth = 0, inStr = false, esc = false;
+    const stack = [];
     for (const c of t) {
-      if (inStr) { out += c; if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+      if (inStr) {
+        if (esc) { esc = false; out += c; continue; }
+        if (c === "\\") { esc = true; out += c; continue; }
+        if (c === '"') inStr = false;
+        out += c === "\n" ? "\\n" : c === "\r" ? "\\r" : c === "\t" ? "\\t" : c;
+        continue;
+      }
       if (c === '"') { inStr = true; out += c; continue; }
-      if (c === "{" || c === "[") depth++;
-      if (c === "}" || c === "]") { if (depth === 0) continue; depth--; }
+      if (c === "{" || c === "[") { depth++; stack.push(c === "{" ? "}" : "]"); }
+      if (c === "}" || c === "]") {
+        if (depth === 0) continue;
+        depth--; stack.pop();
+        out = out.replace(/,\s*$/, "");   // a trailing comma
+      }
       out += c;
       if (depth === 0 && out.trim().startsWith("{") && (c === "}")) break;   // one object: ignore what follows it
     }
-    if (inStr) throw first;
-    while (depth-- > 0) out += "}";
+    if (inStr) {
+      if (!open) throw first;
+      if (esc) out = out.slice(0, -1);   // a cut escape
+      out += '"';
+    }
+    out = out.replace(/,\s*$/, "").replace(/(?:,|:)\s*$/, (m) => (m.trim() === ":" ? ": null" : ""));
+    while (stack.length) out += stack.pop();
     return JSON.parse(out);
   }
 }
