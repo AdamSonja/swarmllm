@@ -73,15 +73,15 @@
 
   <section class="stage" aria-label="How a room works">
     <div class="wrap">
-      <div class="demo" id="demo" data-scene="code" data-mode="code">
+      <div class="demo" id="demo" data-scene="tabs" data-mode="chat">
 
         <div class="modes" role="tablist" aria-label="Demo">
           <span class="pill" aria-hidden="true"></span>
-          <button type="button" role="tab" id="mChat" aria-controls="win" aria-selected="false" tabindex="-1">Chat</button>
-          <button type="button" role="tab" id="mCode" data-twinkle aria-controls="win" aria-selected="true">Code</button>
+          <button type="button" role="tab" id="mChat" aria-controls="win" aria-selected="true">Chat</button>
+          <button type="button" role="tab" id="mCode" data-twinkle aria-controls="win" aria-selected="false" tabindex="-1">Code</button>
         </div>
 
-        <div class="win" id="win" role="tabpanel" aria-labelledby="mCode">
+        <div class="win" id="win" role="tabpanel" aria-labelledby="mChat">
           <!-- the room: its code, and every device in it -->
           <div class="hd">
             <span class="hd-room"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#i-mark"/></svg><span class="hd-k">Room</span><b class="hd-code" id="hdCode" aria-label="K7QX"><span>K</span><span>7</span><span>Q</span><span>X</span></b></span>

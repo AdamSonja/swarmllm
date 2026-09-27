@@ -172,7 +172,7 @@ const humanRange = (r) => { const m = /^(\d+)\D+(\d+)$/.exec(String(r || "")); r
 // One colour per device, everywhere (chips, pool bar, loading rows, band, Lend screen): given once,
 // in join order, to each device that can hold layers. A device that only asks is grey everywhere.
 const SWATCH = ["#2A45E0", "#2B2F3C", "#7C8FFF", "#5E616B", "#B9C6FF", "#1C33B8"];
-const devSlots = new Map();   // name -> slot, in the order devices were first seen
+const devSlots = new Map();   // name -> slot: the host's roster order on every device (see the roster message)
 function metaOf(name) {
   if (name === myName) return myMeta;
   for (const c of conns.values()) if (c.name === name) return c.meta || {};
@@ -529,6 +529,13 @@ function onData(from, d) {
       break;
     case "roster": {
       // the host's view of the room: draw a card per device, no mesh connections
+      // colours follow the host's order (the host first, then join order), so a device has the
+      // same colour on every screen (they used to go by first-seen order, which put "me" first)
+      const order = d.members.map((m) => m.name);
+      if (order.join("\n") !== [...devSlots.keys()].slice(0, order.length).join("\n")) {
+        devSlots.clear(); order.forEach((n) => devSlots.set(n, devSlots.size));
+        for (const c of document.querySelectorAll(".peer-card")) c.style.setProperty("--sw", devColor(c.dataset.name));
+      }
       const seen = new Set();
       for (const m of d.members) {
         if (m.id === peer.id) continue;
