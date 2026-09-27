@@ -7,7 +7,7 @@
 // grouped by expert, stable, chunk sizes, indirect args) and that nothing outside the outputs is written.
 // No GPU.   deno test --allow-read tests/unit/moe_group_test.js
 import { FOPS_JS, gusKernel, dncKernel, wgslToJs, moeFusedWGSL } from "../../engine/wgsl/moe.js";
-import { moeGroupWGSL, moeGroupSizes, gusGroupKernel, dnGroupKernel, combKernel } from "../../engine/wgsl/moe_group.js";
+import { moeGroupWGSL, moeGroupSizes, gusGroupKernel, dnGroupKernel, combKernel, tiledGroupWGSL, tileRows } from "../../engine/wgsl/moe_group.js";
 import { f16ToF32, f32ToF16 } from "../../engine/gguf.js";
 
 const H = {
@@ -105,7 +105,7 @@ function checkSort(sel, cfg) {
 // One MoE FFN for C columns, per-pair (moe_gus + moe_dnc) and grouped (moe_gsort + moe_gusg + moe_dng +
 // moe_combw); returns both { h, x } results.
 // R: rows per moe_dnc workgroup (per pair), RG: rows per moe_dng workgroup (grouped); a row's value must not depend on either
-function ffnBoth({ fmt, sfmt, dim, ei, sDim, nExp, K, C, R = 1, RG = R, UC, skew = 0 }) {
+function ffnBoth({ fmt, sfmt, dim, ei, sDim, nExp, K, C, R = 1, RG = R, UC, skew = 0, tiled = false }) {
   const KS = K + 1, hs = Math.max(ei, sDim), xs = dim + 8;   // padded column stride: the gap must stay untouched
   const Wg = quant(fmt, nExp * ei, dim), Wu = quant(fmt, nExp * ei, dim), Wd = quant(fmt, nExp * dim, ei);
   const Sg = quant(sfmt, sDim, dim), Su = quant(sfmt, sDim, dim), Sd = quant(sfmt, dim, sDim), pk = packShared(Sg, Su);
@@ -126,6 +126,24 @@ function ffnBoth({ fmt, sfmt, dim, ei, sDim, nExp, K, C, R = 1, RG = R, UC, skew
   run(srcD, `moe_dnc_${fmt}_${sfmt}`, 64, { [`${Q}_q`]: Wd.qs, [`${Q}_sc`]: Wd.sc, [`${Q}_h`]: vecF(hIn), [`${Q}_x`]: xA, [`${Q}_sel`]: sel, [`${Q}_w`]: w,
     [`${Q}_sq`]: Sd.qs, [`${Q}_ss`]: Sd.sc, [`${Q}_s`]: uD }, { [`${Q}_red`]: () => new Array(KS * R * 64).fill(NaN) }, dx, C);
   // grouped
+  if (tiled) {
+    const gxT = Math.ceil(hs / tileRows("gu")), dxT = Math.ceil(dim / tileRows("dn"));
+    const { grp, ind } = runSort(sel, { U: C, K, nExp, UC, gx: gxT, dx: dxT });
+    const nCh = ind[1], src = tiledGroupWGSL({ K, UC, U: C, nExp, gu: [[fmt, sfmt]], dn: [[fmt, sfmt]] }, FOPS_JS);
+    const G = `tg${fmt}${sfmt}`, E = `td${fmt}${sfmt}`, XT = Math.max(UC * 64, 512);
+    const wg = (P) => ({ [`${P}_xt`]: () => Array.from({ length: XT }, () => [NaN, NaN, NaN, NaN]), [`${P}_xo`]: () => new Array(UC).fill(NaN),
+      [`${P}_cs`]: () => new Array(UC).fill(NaN), [`${P}_n`]: () => NaN });
+    const hB = new Array(C * KS * hs).fill(NaN), yB = new Array(C * KS * dim).fill(NaN), xB = Array.from(x0);
+    // the kernels copy vec4s into the workgroup tile and later write floats into it: hand out copies, as a GPU load does
+    const vecC = (f) => new Proxy(vecF(f), { get: (a, k) => (Array.isArray(a[k]) ? a[k].slice() : a[k]) });
+    run(src, `moe_gusg_${fmt}_${sfmt}`, 256, { [`${G}_gq`]: Wg.qs, [`${G}_gs`]: Wg.sc, [`${G}_uq`]: Wu.qs, [`${G}_us`]: Wu.sc, [`${G}_x`]: vecC(xn),
+      [`${G}_h`]: hB, [`${G}_grp`]: grp, [`${G}_sh`]: pk.buf, [`${G}_s`]: uG }, wg(G), gxT, nCh);
+    const hInB = Float64Array.from(hB, (v) => (Number.isNaN(v) ? 0 : v));
+    run(src, `moe_dng_${fmt}_${sfmt}`, 256, { [`${E}_q`]: Wd.qs, [`${E}_sc`]: Wd.sc, [`${E}_x`]: vecC(hInB), [`${E}_y`]: yB, [`${E}_grp`]: grp,
+      [`${E}_sq`]: Sd.qs, [`${E}_ss`]: Sd.sc, [`${E}_s`]: uD }, wg(E), dxT, nCh);
+    run(src, "moe_combw", 64, { gcb_x: xB, gcb_y: yB, gcb_w: w, gcb_s: uD }, {}, Math.ceil(dim / 64), C);
+    return { hA, hB, xA, xB, x0, KS, hs, xs, nCh, sel };
+  }
   const { grp, ind, CO } = runSort(sel, { U: C, K, nExp, UC, gx, dx: dxG });
   const nCh = ind[1];
   const srcGG = gusGroupKernel(fmt, sfmt, K, UC, CO, 256, FOPS_JS), srcDG = dnGroupKernel(fmt, sfmt, K, RG, UC, CO, 64, FOPS_JS), srcC = combKernel(K);
@@ -197,4 +215,30 @@ Deno.test("moe group: WGSL generation at the Qwen3.6-35B-A3B shape", () => {
 });
 Deno.test("moe group: grouped FFN === per-pair fused FFN (several blocks per thread: dim 4096, expert width 2048)", () => {
   checkFfn({ fmt: "q4", sfmt: "q8", dim: 4096, ei: 2048, sDim: 32, nExp: 3, K: 2, C: 2, R: 1, RG: 4, UC: 2 });
+});
+
+// tiled kernels (moeGroupTiled): a different summation order, so equal only up to rounding (float64 here: ~1e-15)
+function checkTiled(cfg) {
+  const { hA, hB, xA, xB, x0, KS, hs, xs } = ffnBoth({ ...cfg, tiled: true }), { C, dim, ei, sDim, K } = cfg;
+  const close = (a, b) => Math.abs(a - b) <= 1e-9 * (Math.abs(a) + 1e-3);
+  for (let cs = 0; cs < C * KS; cs++) {
+    const rows = cs % KS === K ? sDim : ei;
+    for (let r = 0; r < hs; r++) {
+      const a = hA[cs * hs + r], b = hB[cs * hs + r];
+      if (r < rows ? !close(a, b) : !Number.isNaN(b)) throw new Error(`tiled h[${cs}][${r}]: ${b} vs per-pair ${a}`);
+    }
+  }
+  for (let c = 0; c < C; c++) for (let i = 0; i < xs; i++) {
+    const a = xA[c * xs + i], b = xB[c * xs + i];
+    if (i >= dim ? b !== x0[c * xs + i] : !close(a, b)) throw new Error(`tiled x[${c}][${i}]: ${b} vs per-pair ${a}`);
+  }
+}
+Deno.test("moe group tiled: close to per-pair (q4 / q8, UC 4, skewed, ragged tiles)", () => {
+  checkTiled({ fmt: "q4", sfmt: "q8", dim: 320, ei: 48, sDim: 64, nExp: 5, K: 3, C: 6, UC: 4, skew: 0.5 });
+});
+Deno.test("moe group tiled: close to per-pair (q8 / q4, UC 8, sDim < ei, several k tiles)", () => {
+  checkTiled({ fmt: "q8", sfmt: "q4", dim: 512, ei: 288, sDim: 32, nExp: 4, K: 2, C: 9, UC: 8 });
+});
+Deno.test("moe group tiled: close to per-pair (q4 / q4, UC 2)", () => {
+  checkTiled({ fmt: "q4", sfmt: "q4", dim: 256, ei: 64, sDim: 64, nExp: 3, K: 2, C: 5, UC: 2 });
 });

@@ -23,7 +23,7 @@ const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRang
   // MOEGROUP=U: expert-grouped prefill in ubatches of up to U tokens (U a multiple of BCOLS; these prompts are ~25 tokens:
   // with the default BCOLS=4, MOEGROUP=16 puts all but the last 0..7 prompt tokens through it), MOEGROUP_UC: pairs per chunk
   ...(Deno.env.get("BCOLS") ? { batchCols: +Deno.env.get("BCOLS"), coopRowsB: +Deno.env.get("BCOLS") >= 16 ? 1 : 4 } : {}),
-  moeGroupPrefill: +(Deno.env.get("MOEGROUP") || 0), moeGroupUC: +(Deno.env.get("MOEGROUP_UC") || 8) });
+  moeGroupPrefill: +(Deno.env.get("MOEGROUP") || 0), moeGroupUC: +(Deno.env.get("MOEGROUP_UC") || 8), moeGroupTiled: Deno.env.get("MOEGROUP_TILED") === "1" });
 console.log(`moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC}, batchCols ${eng.NC}` : ""}`);
 console.log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}`);
 console.log(`${arch}: ${L} layers, mtp tensors ${hasMtp}, engine mtp ${!!eng.mtp}, moeFuse ${eng.moeFuse}; loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s`);

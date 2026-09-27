@@ -282,3 +282,125 @@ ${dn.map(([f, s]) => dnGroupKernel(f, s, K, R, UC, CO, 64, O)).join("\n")}
 ${combKernel(K)}
 `;
 }
+
+// ---- tiled variant (engine option moeGroupTiled; NOT bit-identical to the per-pair kernels) ----
+// The exact kernels above keep every pair's 256-lane reduction tree, so per pair they still pay the reduction
+// and activation traffic the per-pair kernels pay; measured on GB10 they are slower than the per-pass path at
+// every chunk size. These replace them with real per-expert tiles: a 256-thread workgroup owns TR = 32 * RPT
+// rows of one expert (thread t: rows row0 + 32 r + (t >> 3), r < RPT) and a chunk of up to UC pairs; each row
+// has 8 lanes, lane l takes block kt + l of every 8-block k-tile. The tile's activations of all the chunk's
+// pairs are staged in workgroup memory (vec4 j of local block b at [pair][j][b], so the 8 lanes read 8
+// consecutive vec4s), so one weight block load feeds UC pairs x RPT rows reuse each activation load. Per
+// thread the blocks accumulate in k order; the 8 lanes are then summed in lane order. The summation order
+// differs from moe_gus / moe_dnc (a different rounding of the same sum), so this path is validated against
+// tolerances and the goldens, not bit-identity. Same bindings, entry points, chunk list, sort and combine as
+// the exact kernels; launch x = ceil(rows / TR).
+export const TILE_RPT = { gu: 2, dn: 4 };
+export const tileRows = (kind) => 32 * TILE_RPT[kind];
+function tiledKernel(kind, fmt, sfmt, K, UC, CO, O = FOPS) {
+  const KS = K + 1, WG = 256, gu = kind === "gu", NM = gu ? 2 : 1, RPT = TILE_RPT[kind], TR = 32 * RPT, D = O.div;
+  const P = `${gu ? "tg" : "td"}${fmt}${sfmt}`, XT = Math.max(UC * 64, 512), PR = Math.max(1, Math.min(UC, Math.floor(2048 / (WG * NM * RPT))));
+  if (TR * PR > WG) throw new Error("tiled moe group: output threads");
+  const mats = gu ? ["g", "u"] : ["y"], RS = Array.from({ length: RPT }, (_, r) => r);
+  const US = Array.from({ length: UC }, (_, u) => u);
+  const load = (f, m, r, Q, qo, SC, so, er) => {
+    const bi = `((${er}) * nbk + b)`, W = f === "q4" ? 4 : 8;
+    return `        let ${m}s${r} = unpack2x16float(${SC}[${so} + (${bi} >> 1u)])[${bi} & 1u];\n` +
+      `        ${Array.from({ length: W }, (_, j) => `let ${m}w${r}_${j} = ${Q}[${qo} + ${bi} * ${W}u + ${j}u];`).join(" ")}`;
+  };
+  const dotb = (f, m, r) => f === "q4"
+    ? `${m}s${r} * (${[0, 1, 2, 3].map((j) => `(dot(${O.q4lo(`${m}w${r}_${j}`)}, xv${j}) + dot(${O.q4hi(`${m}w${r}_${j}`)}, xv${j + 4}))`).join(" + ")})`
+    : `${m}s${r} * (${[0, 1, 2, 3, 4, 5, 6, 7].map((j) => `dot(${O.i8x4(`${m}w${r}_${j}`)}, xv${j})`).join(" + ")})`;
+  const accum = (f) => US.map((u) => `        ${guard(u, `${[0, 1, 2, 3, 4, 5, 6, 7].map((j) => `let xv${j} = ${P}_xt[${u * 64 + j * 8}u + ln];`).join(" ")}\n${RS.map((r) => mats.map((m) => `          a${m}${r}_${u} += ${dotb(f, m, r)};`).join("\n")).join("\n")}`)}`).join("\n");
+  const er = (r) => `e * S.dOut + tr${r}`;
+  const routed = RS.map((r) => gu
+    ? `${load(fmt, "g", r, `${P}_gq`, "0u", `${P}_gs`, "0u", er(r))}\n${load(fmt, "u", r, `${P}_uq`, "0u", `${P}_us`, "0u", er(r))}`
+    : load(fmt, "y", r, `${P}_q`, "0u", `${P}_sc`, "0u", er(r))).join("\n");
+  const shared = RS.map((r) => gu
+    ? `${load(sfmt, "g", r, `${P}_sh`, "0u", `${P}_sh`, "S.oGs", `tr${r}`)}\n${load(sfmt, "u", r, `${P}_sh`, "S.oUq", `${P}_sh`, "S.oUs", `tr${r}`)}`
+    : load(sfmt, "y", r, `${P}_sq`, "0u", `${P}_ss`, "0u", `tr${r}`)).join("\n");
+  let red = "";
+  for (let q0 = 0; q0 < UC; q0 += PR) {
+    const np = Math.min(PR, UC - q0);
+    const body = `  workgroupBarrier();
+${Array.from({ length: np }, (_, i) => RS.map((r) => mats.map((m, mi) => `  { let ri = ${((i * NM + mi) * RPT + r) * WG}u + t; ${P}_xt[ri >> 2u][ri & 3u] = a${m}${r}_${q0 + i}; }`).join("\n")).join("\n")).join("\n")}
+  workgroupBarrier();
+  if (t < ${TR * np}u) {
+    let lr = t & ${TR - 1}u; let pi = t >> ${Math.log2(TR)}u; let u = ${q0}u + pi; let orow = row0 + lr; let rr = lr >> 5u; let rw = lr & 31u;
+    if (u < n && orow < dOut) {
+      let cs = ${P}_cs[u];
+${mats.map((m, mi) => `      var s${m}: f32 = 0.0;
+      for (var l: u32 = 0u; l < 8u; l++) { let ri = ((pi * ${NM}u + ${mi}u) * ${RPT}u + rr) * ${WG}u + rw * 8u + l; s${m} += ${P}_xt[ri >> 2u][ri & 3u]; }`).join("\n")}
+      ${gu ? `${P}_h[cs * S.ys + orow] = sg / (1.0 + exp(-sg)) * su;` : `${P}_y[cs * S.dOut + orow] = sy;`}
+    }
+  }`;
+    red += q0 ? `\n  if (n > ${q0}u) {\n${body}\n  }` : `\n${body}`;
+  }
+  const decl = gu ? `
+@group(1) @binding(0) var<storage, read> ${P}_gq: array<u32>;
+@group(1) @binding(1) var<storage, read> ${P}_gs: array<u32>;
+@group(1) @binding(2) var<storage, read> ${P}_uq: array<u32>;
+@group(1) @binding(3) var<storage, read> ${P}_us: array<u32>;
+@group(1) @binding(4) var<storage, read> ${P}_x: array<vec4<f32>>;
+@group(1) @binding(5) var<storage, read_write> ${P}_h: array<f32>;
+@group(1) @binding(6) var<storage, read> ${P}_grp: array<u32>;
+@group(1) @binding(7) var<storage, read> ${P}_sh: array<u32>;
+@group(1) @binding(8) var<uniform> ${P}_s: MOEF;` : `
+@group(1) @binding(0) var<storage, read> ${P}_q: array<u32>;
+@group(1) @binding(1) var<storage, read> ${P}_sc: array<u32>;
+@group(1) @binding(2) var<storage, read> ${P}_x: array<vec4<f32>>;
+@group(1) @binding(3) var<storage, read_write> ${P}_y: array<f32>;
+@group(1) @binding(4) var<storage, read> ${P}_grp: array<u32>;
+@group(1) @binding(5) var<storage, read> ${P}_sq: array<u32>;
+@group(1) @binding(6) var<storage, read> ${P}_ss: array<u32>;
+@group(1) @binding(7) var<uniform> ${P}_s: MOEF;`;
+  return `${decl}
+var<workgroup> ${P}_xt: array<vec4<f32>, ${XT}>;
+var<workgroup> ${P}_xo: array<u32, ${UC}>;
+var<workgroup> ${P}_cs: array<u32, ${UC}>;
+var<workgroup> ${P}_n: u32;
+@compute @workgroup_size(${WG})
+fn ${gu ? "moe_gusg" : "moe_dng"}_${fmt}_${sfmt}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let S = ${P}_s; let t = lid.x; let ln = t & 7u; let row0 = wg.x * ${TR}u;
+  let cb = wg.y * 4u;
+  if (t == 0u) { ${P}_n = ${P}_grp[cb + 1u]; }
+  let n = workgroupUniformLoad(&${P}_n);
+  let p0 = ${P}_grp[cb]; let e = ${P}_grp[cb + 2u];
+  if (t < n) { let c = ${P}_grp[${CO}u + p0 + t]; ${P}_cs[t] = c; ${P}_xo[t] = ${gu ? `(${D("c", `${KS}u`)}) * (${D("S.xs", "4u")})` : `c * (${D("S.ys", "4u")})`}; }
+  let sh = e >= S.nExp;
+  let dOut = ${gu ? "select(S.dOut, S.sDim, sh)" : "S.dOut"};
+  let nbk = ${gu ? D("S.dIn", "32u") : `select(${D("S.dIn", "32u")}, ${D("S.sDim", "32u")}, sh)`};
+${RS.map((r) => `  let tr${r} = min(row0 + ${32 * r}u + (t >> 3u), dOut - 1u);`).join("\n")}
+${US.map((u) => `  ${RS.map((r) => mats.map((m) => `var a${m}${r}_${u}: f32 = 0.0;`).join(" ")).join(" ")}`).join("\n")}
+  for (var kt: u32 = 0u; kt < nbk; kt += 8u) {
+    workgroupBarrier();
+    for (var i: u32 = t; i < ${UC * 64}u; i += ${WG}u) {
+      let u = i >> 6u; let v = i & 63u; let kb = kt * 8u + v;
+      if (u < n && kb < nbk * 8u) { ${P}_xt[(i & ${~63 >>> 0}u) + (v & 7u) * 8u + (v >> 3u)] = ${P}_x[${P}_xo[u] + kb]; }
+    }
+    workgroupBarrier();
+    let b = kt + ln;
+    if (b < nbk) {
+      if (!sh) {
+${routed}
+${accum(fmt)}
+      } else {
+${shared}
+${accum(sfmt)}
+      }
+    }
+  }${red}
+}`;
+}
+export const tiledGroupWGSL = ({ K, UC, U, nExp, gu = [], dn = [] }, O = FOPS) => {
+  if (![1, 2, 4, 8].includes(UC)) throw new Error(`tiled moe group: UC ${UC} is not 1, 2, 4 or 8`);
+  const { CO } = moeGroupSizes({ U, K, nExp, UC }), QM = Math.ceil((nExp + 1) / 256);
+  return /* wgsl */ `
+// ---------------- expert-grouped MoE prefill, tiled (engine/wgsl/moe_group.js) ----------------
+struct MOEG { n: u32, nExp: u32, gx: u32, dx: u32 };
+${sortKernel(K, UC, QM, CO, O)}
+${gu.map(([f, s]) => tiledKernel("gu", f, s, K, UC, CO, O)).join("\n")}
+${dn.map(([f, s]) => tiledKernel("dn", f, s, K, UC, CO, O)).join("\n")}
+${combKernel(K)}
+`;
+};

@@ -9,7 +9,7 @@ import { gemmWGSL, GEMM_S, GEMM_TILE } from "./wgsl/gemm.js";
 import { coopWGSL, probeUnpack } from "./wgsl/coop.js";
 import { WGSL2 } from "./wgsl/qwen35.js";
 import { moeWGSL, moeFusedWGSL, moeKernelConfig } from "./wgsl/moe.js";
-import { moeGroupWGSL, moeGroupSizes, dnGroupRows } from "./wgsl/moe_group.js";
+import { moeGroupWGSL, moeGroupSizes, dnGroupRows, tiledGroupWGSL, tileRows } from "./wgsl/moe_group.js";
 import { f16ToF32 } from "./gguf.js";
 
 
@@ -125,7 +125,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true, moeGroupPrefill = 0, moeGroupUC = 8 }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true, moeGroupPrefill = 0, moeGroupUC = 8, moeGroupTiled = false }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -289,10 +289,11 @@ export class Qwen35Engine {
       const why = gU <= 0 ? null : !this.moeFuse ? "needs the fused MoE FFN (moeFuse)" : !this.flash ? "needs flash attention"
         : gU % batchCols || gU < 2 * batchCols ? `ubatch ${gU} is not a multiple of batchCols ${batchCols} (at least 2 passes)`
         : ![1, 2, 4, 8, 16].includes(UC) ? `moeGroupUC ${UC} is not 1, 2, 4, 8 or 16`
-        : UC * R * 64 * 4 > Math.min(16384, device.limits.maxComputeWorkgroupStorageSize) - 16 ? `moeGroupUC ${UC} x ${R} down rows exceed workgroup memory`
+        : moeGroupTiled && UC > 8 ? `moeGroupUC ${UC}: the tiled kernels take at most 8`
+        : !moeGroupTiled && UC * R * 64 * 4 > Math.min(16384, device.limits.maxComputeWorkgroupStorageSize) - 16 ? `moeGroupUC ${UC} x ${R} down rows exceed workgroup memory`
         : gU * (this.moe.K + 1) * dim * 4 > device.limits.maxStorageBufferBindingSize ? `ubatch ${gU} expert outputs exceed the storage-binding limit` : "";
       if (why) console.warn(`moeGroupPrefill ${gU} off: ${why}`);
-      else if (why === "") { this.moeGrpU = gU; this.moeGrpUC = UC; }
+      else if (why === "") { this.moeGrpU = gU; this.moeGrpUC = UC; this.moeGrpTiled = !!moeGroupTiled; }
     }
     this.moeGroup = this.moeGrpU > 0;   // runtime kill switch
 
@@ -301,7 +302,9 @@ export class Qwen35Engine {
     const mod = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, coopRows, 64, batchCols, coopRowsB, unpack)
       + (this.moe ? moeWGSL(this.moeK) : "")
       + (this.moeFuse ? moeFusedWGSL({ K: this.moe.K, R: this.moe.R, gu: this.moe.guPairs.map((p) => p.split("_")), dn: this.moe.dnPairs.map((p) => p.split("_")) }) : "")
-      + (this.moeGrpU ? moeGroupWGSL({ K: this.moe.K, R: dnGroupRows(this.moeGrpUC), UC: this.moeGrpUC, U: this.moeGrpU, nExp: this.moe.nExp,
+      + (this.moeGrpU && this.moeGrpTiled ? tiledGroupWGSL({ K: this.moe.K, UC: this.moeGrpUC, U: this.moeGrpU, nExp: this.moe.nExp,
+        gu: this.moe.guPairs.map((p) => p.split("_")), dn: this.moe.dnPairs.map((p) => p.split("_")) }) : "")
+      + (this.moeGrpU && !this.moeGrpTiled ? moeGroupWGSL({ K: this.moe.K, R: dnGroupRows(this.moeGrpUC), UC: this.moeGrpUC, U: this.moeGrpU, nExp: this.moe.nExp,
         gu: this.moe.guPairs.map((p) => p.split("_")), dn: this.moe.dnPairs.map((p) => p.split("_")) }) : "")
       + (this.gemmOn ? gemmWGSL({ N: batchCols, pairs: this._gemmPairs, pairs8: this._gemm8Pairs, UNPACK: unpack }) : "") + WGSL2 });
     const C = GPUShaderStage.COMPUTE;
@@ -1281,7 +1284,7 @@ export class Qwen35Engine {
       const u32 = (a) => ({ buffer: this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM) });
       // the sort's uniform { pairs, nExp, gate/up x groups, down x groups }: pairs is rewritten per ubatch (width W <= U)
       gB.sortU = dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      gB.sortArgs = [nExp, Math.ceil(hs / 4), Math.ceil(D.dim / R)]; gB.sortW = 0;
+      gB.sortArgs = this.moeGrpTiled ? [nExp, Math.ceil(hs / tileRows("gu")), Math.ceil(D.dim / tileRows("dn"))] : [nExp, Math.ceil(hs / 4), Math.ceil(D.dim / R)]; gB.sortW = 0;
       gB.bgSort = this._bg2res(this.pipes.moe_gsort, [{ buffer: gB.sel }, { buffer: gB.grp }, { buffer: gB.ind }, { buffer: gB.sortU }]);
       gB.bgComb = this._bg2res(this.pipes.moe_combw, [{ buffer: gB.XW }, { buffer: gB.Y }, { buffer: gB.selw },
         u32([D.dim, 0, 0, nExp, B.x.stride / 4, 0, 0, 0, 0, 0, 0, 0])]);

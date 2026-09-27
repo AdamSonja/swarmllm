@@ -13,6 +13,7 @@ import { openGGUF, gpuDevice, watchGpuErrors, trunkLayers, MOE_PATH } from "./lo
 
 const env = (k, d) => Deno.env.get(k) ?? d;
 const U = +env("U", 64), UC = +env("UC", 8), NC = +env("BCOLS", 16), N = +env("N", 16), K = +env("K", 3);
+const TILED = env("TILED", "0") === "1";   // tiled kernels: not bit-identical; judged by relDiff < 2e-3 (test_batch*.js) and argmax
 const LENS = env("LENS", "150,301,700").split(",").map(Number), PERF = +env("PERF", 2048);
 const { device } = await gpuDevice();
 watchGpuErrors(device);
@@ -23,9 +24,9 @@ const L = trunkLayers(G), tok = model.tokenizer();
 const weights = await model.weights({ lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
 const maxSeq = Math.ceil((Math.max(...LENS, PERF) + 2 * N + 64) / 256) * 256;
 const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq,
-  batchCols: NC, coopRowsB: NC >= 16 ? 1 : 4, moeGroupPrefill: U, moeGroupUC: UC });
+  batchCols: NC, coopRowsB: NC >= 16 ? 1 : 4, moeGroupPrefill: U, moeGroupUC: UC, moeGroupTiled: TILED });
 if (!eng.moeGrpU) { console.log("MOE GROUP FAIL: the engine did not enable moeGroupPrefill (see the warning above)"); Deno.exit(1); }
-console.log(`${arch}: ${L} layers, mtp ${!!eng.mtp}, batchCols ${eng.NC}, moeGroupPrefill ${eng.moeGrpU} UC ${eng.moeGrpUC}, maxSeq ${maxSeq}`);
+console.log(`${arch}: ${L} layers, mtp ${!!eng.mtp}, batchCols ${eng.NC}, moeGroupPrefill ${eng.moeGrpU} UC ${eng.moeGrpUC}${eng.moeGrpTiled ? " TILED" : ""}, maxSeq ${maxSeq}`);
 
 // realistic text: this repo's own source
 let ids = [];
@@ -55,14 +56,20 @@ for (const n of LENS) {
   let diff = 0, maxRel = 0;
   for (let i = 0; i < a.first.length; i++) if (!Object.is(a.first[i], b.first[i])) { diff++; maxRel = Math.max(maxRel, Math.abs(a.first[i] - b.first[i]) / (Math.abs(a.first[i]) + 1e-6)); }
   const same = a.gen.every((t, i) => t === b.gen[i]);
+  let md = 0, sc = 1e-6;
+  for (let i = 0; i < a.first.length; i++) { md = Math.max(md, Math.abs(a.first[i] - b.first[i])); sc = Math.max(sc, Math.abs(a.first[i])); }
+  const relDiff = md / sc, am = argmax(a.first) === argmax(b.first);
   let g = 0; while (n - 1 - g >= 2 * NC) g += Math.min(U, Math.floor((n - 1 - g) / NC) * NC);   // prefillTokens' split
   const ub = g;
   console.log(`prompt ${n} tok (${g} through grouped ubatches, ${n - 1 - g} through the ordinary passes): logits ${diff ? `DIFFER in ${diff} (max rel ${maxRel.toExponential(2)})` : "bit-identical"}, ` +
     `greedy ${same ? "identical" : "DIFFERS"} · prefill ${a.pf.toFixed(2)}s -> ${b.pf.toFixed(2)}s · last sort ${JSON.stringify(b.grp)}`);
-  if (diff || !same || !ub) fail++;
+  if (TILED) console.log(`  tiled: relDiff ${relDiff.toExponential(2)} (gate 2e-3), argmax ${am ? "same" : "DIFFERS"}, greedy ${N} ${same ? "same" : "differs (informational)"}`);
+  if ((TILED ? !(am && relDiff < 2e-3) : diff || !same) || !ub) fail++;
   if (eng.mtp) {
     const sa = await runOnce(false, n, true), sb = await runOnce(true, n, true);
-    const ok = sa.gen.every((t, i) => t === sb.gen[i]) && sa.gen.every((t, i) => t === a.gen[i]) && sa.stats.accepted === sb.stats.accepted && sa.stats.drafts === sb.stats.drafts;
+    // tiled: speculative decoding must equal plain greedy within each path (spec == plain), not across paths
+    const ok = TILED ? sa.gen.every((t, i) => t === a.gen[i]) && sb.gen.every((t, i) => t === b.gen[i])
+      : sa.gen.every((t, i) => t === sb.gen[i]) && sa.gen.every((t, i) => t === a.gen[i]) && sa.stats.accepted === sb.stats.accepted && sa.stats.drafts === sb.stats.drafts;
     console.log(`  spec K=${K} with the draft cache from prefill: ${ok ? "identical" : "DIFFERS"} (accepted ${sa.stats.accepted}/${sa.stats.drafts} vs ${sb.stats.accepted}/${sb.stats.drafts})`);
     if (!ok) fail++;
   }

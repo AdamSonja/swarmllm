@@ -46,7 +46,7 @@ const tok = makeTokenizer(tokenizerFromGGUF(m));
 let t0 = performance.now();
 const weights = await qwen35Weights(G, (i) => model.readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
 const eng = await Qwen35Engine.create({ device, meta: m, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: MAXSEQ, batchCols: NC, coopRowsB: 1,
-  moeGroupPrefill: +env("MOEGROUP", 0), moeGroupUC: +env("MOEGROUP_UC", 8) });
+  moeGroupPrefill: +env("MOEGROUP", 0), moeGroupUC: +env("MOEGROUP_UC", 8), moeGroupTiled: env("MOEGROUP_TILED", "0") === "1" });
 console.log(`moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC}` : ""}`);
 eng.mtpFill = env("MTP_FILL", "1") !== "0";
 const D = eng.dims;
