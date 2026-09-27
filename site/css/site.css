@@ -430,7 +430,6 @@ html:not(.js) .game canvas{display:none}
 .footer{border-top:1px solid var(--rule)}
 .foot-in{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px 24px;padding-top:22px;padding-bottom:26px;font-size:var(--t-md);color:var(--ink-3)}
 
-.cta-note{margin-top:18px;font-size:var(--t-md);color:var(--ink-3)}
 
 /* ---------- no JS: every scene, finished, one under the other ---------- */
 html:not(.js) .modes .pill{display:none}

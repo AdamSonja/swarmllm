@@ -598,9 +598,6 @@
   .rung.short:not(.sel) { opacity: .6; }
   .rung.short:not(.sel):hover:not(:disabled) { opacity: .85; }
   .ai-nogpu { font-size: 13px; color: var(--muted); padding: 2px 4px 4px; }
-  #ai-why { margin-top: 2px; font-size: 13px; color: var(--muted); text-align: center; }
-  #ai-why a { color: var(--accent-text); font-weight: 500; text-decoration: none; margin-left: 4px; }
-  #ai-why a:hover { text-decoration: underline; }
   .rung:hover:not(:disabled) { background: var(--panel-3); border-color: var(--border-2); }
   .rung.sel, .rung.sel:hover:not(:disabled) { border-color: var(--accent); color: var(--text); background: var(--accent-soft); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 60%, transparent); }
   .rung.sel::before { box-shadow: inset 0 0 0 4.5px var(--accent); }
@@ -1352,7 +1349,6 @@
           <span id="ai-status"></span>
           <p class="ap-note">Each device downloads only its own layers, once. They stay cached for next time.</p>
           <button id="ai-start" class="primary">Start the model</button>
-          <p id="ai-why" hidden>Add a laptop or desktop to start.<a href="#" data-invite>Invite</a></p>
           <div id="redeal-why" hidden></div>
           <button id="ai-redeal" type="button" hidden>Re-deal the layers</button>
         </div>
