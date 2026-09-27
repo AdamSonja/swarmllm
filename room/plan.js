@@ -80,3 +80,23 @@ export function planForSpeed(L, caps, msPerLayer = []) {
   for (const a of assigned) { ranges.push([acc, acc + a]); acc += a; }
   return { assigned, ranges, used: assigned.map((a, i) => (a > 0 ? i : -1)).filter((i) => i >= 0) };
 }
+
+// The device that becomes the model host when someone presses Start. The model host holds the
+// embedding, the head and the draft block, samples every token and runs the Code agent, so it is
+// the strongest device, whoever pressed Start: a device with WebGPU first, then a computer before
+// a phone (a phone's lent memory says little about its GPU, and a phone tab sleeps with its
+// screen), then the most memory lent, then the lowest id so every screen picks the same one.
+// devices: [{ id, meta: { webgpu, contribGB, phone, ua } }]. Returns an id (null for none).
+export function pickModelHost(devices) {
+  const isPhone = (m) => !!(m?.phone || /^(iPhone|Android)$/.test(m?.ua || ""));
+  const gb = (m) => (m?.webgpu ? +m?.contribGB || 0 : 0);
+  let best = null;
+  for (const d of devices) {
+    if (!d?.id) continue;
+    const k = [d.meta?.webgpu ? 1 : 0, isPhone(d.meta) ? 0 : 1, gb(d.meta)];
+    if (!best) { best = { id: d.id, k }; continue; }
+    const c = k[0] - best.k[0] || k[1] - best.k[1] || k[2] - best.k[2] || (d.id < best.id ? 1 : -1);
+    if (c > 0) best = { id: d.id, k };
+  }
+  return best?.id ?? null;
+}

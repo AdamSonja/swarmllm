@@ -20,7 +20,7 @@ const ctxMax = () => ai.engine?.maxSeq || MAX_SEQ;
 const CKPT_MAX = Math.max(0, parseInt(new URLSearchParams(location.search).get("ckpt") ?? "2", 10) || 0);
 import { makeLink, attachWire, wireReady, sendFrame, PROTOCOL, DROP_ALL } from "./room/transport.js";
 import { PERSONAS, specials, fitContext, reusablePrefix } from "./room/conversation.js";
-import { planSplit, planForSpeed, ladder, bestFit, codeFromLocation } from "./room/plan.js";
+import { planSplit, planForSpeed, ladder, bestFit, codeFromLocation, pickModelHost } from "./room/plan.js";
 import { qrSVG } from "./room/qr.js";
 import { lookupDrafts } from "./room/lookup.js";
 import { drawCard } from "./room/card.js";
@@ -763,7 +763,7 @@ async function keepAwake() {
     }
     await awakeVideo.play();
     if (!wakeLock) awakeStatus("screen stays awake (video) \u2713");
-  } catch (e) { if (!wakeLock) awakeStatus("\u26a0 can\u2019t keep the screen awake: set Auto-Lock to Never"); }
+  } catch (e) { if (!wakeLock) awakeStatus("This screen can\u2019t stay awake on its own: set Auto-Lock to Never"); }
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "pooled \u00b7 room"; } });
 document.addEventListener("touchstart", keepAwake, { passive: true });
@@ -802,8 +802,18 @@ $("create-btn").addEventListener("click", () => { keepAwake(); start(true); });
 // (auto-rejoin removed: the user prefers to see what happened)
 $("join-btn").addEventListener("click", () => { keepAwake(); start(false); });
 $("code-input").addEventListener("keydown", (e) => { if (e.key === "Enter") start(false); });
-const codeReady = () => $("join-btn").classList.toggle("ready", /^[A-Z0-9]{4,6}$/i.test($("code-input").value.trim()));
-$("code-input").addEventListener("input", codeReady);
+const codeReady = () => {
+  $("join-btn").classList.toggle("ready", /^[A-Z0-9]{4,6}$/i.test($("code-input").value.trim()));
+  $("code-input").parentElement.classList.toggle("full", $("code-input").value.length >= 4);
+};
+// four boxes, four characters: letters and digits only; the fourth one hands off to Join (on a
+// phone that also closes the keyboard), so no box waits for a fifth
+$("code-input").addEventListener("input", (e) => {
+  const el = e.target, v = el.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+  if (el.value !== v) el.value = v;
+  codeReady();
+  if (v.length === 4 && e.isTrusted && document.activeElement === el) $("join-btn").focus();
+});
 // Virtual devices: the host can add devices that are iframes of this page on this same computer.
 // Each joins the room like any other device (its own WebGPU device, its own WebRTC link, its own
 // layers), which shows what a room does before friends arrive; the GPU is shared, so it is a
@@ -1502,6 +1512,12 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
       // 16-column prefill frames of every device; wide GEMM + expert-grouped MoE only in solo prefillTokens
       // (the device holding the embedding; a split prefill sends 16-column frames). ?kv=q8 turns the tiled
       // attention off and ?moefuse=0 the grouped MoE on that device only.
+      // GPU sampling, on by default (?gpusample=0: off): argmax / top-k of the head in the same submit,
+      // 16-520 bytes back instead of the 1 MB logits vector; a masked sampler (tool-name constraint)
+      // still gets the logits. ?argmaxwide=0|1 (default: same as gpusample): the draft argmax as the
+      // two-stage multi-workgroup kernel.
+      gpuSample: GPU_SAMPLE,
+      argmaxWide: ARGMAX_WIDE,
     });
   } else if (M.kind === "gguf") {
     aiStatus("reading model index\u2026");
@@ -1545,11 +1561,10 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
 }
 
 // ---- host ----
+// the model host (room/plan.js pickModelHost): the strongest device, a computer before a phone,
+// whoever pressed Start. The room's creator stays the PeerJS hub either way.
 function biggestPeerId() {
-  const gb = (m) => (m?.webgpu ? m?.contribGB ?? 0 : 0);
-  let best = peer.id, bestGB = gb(myMeta);
-  for (const [id, e] of conns) if (gb(e.meta) > bestGB || (gb(e.meta) === bestGB && id < best)) { best = id; bestGB = gb(e.meta); }
-  return best;
+  return pickModelHost([{ id: peer.id, meta: myMeta }, ...[...conns].map(([id, e]) => ({ id, meta: e.meta }))]) || peer.id;
 }
 function aiStartAnywhere() {
   const model = $("ai-model").value;
@@ -1855,6 +1870,8 @@ const MTP_REFILL = new URLSearchParams(location.search).get("mtprefill") !== "0"
 const PRE_DRAFT = new URLSearchParams(location.search).get("predraft") !== "0";
 const DRAFT_VOCAB = (() => { const v = new URLSearchParams(location.search).get("draftvocab"); return v === null ? 65536 : parseInt(v, 10) || 0; })();
 const MTP_BATCH = new URLSearchParams(location.search).get("mtpbatch") !== "0";   // ?mtpbatch=0: one draft-cache row per submit, for A/B
+const GPU_SAMPLE = new URLSearchParams(location.search).get("gpusample") !== "0";   // on by default; see the engine options in aiLoadShard
+const ARGMAX_WIDE = (new URLSearchParams(location.search).get("argmaxwide") ?? (GPU_SAMPLE ? "1" : "0")) === "1";
 function fillDrafts(h, ids, i0, basePos, n) {
   if (!FILL_DRAFTS || !ai.engine?.mtp) return;
   const dim = ai.engine.dims.dim, E = ai.engine;
@@ -1874,7 +1891,9 @@ function fillDrafts(h, ids, i0, basePos, n) {
 
 // run one token through the whole pipeline, returns logits (or null for a prompt token).
 // fillNext: the prompt token after this one, to fill the draft cache with this position's hidden.
-async function aiPipeToken(id, needLogits = true, fillNext) {
+// desc: GPU sampling descriptor (engine.gpuDescFor(sample)): returns the sampler's candidates
+// { ids, vals, bad } instead of the logits (the sampler reads either).
+async function aiPipeToken(id, needLogits = true, fillNext, desc = null) {
   const pos = ai.pos;
   if (!ai.chain.length && !needLogits) {
     // solo prefill: layers only, no head, no readback; sync every 8 tokens
@@ -1899,6 +1918,11 @@ async function aiPipeToken(id, needLogits = true, fillNext) {
   } // solo mode: engine holds every layer, embedRun already produced the final hidden
   ai.pos++; ai.fed?.push(id);
   if (!needLogits) return null;   // prefill: skip the head entirely
+  if (desc) {
+    const c = await ai.engine.headFromHiddenIds(h, desc);
+    if (c.bad) throw new Error(`NaN in logits (pos ${ai.pos}) — head/lm_head kernel issue on host`);
+    return c;
+  }
   const logits = await ai.engine.headFromHidden(h);
   if (badF32(logits)) throw new Error(`NaN in logits (pos ${ai.pos}) — head/lm_head kernel issue on host`);
   return logits;
@@ -1912,14 +1936,14 @@ const TAIL_FRAME = new URLSearchParams(location.search).get("tail") !== "0";   /
 // aborted / onStatus: the caller's stop test and status line (roomGenerate passes its own). On
 // abort no new round is issued, the rounds in flight are awaited, and it returns null with ai.fed
 // and ai.pos matching exactly what the caches hold, so the next request reuses that prefix.
-async function aiPrefill(ids, { aborted = () => ai.abort, onStatus = aiStatus } = {}) {
+async function aiPrefill(ids, { aborted = () => ai.abort, onStatus = aiStatus, desc = null } = {}) {
   if (!ai.chain.length && ai.engine.prefillTokens && ids.length > 1) {
     // solo: batched prefill, several prompt tokens per GPU pass
     ai.engine.pos = ai.pos;
     await ai.engine.prefillTokens(ids.slice(0, -1));
     ai.pos = ai.engine.pos;
     ai.fed.push(...ids.slice(0, -1));
-    return aiPipeToken(ids[ids.length - 1]);
+    return aiPipeToken(ids[ids.length - 1], true, undefined, desc);
   }
   let i = 0;
   // the hybrid engine takes any column count per frame (speculative verifies already send 2..8),
@@ -1974,8 +1998,11 @@ async function aiPrefill(ids, { aborted = () => ai.abort, onStatus = aiStatus } 
         fillDrafts(h, ids, i0, basePos, n);
         const dim = ai.engine.dims.dim;
         ai.lastHidden = h.slice((n - 1) * dim, n * dim);
-        tailLogits = await ai.engine.headFromHidden(ai.lastHidden);
-        if (badF32(tailLogits)) throw new Error(`NaN in logits (pos ${ai.pos}) — head/lm_head kernel issue on host`);
+        if (desc) {
+          tailLogits = await ai.engine.headFromHiddenIds(ai.lastHidden, desc);
+          if (tailLogits.bad) throw new Error(`NaN in logits (pos ${ai.pos}) — head/lm_head kernel issue on host`);
+        } else tailLogits = await ai.engine.headFromHidden(ai.lastHidden);
+        if (!desc && badF32(tailLogits)) throw new Error(`NaN in logits (pos ${ai.pos}) — head/lm_head kernel issue on host`);
       }
       for (const p of inflight) await p;
     } catch (err) { failWaiters(err); throw err; }
@@ -1985,7 +2012,7 @@ async function aiPrefill(ids, { aborted = () => ai.abort, onStatus = aiStatus } 
   let logits = null;
   for (; i < ids.length; i++) {
     if (aborted()) return null;
-    logits = await aiPipeToken(ids[i], i === ids.length - 1, ids[i + 1]);
+    logits = await aiPipeToken(ids[i], i === ids.length - 1, ids[i + 1], desc);
   }
   return logits;
 }
@@ -2142,11 +2169,16 @@ new MutationObserver(() => bandFold(bandFolded())).observe($("chatpane"), { attr
   new ResizeObserver(stick).observe(out);
   const coarse = matchMedia("(pointer: coarse)");
   const kbd = () => {
-    const a = document.activeElement, typing = a && (a.id === "ai-prompt" || a.id === "code-prompt");
+    const a = document.activeElement, typing = a && (a.id === "ai-prompt" || a.id === "code-prompt" || a.id === "ed-text");
     document.body.classList.toggle("kbd", !!(typing && coarse.matches && (visualViewport?.height ?? innerHeight) < 600));
+    // how much of the page the keyboard covers where the browser does not shrink the page for it
+    // (iOS Safari): Code on a phone lifts its prompt by that much
+    const vv = visualViewport, kb = vv && coarse.matches && typing ? Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop)) : 0;
+    document.documentElement.style.setProperty("--kb", kb + "px");
     stick();
   };
   visualViewport?.addEventListener("resize", kbd);
+  visualViewport?.addEventListener("scroll", kbd);
   document.addEventListener("focusin", kbd);
   document.addEventListener("focusout", () => setTimeout(kbd, 0));
 }
@@ -2235,6 +2267,10 @@ async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, s
   const tokens = [];
   let count = 0, capped = false, acc = null, copied = 0, first = null;
   let tPre = 0, tDecode = 0, reused = 0, prefilled = 0, preFrames = 0;
+  // GPU sampling (?gpusample=1): the head's top-k / argmax runs on the GPU and "logits" below are
+  // the sampler's candidates. Only for a sampler that says it reads them (.gpu); a wrapper that
+  // masks logits has no .gpu and keeps the full-logits path. specStep checks the same itself.
+  const desc = ai.engine.gpuDescFor?.(sample) || null;
   try {
     reused = ckptResume(ids, reusablePrefix(ai.fed, ids));
     // Continue after a cap that landed on a written token: the caches hold the whole open answer,
@@ -2254,7 +2290,7 @@ async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, s
     onStatus(reused ? `prefill: ${rest.length} new tokens (${reused} already in the room's caches)…` : `prefill: ${rest.length} tokens…`);
     const t0Pre = performance.now();
     ai.frames = 0;
-    let logits = rest.length ? await aiPrefill(rest, { aborted, onStatus }) : null;
+    let logits = rest.length ? await aiPrefill(rest, { aborted, onStatus, desc }) : null;
     tPre = performance.now() - t0Pre;
     if (prefilled) compute.pass(prefilled);
     preFrames = ai.frames;
@@ -2370,12 +2406,13 @@ async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, s
         if (eos(next)) break;
         emit(next, false);
         if (ai.pos >= ctxMax() - 1) { capped = true; break; }   // no position left for another token
-        logits = await aiPipeToken(next);
+        logits = await aiPipeToken(next, true, undefined, desc);
         if (ai.chain.length) pushMap(count / ((performance.now() - t0) / 1000), null, true);
       }
       if (count >= maxNew) {
         capped = true;
-        if (logits && !aborted() && ai.pos < ctxMax() - 1) ai.pending = { next: sample(logits), at: ai.pos };   // for Continue
+        // for Continue: the chosen id (sample reads logits or GPU candidates alike)
+        if (logits && !aborted() && ai.pos < ctxMax() - 1) ai.pending = { next: sample(logits), at: ai.pos };
       }
     }
     tDecode = performance.now() - t0;
@@ -2774,6 +2811,7 @@ async function aiOnData(from, d) {
     case "ai-visibility":
       ai.visibility = d.mode;
       toast(d.mode === "all" ? "the host shows the chat to everyone" : d.mode === "host" ? "the host keeps the chat private" : "the host shows each answer to whoever asked");
+      codeRoleChanged();   // Code is shared with every member only when everyone sees the answers
       break;
     case "ai-style":
       toast(`answers now: ${PERSONAS[d.persona]?.label || d.persona}${d.thinking ? " · thinking first" : ""}`);
@@ -2851,10 +2889,15 @@ async function aiOnData(from, d) {
 // ?mock=code on localhost (tests only): no model needed. roomApi.ready() is true, the lock works
 // without an engine, and room/code.js takes its model from window.__pooledMock.model.
 const MOCK = new URLSearchParams(location.search).get("mock") === "code" && ["127.0.0.1", "localhost"].includes(location.hostname);
-// Code messages only the host sends; the one that goes the other way is ai-pv-want.
+// Code messages only the host sends, and the ones members send it: the preview's file requests, and
+// driving the shared agent (a request, Stop and an approval for the member's own request, New task,
+// a project, the auto-approve box, and "send me the session" on opening Code). room/code.js checks
+// each against its own state (who asked the run, the project list) and caps every field.
 const CODE_FROM_HOST = new Set(["ai-code-start", "ai-code-tok", "ai-code-live", "ai-code-tool", "ai-code-note", "ai-code-done", "ai-code-files", "ai-code-history",
-  "ai-pv", "ai-pv-blob", "ai-pv-stop"]);
-const CODE_TO_HOST = new Set(["ai-pv-want"]);
+  "ai-code-projects", "ai-code-msg", "ai-pv", "ai-pv-blob", "ai-pv-stop"]);
+const CODE_TO_HOST = new Set(["ai-pv-want", "ai-code-ask", "ai-code-stop", "ai-code-approve", "ai-code-cmd", "ai-code-sync"]);
+const CODE_DRIVE = new Set(["ai-code-ask", "ai-code-cmd", "ai-code-sync"]);   // these load Code on a host that has not opened it
+const CODE_MSG_MAX = 12000;   // a member's message, serialized (a request is at most 4000 characters)
 const codeHandlers = new Map();   // message type -> fn(from, d)
 const codeJoin = [], codeRole = [], codeStop = [];
 let codeLoad = null, codeQ = Promise.resolve(), lockKind = null;
@@ -2899,10 +2942,16 @@ function codeOnData(from, d) {
   if (CODE_FROM_HOST.has(d.t)) {
     if (codeHost() || from !== codeHostId()) return;
   } else if (CODE_TO_HOST.has(d.t)) {
-    if (!codeHost() || !codeRecipients().includes(from)) return;
+    // only from a device that said hello (a room member), only when the room shows it Code
+    if (!codeHost() || !members.has(from)) return;
+    if (!codeRecipients().includes(from)) {
+      if (d.t === "ai-code-ask") sendTo(from, { t: "ai-code-msg", text: `only ${myName} uses Code in this room (Room settings: who sees answers)`, err: true });
+      return;
+    }
+    if (d.t !== "ai-pv-want" && JSON.stringify(d).length > CODE_MSG_MAX) return;
   } else return;
   codeQ = codeQ.then(async () => {
-    if (!codeHandlers.has(d.t) && CODE_FROM_HOST.has(d.t)) await loadCode();
+    if (!codeHandlers.has(d.t) && (CODE_FROM_HOST.has(d.t) || CODE_DRIVE.has(d.t))) await loadCode();
     await codeHandlers.get(d.t)?.(from, d);
   }).catch((err) => console.error("code message", d.t, err));
 }
@@ -2948,6 +2997,8 @@ const roomApi = {
   broadcast: (msg) => sendCode(msg),
   recipients: () => codeRecipients(),
   hostId: () => codeHostId(),
+  nameOf: (id) => (id === peer?.id ? myName : conns.get(id)?.name || members.get(id)?.name || ""),
+  visibility: () => ai.visibility || "all",   // "all": Code is shared, every member can drive it
   peers: () => [...conns.keys()],
   channel: (id) => conns.get(id)?.conn?.dataChannel || null,   // for bufferedAmount back-pressure (ai-pv-blob)
   on: (type, fn) => { codeHandlers.set(type, fn); },

@@ -8,6 +8,7 @@
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { argmax } from "../engine/engine.js";
 import { openGGUF, Q38_PATH, gpuDevice } from "./load_model.js";
+import { gpuGreedy } from "./gpusample_check.js";
 
 const model = openGGUF(Q38_PATH);
 const { device } = await gpuDevice();
@@ -34,4 +35,20 @@ console.log(`spec : ${JSON.stringify(tok.decode(sp.slice(0, 13)))} ${sp.slice(0,
 // the trunk hidden after all of it (spec state included)
 const x = await eng._readback(eng.x, eng.stageX, eng.dims.dim);
 console.log(`BITS plain ${h(plainL)} hidden ${h([x])}`);
-Deno.exit(0);
+// GPU sampling (engine default): plain greedy through forwardTokenIds and speculative steps with a .gpu
+// sampler must give the same tokens as the logits path above (sampling never changes the bits)
+let ok = sp.slice(0, 13).every((t, i) => t === plain[i]);
+if (eng.gpuSample) {
+  eng.reset(); if (eng.mtp) eng.mtpFill = true;
+  await eng.prefillTokens(ids.slice(0, -1));
+  const gp = [gpuGreedy(await eng.forwardTokenIds(ids.at(-1)))];
+  for (let i = 0; i < 12; i++) gp.push(gpuGreedy(await eng.forwardTokenIds(gp.at(-1))));
+  eng.reset(); eng.mtpFill = true;
+  await eng.prefillTokens(ids.slice(0, -1));
+  const gs = [gpuGreedy(await eng.forwardTokenIds(ids.at(-1)))];
+  while (gs.length < 13) { for (const t of await eng.specStep(gs.at(-1), gpuGreedy, 3)) gs.push(t); }
+  const same = gp.every((t, i) => t === plain[i]) && gs.slice(0, 13).every((t, i) => t === plain[i]);
+  console.log(`GPU sampling: plain ${gp.join(",")} spec ${gs.slice(0, 13).join(",")} ${same ? "== logits path" : "DIFFERS from the logits path"}`);
+  ok &&= same;
+}
+Deno.exit(ok ? 0 : 1);
