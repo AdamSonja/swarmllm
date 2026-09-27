@@ -86,8 +86,9 @@ a time. Batching several sessions through one pass is still on the list.
 `harness/statecache.js` (`StateCache`, `tokenKey`): states on the browser's origin-private file
 system, keyed by SHA-256 of (model, this device's layer range and KV format, token ids). Temp file
 + rename, so a crash never leaves a half state under a real key; least recently used entries go
-past a byte budget (8 GB default). In a room every device stores its own part under the same key;
-the host asks everyone to load it and prefills instead if anyone is missing theirs.
+past a byte budget (8 GB default). Planned for rooms, not wired yet (only the e2e tests use it
+today): every device stores its own part under the same key, and the host asks everyone to load it
+and prefills instead if anyone is missing theirs.
 
 Not done: SSD weight streaming. The research looked at Edge0 (the @SamuelZengML post: MoE experts
 streamed from flash with a learned prefetcher) and SSD expert streaming on a Mac mini (the

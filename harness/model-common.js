@@ -1,5 +1,5 @@
 // Pieces the agent's model adapters share (harness/engine-model.js over one engine,
-// harness/room-model.js over the room): the tool-name constraint as a sampler wrapper, streaming
+// harness/room-model.js over the room): the tool-call constraint as a sampler wrapper, streaming
 // decode with UTF-8 holdback, an async queue from callbacks to an async iterator, and the map
 // from an assistant turn's text to the exact ids it was sampled as. DOM-free.
 import { ToolCallConstraint } from "./constrain.js";

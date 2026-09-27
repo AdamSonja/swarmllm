@@ -1,8 +1,9 @@
-// Coding tools for a Tabby agent over a workspace (harness/workspace.js). Each tool is
+// Coding tools for the Code mode agent over a workspace (harness/workspace.js). Each tool is
 // { name, description, parameters (JSON schema), mutates, run(args, ctx) -> string,
 //   preview?(args) -> { path, before, after } }.
 // Results are plain text written for the model: short, with line numbers, capped so one call
-// never eats the context (a 16k window holds ~11k of conversation), and with errors that say how
+// never eats the context (a 16k window with Code mode's 8k answer cap leaves room for ~12k of
+// conversation), and with errors that say how
 // to recover. Tools that change files are marked `mutates` so the agent can ask the user first;
 // preview() gives the approval card its before/after without touching the file.
 //
@@ -134,7 +135,8 @@ export function kept(old, text) {
   return k >= 0.8 * O.length ? ` · ${k} of ${O.length} old lines unchanged` : "";
 }
 
-// the xml tool format trims one newline at each end of a parameter; either name is accepted
+// edit_file takes old/new or old_string/new_string (the XML parser already trims one newline
+// at each end of a parameter)
 const oldOf = (a) => a.old ?? a.old_string ?? "", newOf = (a) => a.new ?? a.new_string ?? "";
 
 export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {

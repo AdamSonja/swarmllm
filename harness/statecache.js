@@ -4,9 +4,9 @@
 //
 // A state is only valid for exactly the tokens it was computed from, on exactly this device's
 // layers, so the key is a hash of: the model, this device's layer range and KV format (the
-// engine's stateSignature()) and the token ids. In a room every device stores its own part under
-// the same token hash; the host asks everyone to load it and falls back to a prefill if anyone
-// is missing theirs.
+// engine's stateSignature()) and the token ids. The plan for rooms (not wired yet; only the e2e
+// tests use this today) is that every device stores its own part under the same token hash, and
+// the host asks everyone to load it and falls back to a prefill if anyone is missing theirs.
 //
 // Files: <dir>/<key>.bin = [u32 header length][header JSON][part 0][part 1]... Written to a temp
 // name and renamed, so a crash never leaves a half file under a real key. Least recently used

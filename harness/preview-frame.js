@@ -10,8 +10,9 @@
 //            the relay's heartbeat stops, and after HANG_MS the frame is removed and the hang logged.
 //   local  - no other site configured: the document is a blob: URL in a frame of this page. Same
 //            renderer process as the room (a hang freezes the tab), but still an opaque origin.
-// Either way the document is a blob: URL, not srcdoc: a srcdoc document inherits the room page's
-// URL as its base, and that URL carries the room code. A frame that navigates itself away
+// In local mode the document is a blob: URL, not srcdoc: a srcdoc document inherits the room
+// page's URL as its base, and that URL carries the room code. In relay mode the relay page on the
+// other site loads it as srcdoc, where the inherited URL is the relay's, not the room's. A frame that navigates itself away
 // (location.href = ..., meta refresh) is put back on the current rev, and stopped if it keeps doing it.
 // Messages from the frame are accepted only from its own window and with this mount's nonce, and
 // are treated as untrusted text (typed and capped here, shown with textContent by the UI).

@@ -1,5 +1,5 @@
-// The files a Tabby agent works on. Two implementations with one interface:
-//   MemoryWorkspace   - a Map of path -> text (tests, scratch projects)
+// The files the Code mode agent works on. Two implementations with one interface:
+//   MemoryWorkspace   - a Map of path -> text (tests; scratch projects use OPFS, projects.js)
 //   DirWorkspace      - a folder the user picked with showDirectoryPicker() (File System Access
 //                       API): reads and writes go to the real files on their disk. With
 //                       { private: true } (a folder on disk) hidden and secret files do not exist

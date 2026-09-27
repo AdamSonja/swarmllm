@@ -13,7 +13,7 @@
 // they can be legitimate file content); integer / number params take digits, boolean params
 // true / false. A token is allowed iff running its characters from the current
 // state never rejects, so tokens may cross state boundaries (">\n", "</parameter>\n<").
-// JSON style (no model we ship) only limits the "name" string to declared tools.
+// JSON style (Code mode uses it for Qwen3 1.7B) only limits the "name" string to declared tools.
 //
 // Masks are a function of the automaton state (not of the text inside a value), computed with one
 // vocabulary scan per distinct state and cached per (tokenizer, tools) across steps and requests:

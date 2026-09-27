@@ -1,4 +1,5 @@
-// Builds one self-contained HTML document from a preview snapshot, for a sandboxed srcdoc iframe
+// Builds one self-contained HTML document from a preview snapshot, for a sandboxed iframe (a blob:
+// URL locally, srcdoc on the relay)
 // (docs/design/harness-app.md B.1, B.3). The frame has an opaque origin and no service worker, so
 // nothing can be fetched by relative URL: every relative reference (scripts, ES module imports,
 // stylesheets, CSS url()/@import, images, media, fonts) becomes a data: URL, modules bottom-up
@@ -8,7 +9,8 @@
 //   buildPreviewDoc(snapshot, { path, nonce }) -> { html, missing: [path], warnings: [text], urlToPath }
 //   snapshot = { entry, files: Map<path, { type, bytes: Uint8Array, hash }> }   (paths relative to the served dir)
 //
-// The document starts with a CSP meta (network off except the two script CDNs) and the capture
+// The document starts with a CSP meta (network off except the two script CDNs and Google Fonts)
+// and the capture
 // script (console, errors and shims, below), ahead of anything the agent wrote.
 // Limits (B.5): computed import specifiers, new URL(x, import.meta.url) and location changes are
 // not rewritten; they fail with a console error the agent can read.

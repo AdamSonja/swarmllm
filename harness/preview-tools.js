@@ -1,6 +1,6 @@
-// serve / preview_logs: the agent's side of the preview server (run_js is in run-js.js; ports are
-// stopped from the UI, the agent has no stop_serve: docs/design/harness-light.md A.2)
-// (docs/design/harness-app.md C.2). serve answers with what the page did in its first 500 ms,
+// serve / preview_logs: the agent's side of the preview server (docs/design/harness-app.md C.2).
+// run_js is in run-js.js. Ports are stopped from the UI; the agent has no stop_serve
+// (docs/design/harness-light.md A.2). serve answers with what the page did in its first 500 ms,
 // so the common "write, serve, see the error" loop needs no separate preview_logs step.
 import { DEFAULT_PORT } from "./preview.js";
 import { buildPreviewDoc } from "./preview-build.js";

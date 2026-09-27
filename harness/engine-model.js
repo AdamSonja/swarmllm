@@ -1,7 +1,7 @@
 // The agent's model interface (harness/agent.js: generate({ system, turns }) -> async iterable of
 // text) over one Qwen35Engine and its tokenizer. Every request re-renders the whole conversation
 // with the chat template, but only the tokens after what the engine already holds are prefilled:
-// an agent resends ~96% of its input every step (docs/research/tabby-2026-09.md §3).
+// an agent resends ~96% of its input every step (docs/long-context-and-sessions.md).
 //
 // The model's own turns are kept as the exact ids it sampled (keyed by their text), so rendering
 // never re-tokenizes them differently and the prefix stays reusable. Decoding is greedy by
@@ -9,8 +9,8 @@
 import { buildIds, reusablePrefix, specials } from "../room/conversation.js";
 import { tokenTexts, constrainedSampler, OwnIds } from "./model-common.js";
 
-// tools (optional): the agent's tool list; inside a tool call the function and parameter names
-// are then limited to declared ones (harness/constrain.js), on every sampled position including
+// tools (optional): the agent's tool list; inside a tool call the whole XML call (function and
+// parameter names included) is then constrained to the grammar (harness/constrain.js), on every sampled position including
 // the ones a speculative step checks, so accepted tokens always satisfy it.
 export function engineModel(engine, tok, { thinking = false, maxNew = 1024, K = 3, spec = true, sample = null, tools = null, style = "xml" } = {}) {
   const S = specials(tok);

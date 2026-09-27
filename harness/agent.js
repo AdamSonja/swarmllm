@@ -1,4 +1,4 @@
-// The Tabby agent loop: ask the model, run the tools it calls, hand back the results, repeat
+// The Code mode agent loop: ask the model, run the tools it calls, hand back the results, repeat
 // until it answers without calling a tool. The model is any function
 //   generate({ system, turns, signal }) -> async iterable of text deltas
 // (the room, a single engine, or a script in tests), so the loop knows nothing about GPUs.
@@ -11,8 +11,9 @@
 //
 // Tool: { name, description, parameters, mutates, run(args, { signal, step }) -> string,
 //         preview?(args) -> { path, before, after } }   (shown to approve() for mutating tools)
-// Events (onEvent): step, delta (raw streamed text), text (visible text), tool-start, tool,
-// usage, compacted, trimmed, stopped, done, limit, card (a recovery note was added, harness/cards.js).
+// Events (onEvent): step, delta (raw streamed text), text (visible text), call-live, tool-start,
+// tool, usage, compacted, trimmed, stopped, stuck, done, limit, card (a recovery note was added,
+// harness/cards.js).
 import { toolsSystemPrompt, toolResponses, ToolCallParser, parseCallBody } from "./tools.js";
 import { pickCard, hint, PRIORITY, MAX_PER } from "./cards.js";
 
@@ -57,7 +58,7 @@ export class Agent {
   }
   reset() { this.turns = []; this.reqs = {}; this.req = 0; }
 
-  // Run one user request to the end. -> { text, steps, calls, reason: "done"|"stopped"|"limit"|"context" }
+  // Run one user request to the end. -> { text, steps, calls, reason: "done"|"stopped"|"limit"|"context"|"stuck" }
   async run(userText, { signal } = {}) {
     const req = ++this.req;
     const R = this.reqs[req] = { calls: [], done: false, answer: "", cards: {} };
