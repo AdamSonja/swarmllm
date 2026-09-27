@@ -139,7 +139,7 @@ try {
     results.push({ status: st, reply });
     await tabs.host.waitForTimeout(1000);
   }
-  const wire = {}; for (const [n, p] of Object.entries(tabs)) wire[n] = await p.evaluate(() => window.swarmDebug?.());
+  const wire = {}; for (const [n, p] of Object.entries(tabs)) wire[n] = await p.evaluate(() => window.pooledDebug?.());
   // the room's own log carries GPU validation errors that never reach the console
   const roomErrs = {}; for (const [n, p] of Object.entries(tabs)) roomErrs[n] = await p.evaluate(() => [...document.querySelectorAll("#chat-log div")].map((d) => d.textContent).filter((t) => t.includes("\u26a0")).map((t) => t.slice(0, 160)));
   const nRoomErrs = Object.values(roomErrs).reduce((a, e) => a + e.length, 0);

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<!-- Code mode's preview host: this site deployed on another registrable domain (e.g. https://preview-swarmllm.net),
+<!-- Code mode's preview host: this site deployed on another registrable domain (e.g. https://pooled-preview.example, not a subdomain of pooled.run),
      so the agent's app runs in a process of its own (harness/preview-frame.js relayUrl). Empty: it runs in this tab. -->
 <meta name="preview-origin" content="">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -963,7 +963,7 @@
       <div id="awake" class="side-hint"></div>
       <div class="menu-acts"><button id="export-chat" type="button" title="save the chat as a Markdown file">Save the chat</button><button id="card-btn" type="button" title="a picture of what this room just did">Room card (PNG)</button></div>
       <div id="cache-line" class="side-hint"><a href="#" id="cache-clear">clear cached weights</a></div>
-      <button id="add-virtual" class="dev-only" type="button" title="add a device that runs in a frame on this computer, to see the swarm work before friends join">+ Add a virtual device</button>
+      <button id="add-virtual" class="dev-only" type="button" title="add a device that runs in a frame on this computer, to see the room work before friends join">+ Add a virtual device</button>
       <div id="virtual" hidden></div>
     </div>
   </details>
@@ -1008,7 +1008,7 @@
       <div class="ap-main">
         <p class="ap-h"><b>Pick a model</b><span>Anyone in the room can start it.</span></p>
         <div id="ai-head">
-          <span id="ai-title">SWARM MODEL</span>
+          <span id="ai-title">MODEL</span>
           <select id="ai-model" aria-label="Model">
             <option value="qwen3-1.7b">Qwen3 1.7B</option>
             <option value="qwen3.8-27b">Qwen 3.8 27B</option>
@@ -1124,7 +1124,7 @@
   </div>
 </div>
 <div id="card" class="overlay" hidden>
-  <div class="sheet wide" role="dialog" aria-label="swarm card">
+  <div class="sheet wide" role="dialog" aria-label="room card">
     <div class="k">Your room</div>
     <canvas id="card-canvas" width="1200" height="630"></canvas>
     <div class="row"><button id="card-save" type="button">save PNG</button><button id="card-share" type="button">share…</button><button id="card-close" type="button">close</button></div>

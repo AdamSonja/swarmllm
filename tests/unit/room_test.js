@@ -93,11 +93,11 @@ Deno.test("qr: Reed-Solomon matches the ISO 18004 annex example", () => {
   eq(rsEncode([16, 32, 12, 86, 97, 128, 236, 17, 236, 17, 236, 17, 236, 17, 236, 17], 10), [165, 36, 212, 193, 237, 54, 199, 135, 44, 85]);
 });
 Deno.test("qr: a room link encodes to the matrix jsQR decoded (fingerprint)", async () => {
-  const m = qrMatrix("https://swarmllm.ai/r/ABCD");
+  const m = qrMatrix("https://pooled.run/r/ABCD");
   eq(m.length, 25, "version 2");
   const bytes = new TextEncoder().encode(m.map((r) => r.join("")).join("\n"));
   const h = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
-  eq(h, "a687d8c6cc00e73f");
+  eq(h, "5d70fab9088aad5b");   // jsQR decodes this matrix back to the link
   // finder patterns in three corners
   for (const [r, c] of [[0, 0], [0, 18], [18, 0]]) ok(m[r][c] && m[r + 6][c + 6] && m[r + 3][c + 3] && !m[r + 1][c + 1], "finder at " + r + "," + c);
   ok(qrSVG("x").startsWith("<svg"), "svg");

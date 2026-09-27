@@ -6,7 +6,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { parseGGUFHeader, dequantF32 } from "../engine/gguf.js";
+import { parseGGUFHeader, dequantF32 } from "../../engine/gguf.js";
 
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "q38");
 const FILE = path.join(DIR, "model.gguf");

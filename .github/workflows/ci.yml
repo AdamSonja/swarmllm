@@ -1,6 +1,6 @@
 name: CI
 on:
-  push: { branches: [main, faster-kernels] }
+  push: { branches: [main, feat/engine-opt] }
   pull_request:
 jobs:
   check:
@@ -11,10 +11,24 @@ jobs:
         with: { deno-version: v2.x }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - name: Syntax check (engine, tests, benchmarks)
+      - name: Syntax check (engine, room, harness, site, tests, benchmarks)
         run: |
-          for f in engine/*.js tests/*.js benchmarks/*.js; do node --check "$f"; done
+          for f in engine/*.js engine/wgsl/*.js room.js room/*.js harness/*.js site/js/*.js tests/*.js benchmarks/*.js; do node --check "$f"; done
       - name: Unit tests (no GPU)
         run: deno test --allow-read tests/unit
       - name: Kernel generator sanity
         run: deno run --allow-read tests/unit/generator_smoke.js
+  browser:
+    # Code mode's preview in headless Chromium, no GPU needed. Optional until it has a track record in CI.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Install Playwright Chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Preview in the browser
+        run: node tests/e2e/preview_browser.mjs
