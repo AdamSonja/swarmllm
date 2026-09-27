@@ -273,29 +273,25 @@ export function codeUI({ onMode = () => {} } = {}) {
     editWin.show(p);
   }
 
-  // ---------------- the edit window over the preview: once an app is served, a file the agent writes
-  // again streams into a small editor window over the running app (its name in the title bar, the
-  // editor's colours). When the call is complete and the preview has reloaded (or after a moment),
-  // it closes. Host and peers alike (it is drawn from the same ai-code-live messages).
+  // ---------------- the edit overlay: once an app is served, while the agent edits a file the preview
+  // frosts over with a small "Editing game.js" pill (no code: the code shows in the agent's card), then
+  // "Reloading" once the call is complete, and it lifts when the preview has reloaded (or after a moment).
+  // Host and peers alike (it is drawn from the same ai-code-live messages).
   const editWin = (() => {
-    let el = null, code = null, raf = 0, last = null, closeT = 0, revAt = 0;
+    let el = null, raf = 0, last = null, closeT = 0, revAt = 0, shownAt = 0, doneT = 0;
     const served = () => { const P = ports.get(active); return P && P.rev > 0 ? P : null; };
     function build() {
-      el = h("div", "ew"); el.setAttribute("role", "status"); el.setAttribute("aria-label", "The agent is editing a file");
-      const bar = h("div", "ew-bar");
-      bar.append(h("span", "ew-dots"), h("span", "ew-nm", ""), h("b", "", ""), h("span", "ew-n", ""));
-      code = h("pre", "ew-code");
-      el.append(bar, code);
+      el = h("div", "ew"); el.setAttribute("role", "status");
+      const pill = h("div", "ew-pill");
+      pill.append(h("span", "ew-dots"), h("span", "ew-t", ""));
+      el.append(pill);
     }
     function paint() {
       raf = 0;
       if (!el || !last) return;
-      el.querySelector(".ew-nm").textContent = last.name === "edit_file" ? "editing" : "writing";
-      el.querySelector("b").textContent = last.path || "";
-      el.querySelector(".ew-n").textContent = plural(last.code.split("\n").length, "line");
-      el.title = last.path || "";
-      code.innerHTML = highlight(last.path, last.code);
-      code.scrollTop = code.scrollHeight;
+      const name = (last.path || "").split("/").pop();
+      el.querySelector(".ew-t").textContent = el.classList.contains("done") ? "Reloading\u2026" : `${last.name === "edit_file" ? "Editing" : "Writing"} ${name}`;
+      el.setAttribute("aria-label", el.querySelector(".ew-t").textContent);
     }
     function show(p) {
       const P = served();
@@ -304,26 +300,30 @@ export function codeUI({ onMode = () => {} } = {}) {
       if (!el) build();
       const wrap = $("pv-frame-wrap");
       if (el.parentNode !== wrap) wrap.append(el);
+      if (!el.isConnected || el.classList.contains("out") || el.classList.contains("done")) shownAt = performance.now();
+      clearTimeout(doneT); doneT = 0;
       el.classList.remove("out", "done");
       last = p; revAt = P?.rev || 0;
-      raf ||= requestAnimationFrame(paint);
+      paint();   // just a label now: set it at once (a fast edit would otherwise skip straight to Reloading)
     }
     function close() {
-      clearTimeout(closeT); closeT = 0;
+      clearTimeout(closeT); closeT = 0; clearTimeout(doneT); doneT = 0;
       if (!el?.isConnected || el.classList.contains("out")) return;
       el.classList.add("out");
       const gone = () => { if (el.classList.contains("out")) el.remove(); };
       if (matchMedia("(prefers-reduced-motion: reduce)").matches) gone(); else setTimeout(gone, 200);
     }
     // the call is complete: the file is written, the preview reloads; close once it has (or soon)
+    // "Editing <file>" stays up at least a moment, even when the call completes at once
     function end() {
       if (!el?.isConnected) return;
-      el.classList.add("done");
-      clearTimeout(closeT); closeT = setTimeout(close, 2500);
+      const wait = Math.max(0, 900 - (performance.now() - shownAt));
+      clearTimeout(doneT);
+      doneT = setTimeout(() => { doneT = 0; if (!el?.isConnected) return; el.classList.add("done"); paint(); clearTimeout(closeT); closeT = setTimeout(close, 2500); }, wait);
     }
     // the preview reloaded with the new file: a beat to see the last lines, then close
     function reloaded(port, rev) {
-      if (el?.isConnected && el.classList.contains("done") && port === active && rev > revAt) { clearTimeout(closeT); closeT = setTimeout(close, 450); }
+      if (el?.isConnected && port === active && rev > revAt) { const go = () => { if (!el?.isConnected || el.classList.contains("out")) return; if (el.classList.contains("done")) { clearTimeout(closeT); closeT = setTimeout(close, 450); } else setTimeout(go, 100); }; go(); }
     }
     return { show, end, close, reloaded };
   })();
