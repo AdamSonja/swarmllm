@@ -1,11 +1,14 @@
-// Where does a batched (4-column) pass spend its time? Times full passes with
+// Where does a batched pass (engine default width, 4 columns) spend its time? Times full passes with
 // kernel families skipped (results are garbage; timing is what matters).
+// Known stale: the family lists below predate attn_flash, attn_glue, dn_pre,
+// dn_delta_gn, the prefill GEMM and the *_acc GEMVs, so with engine defaults
+// most families now read about 0. Rebuild them from eng.pipes before quoting.
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { parseGGUFHeader, qwen35Weights } from "../engine/gguf.js";
 const openFile = async (path) => { const fh = await Deno.open(path); return async (off, len) => { await fh.seek(off, Deno.SeekMode.Start); const out = new Uint8Array(len); let got = 0; while (got < len) { const n = await fh.read(out.subarray(got)); if (n === null) break; got += n; } return out; }; };
 const adapter = await navigator.gpu.requestAdapter();
 const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
-const readAt = await openFile("../models/q38/model.gguf");
+const readAt = await openFile(new URL("../models/q38/model.gguf", import.meta.url).pathname);
 const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer, { skipTokenizer: true });
 const L = +(Deno.env.get("LAYERS") || 64);
 const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true });

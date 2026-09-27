@@ -42,7 +42,7 @@ Measured with `benchmarks/bench_breakdown.js` (skips kernel families and re-time
 | all matvecs (weights streamed at ~183 GB/s; roofline 184) | 82 ms |
 | everything else (small kernels, encode, submit, readback) | ~30 ms |
 
-Decode is at the memory roofline on this GPU; speculation is what raises tokens per second. Prefill is bound by the batched matvec path and is the subject of the GEMM work in `benchmarks/bench_gemm.js`.
+Decode is at the memory roofline on this GPU; speculation is what raises tokens per second. Prefill now runs through the GEMM in `engine/wgsl/gemm.js` at 16 columns and is still the biggest gap to native (roadmap 02). The table above predates the GEMM, flash attention and the fused kernels.
 
 ## Files
 
