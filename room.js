@@ -193,7 +193,7 @@ function chipPop(card) {
     }
   }
 }
-document.addEventListener("click", (e) => { if (!e.target.closest?.(".pop")) chipPop(null); if (!e.target.closest?.("#room-menu")) $("room-menu").open = false; });
+document.addEventListener("click", (e) => { if (!e.target.closest?.(".pop")) chipPop(null); if (!e.target.closest?.("#room-menu") || e.target === $("room-menu")) $("room-menu").open = false; });   // (a click on the phone sheet's backdrop lands on the details itself)
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") { chipPop(null); $("room-menu").open = false; } });
 addEventListener("resize", () => chipPop(null));
 $("peers").addEventListener("scroll", () => chipPop(null), { passive: true });
@@ -326,7 +326,7 @@ function enterRoom() {
   log("room", `${roomCode}: type this code on your other devices`);
   $("ai-panel").style.display = "flex";
   aiStatus("");
-  $("ai-empty").textContent = "Pick a model and press Start. Anyone in the room can.";
+  emptyText("Pick a model and press Start. Anyone in the room can.");
   const selfCard = document.querySelector(".peer-card.self");
   if (selfCard && myMeta.webgpu) {
     const row = document.createElement("div");
@@ -544,13 +544,37 @@ setInterval(() => broadcastAll({ t: "ping", ts: performance.now() }), 2500);
 const stepGB = (d) => { const i = $("join-gb"); const lo = parseFloat(i.min) || 1; const st = parseFloat(i.step) || 1; i.value = Math.min(64, Math.max(lo, (parseFloat(i.value) || lo) + d * st)); };
 $("gb-minus").addEventListener("click", () => stepGB(-1));
 $("gb-plus").addEventListener("click", () => stepGB(1));
+// a friendly name for this device ("Quiet Otter"), filled in on the join screen; any edit wins
+const NAME_A = ["Quiet", "Swift", "Brave", "Sunny", "Clever", "Gentle", "Lucky", "Mellow", "Bright", "Calm", "Bold", "Happy", "Cosmic", "Nimble", "Witty", "Cozy", "Merry", "Plucky", "Breezy", "Jolly"];
+const NAME_B = ["Otter", "Falcon", "Panda", "Fox", "Heron", "Koala", "Lynx", "Robin", "Badger", "Dolphin", "Owl", "Tiger", "Wombat", "Sparrow", "Moose", "Gecko", "Puffin", "Beaver", "Marten", "Crane"];
+const pick = (a) => a[crypto.getRandomValues(new Uint32Array(1))[0] % a.length];
+function friendlyName() {
+  const now = $("name-input").value;
+  let n = now;
+  for (let i = 0; i < 8 && n === now; i++) n = `${pick(NAME_A)} ${pick(NAME_B)}`;
+  return n;
+}
+$("name-input").value = friendlyName();
+$("name-shuffle").addEventListener("click", (e) => { e.preventDefault(); $("name-input").value = friendlyName(); });
+// joining or opening a room: the logo's wave where the panel was, until the room shows (or it fails)
+function joinWait(on, text = "") {
+  $("join-screen").classList.toggle("waiting", !!on);
+  $("join-wait").hidden = !on;
+  if (text) $("jw-t").textContent = text;
+}
+function joinFailed(text) {
+  joinWait(false);
+  $("join-status").textContent = text;
+  $("create-btn").disabled = $("join-btn").disabled = false;
+}
 // --- join / create ---
 async function start(create, resume = null) {
   myName = resume?.name || $("name-input").value.trim() || (create ? "host" : "peer") + "-" + rand(2);
   const code = resume?.code || (create ? rand(4) : $("code-input").value.trim().toUpperCase());
-  if (!code) { $("join-status").textContent = "enter a room code"; return; }
+  if (!code) { $("join-status").textContent = "Enter a room code"; return; }
   $("create-btn").disabled = $("join-btn").disabled = true;
-  $("join-status").textContent = "connecting to signaling…";
+  joinWait(true, create ? (resume ? `Opening room ${code} again` : "Opening your room") : `Joining room ${code}`);
+  $("join-status").textContent = "Connecting…";
   myMeta = await metaPromise;
   const gbIn = parseFloat($("join-gb").value);
   myMeta.contribGB = Math.max(myMeta.phone ? 0.5 : 1, gbIn > 0 ? gbIn : (myMeta.contribGB || 1));
@@ -574,15 +598,13 @@ async function start(create, resume = null) {
     roomCode = code;
     if (create) { enterRoom(); if (resume) resumeHost(resume); return; }
     // joiner: connect to host
-    $("join-status").textContent = "joining room " + code + "…";
+    $("join-status").textContent = "Reaching the other devices…";
     const conn = peer.connect(PREFIX + code, { reliable: true });
     const timeout = setTimeout(() => {
       const ice = conn.peerConnection?.iceConnectionState;
-      $("join-status").textContent =
-        ice === "checking" || ice === "failed" || ice === "disconnected"
-          ? "found the room, but the direct connection failed (strict NAT/firewall on one side) — trying relay, give it ~20s or try another network"
-          : "no room with that code (is the host page open?)";
-      $("create-btn").disabled = $("join-btn").disabled = false;
+      joinFailed(ice === "checking" || ice === "failed" || ice === "disconnected"
+        ? "found the room, but the direct connection failed (strict NAT/firewall on one side) — trying relay, give it ~20s or try another network"
+        : "no room with that code (is the host page open?)");
     }, 15000);
     conn.on("open", () => {
       clearTimeout(timeout);
@@ -615,13 +637,10 @@ async function start(create, resume = null) {
       setTimeout(() => start(true, resume), 3000);
       return;
     }
-    if (err.type === "unavailable-id")
-      $("join-status").textContent = "that code is already hosting a room: press Join instead";
-    else if (err.type === "peer-unavailable")
-      $("join-status").textContent = "no room with that code";
-    else
-      $("join-status").textContent = "error: " + err.type;
-    $("create-btn").disabled = $("join-btn").disabled = false;
+    if ($("room-screen").style.display === "flex") { $("join-status").textContent = "error: " + err.type; return; }   // in the room already: not a join failure
+    joinFailed(err.type === "unavailable-id" ? "that code is already hosting a room: press Join instead"
+      : err.type === "peer-unavailable" ? "no room with that code"
+      : "error: " + err.type);
   });
 }
 
@@ -740,7 +759,8 @@ if (VQ.get("vname")) $("name-input").value = VQ.get("vname").slice(0, 20);
 if (+VQ.get("vgb") > 0) $("join-gb").value = +VQ.get("vgb");
 if (linkCode) {
   $("code-input").value = linkCode;
-  $("join-status").textContent = `joining room ${linkCode}\u2026`;
+  joinWait(true, `Joining room ${linkCode}`);
+  $("join-status").textContent = "Checking this device\u2026";
   metaPromise.then(() => { if (!peer) start(false); });
 }
 
@@ -956,7 +976,7 @@ let ai = {
   q: Promise.resolve(),  // worker: frames run strictly one after another, in arrival order
 };
 
-function aiStatus(s) { $("ai-status").textContent = s; crumb(s); }
+function aiStatus(s) { $("ai-status").textContent = s; crumb(s); if ($("load-card").classList.contains("on") && !lcBytes) lcStatus(null, s); }
 // breadcrumb: if iOS kills the tab, the reloaded page can say where it died
 function crumb(s) { try { localStorage.setItem("pooled-crumb", JSON.stringify({ s, t: Date.now(), mem: performance.memory?.usedJSHeapSize })); } catch {} }
 // (crumb is kept in localStorage for debugging, not shown on the join screen)
@@ -966,7 +986,7 @@ function aiLoading(show, title) {
   $("ai-panel").classList.toggle("loading", !!show);
   $("load-card").classList.toggle("on", !!show);
   $("ai-empty").style.display = show ? "none" : "";
-  if (show) { $("lc-model").textContent = MODELS[$("ai-model").value]?.label.split("·")[0].trim() || ""; loadCardRender(); }
+  if (show) { $("lc-model").textContent = MODELS[$("ai-model").value]?.label.split("·")[0].trim() || ""; lcBytes = false; eta.t0 = 0; lcStatus(null, "Getting this device ready"); loadCardRender(); }
 }
 function loadCardRender() {
   const rows = $("lc-rows"); if (!rows) return;
@@ -977,7 +997,7 @@ function loadCardRender() {
   rows.innerHTML = names.map((nm) => {
     const pct = Math.max(0, Math.min(100, (ai.prog || {})[nm] ?? 0));
     const l = by[nm];
-    return `<div class="lc-row${pct >= 100 ? " done" : ""}${l || !order.length ? "" : " out"}" style="--sw:${swatch(idx(nm))}"><i class="sw"></i><div class="n">${esc(String(nm))}</div><div class="bar"><div class="fill" style="width:${pct}%"></div></div><div class="pct">${pct >= 100 ? (l ? "layers " + esc(humanRange(l)) : "ready") : pct + "%"}</div></div>`;
+    return `<div class="lc-row${pct >= 100 ? " done" : ""}${l || !order.length ? "" : " out"}" style="--sw:${swatch(idx(nm))}"><i class="sw"></i><div class="n">${esc(String(nm))}${nm === myName ? " <small>(you)</small>" : ""}</div><div class="bar"><div class="fill" style="width:${pct}%"></div></div><div class="pct">${pct >= 100 ? (l ? '<span class="lw">layers </span>' + esc(humanRange(l)) : "ready") : pct + "%"}</div></div>`;
   }).join("");
   // the model as a strip of layers: each device's share fills in as its download goes
   const spans = order.map((nm) => { const m = /^(\d+)\D+(\d+)$/.exec(by[nm]); return m ? { nm, lo: +m[1], hi: +m[2] + 1 } : null; }).filter(Boolean);
@@ -993,23 +1013,47 @@ function loadCardRender() {
     html += `<i${got ? ` style="background:${swatch(spans.indexOf(sp))}"` : ""}></i>`;
   }
   strip.innerHTML = html;
-  $("lc-sum").textContent = `${total} layers, split ${spans.length} way${spans.length > 1 ? "s" : ""}`;
+  $("lc-sum").textContent = `${total} layers · ${spans.length} device${spans.length > 1 ? "s" : ""}`;
 }
-// download progress with a time-left estimate from the recent rate (EMA over ~5 s)
-const eta = { t: 0, done: 0, rate: 0 };
+// This device's line under the card: where its bytes come from (the network, devices in the room,
+// or the browser's cache), how far along, and a time left once the rate has settled (30 s of data,
+// or 10 s with a steady rate), so the first guess is not a wild one.
+let lcBytes = false;
+const eta = { t0: 0, t: 0, done: 0, rate: 0, hist: [] };
+const fmtBytes = (b) => b >= 2 ** 30 ? (b / 2 ** 30).toFixed(1) + " GB" : Math.max(1, Math.round(b / 2 ** 20)) + " MB";
+function etaText(s) {
+  if (s < 45) return "less than a minute left";
+  if (s < 90) return "about a minute left";
+  return `about ${Math.round(s / 60)} min left`;
+}
+function lcStatus(p, text) {
+  const el = $("lc-status"); if (!el) return;
+  if (!p) { el.innerHTML = `<span class="src gpu">This device</span><span>${esc(String(text || "").replace(/^./, (c) => c.toUpperCase()))}</span>`; return; }
+  const src = p.src === "cache" ? ["cache", "Loading from cache"] : p.src === "peer" ? ["", "Copying from the room"] : ["", "Downloading"];
+  const et = p.left == null ? '<span class="eta wait">estimating time left</span>' : p.left > 1 ? `<span class="eta">${etaText(p.left)}</span>` : "";
+  el.innerHTML = `<span class="src ${src[0]}">${src[1]}</span><span class="b">${fmtBytes(p.done)} of ${fmtBytes(p.total)}</span>${p.done < p.total ? et : ""}`;
+}
 function aiProgress(done, total, note) {
   const pct = total ? Math.min(100, Math.round(done / total * 100)) : 0;
   const now = performance.now();
-  if (done < eta.done || !eta.t) { eta.t = now; eta.done = done; eta.rate = 0; }
+  if (done < eta.done || !eta.t0) { eta.t0 = eta.t = now; eta.done = done; eta.rate = 0; eta.hist = []; }
   else if (now - eta.t > 500) {
     const r = (done - eta.done) / ((now - eta.t) / 1000);
     eta.rate = eta.rate ? 0.8 * eta.rate + 0.2 * r : r; eta.t = now; eta.done = done;
+    eta.hist.push({ t: now, rate: eta.rate });
+    while (eta.hist.length && now - eta.hist[0].t > 10000) eta.hist.shift();
   }
   const left = eta.rate > 0 && total > done ? (total - done) / eta.rate : 0;
-  const leftTxt = left > 1 ? ` · ~${left > 90 ? Math.round(left / 60) + " min" : Math.round(left) + " s"} left` : "";
+  const recent = eta.hist.filter((h) => now - h.t < 8000).map((h) => h.rate);
+  const steady = now - eta.t0 > 10000 && recent.length >= 6 && Math.max(...recent) / Math.max(1, Math.min(...recent)) < 1.18;
+  const known = left > 0 && (now - eta.t0 > 30000 || steady);
+  const leftTxt = known && left > 1 ? ` · ${etaText(left)}` : "";
   $("ldg-fill").style.width = pct + "%";
   $("ldg-sub").textContent = `${(done / 2 ** 20).toFixed(0)} MB of ${(total / 2 ** 20).toFixed(0)} MB · ${pct}%${leftTxt}` + (note ? " · " + note : "");
+  lcBytes = done < total;
+  if (lcBytes) lcStatus({ done, total, left: known ? left : null, src: ai.netBytes ? "net" : ai.peerBytes ? "peer" : cacheHits ? "cache" : "net" });
 }
+function emptyText(s) { $("ai-empty-t").textContent = s; }
 function aiOut() { const o = $("ai-output"); o.style.display = "block"; $("ai-empty").style.display = "none"; return o; }
 
 // ---- chat transcript ----
@@ -1050,7 +1094,7 @@ function renderBot(m, live) {
     if (!live) for (const pre of b.querySelectorAll("pre")) {   // finished code blocks get a copy button
       const w = document.createElement("div"); w.className = "code-wrap";
       pre.replaceWith(w); w.appendChild(pre);
-      w.insertAdjacentHTML("beforeend", '<button type="button" class="copy-code">copy</button>');
+      w.insertAdjacentHTML("beforeend", `<button type="button" class="copy-code icon-act" aria-label="Copy the code" title="Copy the code">${COPY_SVG}</button>`);
     }
   }
 }
@@ -1067,58 +1111,33 @@ function chatBotEnd(note, stats) {
   botEl.classList.remove("live");
   // a finished answer in a background tab: say so in the tab title until the tab is looked at
   if (!note && document.hidden) { document.title = "\u2713 answer ready \u00b7 Pooled"; }
-  if (stats) { const s = document.createElement("div"); s.className = "stats"; s.textContent = stats; botEl.appendChild(s); }
-  if (!note && botEl.dataset.mid) {
-    const r = document.createElement("div");
-    r.className = "reacts";
-    r.innerHTML = REACTIONS.map((e) => `<button type="button" data-e="${e}" aria-label="react ${e}">${e}<b></b></button>`).join("")
-      + '<button type="button" class="copy-ans" title="copy the answer">copy</button>';
-    botEl.appendChild(r);
-    if (readAloud && botEl.pieces.length) speak(botEl.pieces.map((p) => p.t).join(""));
-  }
+  // under the answer: a copy icon (answers only, not notes), then the numbers
+  const acts = document.createElement("div");
+  acts.className = "m-acts";
+  if (!note && botEl.pieces.length) acts.innerHTML = `<button type="button" class="copy-ans icon-act" aria-label="Copy the answer" title="Copy">${COPY_SVG}</button>`;
+  if (stats) { const s = document.createElement("div"); s.className = "stats"; s.textContent = stats; acts.appendChild(s); }
+  if (acts.childElementCount) botEl.appendChild(acts);
+  if (!note && botEl.dataset.mid && readAloud && botEl.pieces.length) speak(botEl.pieces.map((p) => p.t).join(""));
   botEl = null;
 }
+// the clipboard icon, and the tick it turns into for a moment once copied
+const COPY_SVG = '<svg class="cp" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8.5" rx="1.8"/><path d="M10.5 5.5V3.8c0-1-.8-1.8-1.8-1.8H4.3c-1 0-1.8.8-1.8 1.8v4.4c0 1 .8 1.8 1.8 1.8h1.2"/></svg><svg class="ok" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
 
-// ---- the room's social bits: reactions, who is typing, answers read aloud ----
-const REACTIONS = ["\u{1F44D}", "\u{1F525}", "\u{1F92F}", "\u{1F602}", "\u{1F41D}"];
-const myReacts = new Set();   // "mid|emoji" this device has on
-function renderReacts(mid, counts) {
-  const m = document.querySelector(`#ai-output .m.bot[data-mid="${CSS.escape(String(mid))}"]`); if (!m) return;
-  for (const b of m.querySelectorAll(".reacts button[data-e]")) {
-    const n = counts?.[b.dataset.e] || 0;
-    b.querySelector("b").textContent = n ? String(n) : "";
-    b.classList.toggle("on", n > 0);
-    b.classList.toggle("mine", myReacts.has(mid + "|" + b.dataset.e));
-  }
-}
-function hostReact(mid, e, from) {
-  if (!REACTIONS.includes(e)) return;
-  ai.reacts ||= new Map();
-  const per = ai.reacts.get(mid) || {}; ai.reacts.set(mid, per);
-  const set = per[e] ||= new Set();
-  if (set.has(from)) set.delete(from); else set.add(from);
-  const counts = Object.fromEntries(Object.entries(per).map(([k, v]) => [k, v.size]));
-  broadcastAll({ t: "ai-reacts", mid, counts });
-  renderReacts(mid, counts);
-}
-function copyText(text, what) {
+// ---- the room's social bits: who is typing, answers read aloud (emoji reactions were removed) ----
+function copyText(text, what, btn) {
   if (!navigator.clipboard) { toast("this browser can't copy here"); return; }
-  navigator.clipboard.writeText(text).then(() => toast(`${what} copied`), () => toast("couldn't copy"));
+  navigator.clipboard.writeText(text).then(() => {
+    if (!btn) { toast(`${what} copied`); return; }
+    btn.classList.add("done"); btn.setAttribute("aria-label", "Copied");
+    clearTimeout(btn._t); btn._t = setTimeout(() => { btn.classList.remove("done"); btn.setAttribute("aria-label", `Copy the ${what}`); }, 1600);
+  }, () => toast("couldn't copy"));
 }
 // copy an answer (its raw text, markdown and all) or one code block
 $("ai-output").addEventListener("click", (ev) => {
   const ca = ev.target.closest(".copy-ans");
-  if (ca) { const m = ca.closest(".m.bot"); if (m?.pieces) copyText(m.pieces.map((p) => p.t).join("").replace(/<think>[\s\S]*?<\/think>\s*/g, ""), "answer"); return; }
+  if (ca) { const m = ca.closest(".m.bot"); if (m?.pieces) copyText(m.pieces.map((p) => p.t).join("").replace(/<think>[\s\S]*?<\/think>\s*/g, ""), "answer", ca); return; }
   const cc = ev.target.closest(".copy-code");
-  if (cc) { copyText(cc.parentElement.querySelector("pre")?.textContent || "", "code"); return; }
-});
-$("ai-output").addEventListener("click", (ev) => {
-  const b = ev.target.closest(".reacts button[data-e]"); if (!b) return;
-  const mid = b.closest(".m.bot")?.dataset.mid; if (!mid) return;
-  const key = mid + "|" + b.dataset.e;
-  if (myReacts.has(key)) myReacts.delete(key); else myReacts.add(key);
-  if (ai.role === "host") hostReact(mid, b.dataset.e, peer.id);
-  else if (ai.hostId) sendTo(ai.hostId, { t: "ai-react", mid, e: b.dataset.e });
+  if (cc) { copyText(cc.parentElement.querySelector("pre")?.textContent || "", "code", cc); return; }
 });
 let typingAt = 0;
 function noteTyping() {
@@ -1627,7 +1646,7 @@ function aiMaybeReady() {
   $("chat-tools").hidden = false;
   $("new-chat").hidden = false;
   setAfterAnswer(false, !!ai.conv.turns.length);
-  $("ai-empty").textContent = "The model is ready. Ask anything.";
+  emptyText("The model is ready. Ask anything.");
   sysNote(`Model ready on ${n} device${n > 1 ? "s" : ""}`);
   $("ai-prompt").focus();
   broadcastAll({ t: "ai-ready-all", model: ai.model });
@@ -1637,7 +1656,6 @@ function aiMaybeReady() {
   saveHost();
   mascot("Cluster online! Ask anything. Everyone in the room can.");
   codeRoleChanged();
-  codeFirst();
 }
 
 // ---- laps ----
@@ -1889,8 +1907,9 @@ function renderMap(nodes, st, live) {
       <div class="sm-sub">${x.host ? "embed · " : ""}${x.layers ? "L" + esc(String(x.layers)) : ""}${x.host ? " · head" : ""}</div>
       <div class="sm-ms">${x.ms ? Math.round(x.ms) + " ms" : ""}${x.amax ? ` <span class="sm-amax" title="largest activation this device sent (f16 tops out at 65504)">|x|≤${Math.round(x.amax)}</span>` : ""}</div></div>`).join('<div class="sm-link"><i></i></div>')
     + (nodes.length > 1 ? '<div class="sm-link back"><i></i></div>' : "");
-  // the layer band: one lane per device (its name, its layers), one cell per layer (or per few, for
-  // deep models) in the device's colour. The sweep runs across every cell, lane after lane.
+  // the layer band: one lane per device (its name, its layers, its ms), stacked. Every lane spans the
+  // whole model (one column per layer, or per few for deep models) and fills the columns its device
+  // holds, in its colour; the sweep runs down the staircase. Lanes thin out as devices join.
   const spans = nodes.map((x, i) => { const m = /^(\d+)\D+(\d+)$/.exec(String(x.layers || "")); return m ? { i, name: x.name, lo: +m[1], hi: +m[2] + 1 } : null; }).filter(Boolean);
   const total = spans.reduce((t, x) => Math.max(t, x.hi), 0);
   const strip = el.querySelector(".sm-strip");
@@ -1898,17 +1917,20 @@ function renderMap(nodes, st, live) {
   if (strip.dataset.sig !== sig) {
     strip.dataset.sig = sig;
     const n = Math.min(total, 64), per = total / Math.max(1, n);
-    let c = 0;
-    strip.innerHTML = spans.sort((x, y) => x.lo - y.lo).map((sp) => {
-      let cells = "";
+    const sorted = spans.sort((x, y) => x.lo - y.lo);
+    strip.innerHTML = sorted.map((sp) => {
+      let cells = "", c = Math.floor(sp.lo / per);
       const c0 = c;
-      for (; c < n && c * per < sp.hi; c++) cells += `<i style="--c:${c}"></i>`;
+      for (; c < n && c * per < sp.hi; c++) cells += `<i style="--c:${c};grid-column:${c + 1}"></i>`;
       const dev = [...conns.values()].find((e) => e.name === sp.name)?.meta;
       const icon = iconFor(sp.name === myName ? myMeta : dev || {});
-      // a lane: the device (a dot that flashes as the pass goes through it), its layers, its ms per token
-      return `<div class="sm-half" data-name="${esc(String(sp.name))}" style="--sw:${swatch(sp.i)};--n:${Math.max(1, sp.hi - sp.lo)};--c0:${c0}" title="${esc(String(sp.name))}: layers ${sp.lo + 1}-${sp.hi}"><p class="hl"><i class="act" aria-hidden="true"></i>${icon}<b>${esc(String(sp.name))}</b><span class="lr">layers ${sp.lo + 1}-${sp.hi}</span><span class="lms"></span></p><div class="cells">${cells}</div></div>`;
-    }).join('<span class="sm-gap"></span>');
+      return `<div class="sm-half" data-name="${esc(String(sp.name))}" style="--sw:${swatch(sp.i)};--c0:${c0}" title="${esc(String(sp.name))}: layers ${sp.lo + 1}–${sp.hi}"><p class="hl"><i class="act" aria-hidden="true"></i>${icon}<b>${esc(String(sp.name))}</b><span class="lr">layers ${sp.lo + 1}–${sp.hi}</span><span class="lms"></span></p><div class="cells">${cells}</div></div>`;
+    }).join("");
     strip.style.setProperty("--cells", n);
+    el.style.setProperty("--lanes", Math.max(1, sorted.length));
+    el.toggleAttribute("data-many", sorted.length > 4);
+    // folded: the same split as one thin bar
+    el.querySelector(".sm-mini").innerHTML = sorted.map((sp, k) => `<i style="--sw:${swatch(sp.i)};--n:${Math.max(1, sp.hi - sp.lo)};--k:${k}"></i>`).join("");
   }
   // each lane's own time per token (what its GPU spends on its layers)
   for (const lane of strip.querySelectorAll(".sm-half")) {
@@ -1929,7 +1951,8 @@ function renderMap(nodes, st, live) {
   const S = lastMap.st;
   $("sm-tps").textContent = S?.tps ? S.tps.toFixed(1) : "-";
   $("sm-lap").textContent = S?.lap ? String(Math.round(S.lap)) : "-";
-  el.querySelector(".sm-lt").textContent = live ? "live" : "idle";
+  el.querySelector(".sm-lt").textContent = live ? "Writing" : "Ready";
+  el.querySelector(".sm-live").title = live ? "the room is writing an answer" : "waiting for a question";
   const bits = [];
   if (st?.tps) bits.push(`${st.tps.toFixed(1)} tok/s`);
   if (st?.lap) bits.push(DEV ? `lap ${st.lap} ms = GPUs ${st.gpu} + wire ${st.net}` : `${st.lap} ms a lap`);
@@ -1937,6 +1960,25 @@ function renderMap(nodes, st, live) {
   el.querySelector(".sm-meta").textContent = bits.join(" · ") || `${nodes.length} device${nodes.length > 1 ? "s" : ""}`;
   el.querySelector(".sm-meta").title = `${nodes.length} device${nodes.length > 1 ? "s" : ""}: every token takes a lap through all of them`;
 }
+// The band folds to one line (the model, its state, a thin bar of the split). Each viewer's choice is
+// kept in this browser, separately for Chat and Code.
+const bandMode = () => ($("chatpane").classList.contains("code-mode") ? "code" : "chat");
+function bandFolded() {
+  let v = null;
+  try { v = localStorage.getItem("pooled-band-" + bandMode()); } catch {}
+  return v ? v === "folded" : bandMode() === "code" && innerWidth < 820;   // on a phone, Code starts with it folded
+}
+function bandFold(on, save = false) {
+  const el = $("swarm-map"), b = $("band-toggle");
+  el.classList.toggle("folded", on);
+  b.setAttribute("aria-expanded", String(!on));
+  const t = on ? "Show the layers" : "Hide the layers";
+  b.setAttribute("aria-label", t); b.dataset.tip = t;
+  if (save) try { localStorage.setItem("pooled-band-" + bandMode(), on ? "folded" : "open"); } catch {}
+}
+$("band-toggle").addEventListener("click", () => bandFold(!$("swarm-map").classList.contains("folded"), true));
+bandFold(bandFolded());
+new MutationObserver(() => bandFold(bandFolded())).observe($("chatpane"), { attributes: true, attributeFilter: ["class"] });
 // a token came out: a sweep runs along the layer strip and through the device cards. At most one
 // sweep per lap; tokens that come faster ride along with the one running.
 let pulseAt = 0, bandTokens = 0;
@@ -2563,8 +2605,7 @@ async function aiOnData(from, d) {
       toast(`answers now: ${PERSONAS[d.persona]?.label || d.persona}${d.thinking ? " · thinking first" : ""}`);
       break;
     case "ai-regen": markReplaced(); break;
-    case "ai-react": if (ai.role === "host") hostReact(String(d.mid), d.e, from); break;
-    case "ai-reacts": renderReacts(String(d.mid), d.counts); break;
+    case "ai-react": case "ai-reacts": break;   // reactions were removed; an older device may still send them
     case "ai-typing":
       if (ai.role === "host") {
         if (ai.visibility !== "all") break;
@@ -2606,12 +2647,11 @@ async function aiOnData(from, d) {
       if (MODELS[d.model]) { setModelValue(d.model); ai.model = d.model; }
       $("ai-row").style.display = "flex";
       $("chat-tools").hidden = false;
-      $("ai-empty").textContent = "The model is ready. Ask anything.";
+      emptyText("The model is ready. Ask anything.");
       sysNote("Model ready");
       aiStatus(ai.range ? `cluster online · serving layers ${ai.range[0]}–${ai.range[1] - 1}` : "cluster online · this device asks, the others think");
       mascot("Cluster online! Type a question, the whole room answers.");
       codeRoleChanged();
-      codeFirst();
       break;
     case "ai-ask":
       if (ai.role !== "host") break;
@@ -2691,13 +2731,8 @@ function codeOnData(from, d) {
     await codeHandlers.get(d.t)?.(from, d);
   }).catch((err) => console.error("code message", d.t, err));
 }
-// Once a model is ready, Code is the first tab: switch to it once (only where the tab shows)
-let codeFirstDone = false, simReady = false;
-function codeFirst() {
-  if (codeFirstDone || $("mode-bar").hidden) return;
-  codeFirstDone = true;
-  loadCode().then((c) => c?.show?.("code")).catch(() => {});
-}
+// Chat is the room's first tab; Code is one click away (no switch on its own when the model is ready)
+let simReady = false;
 // initCode returns { show(mode) }; the Chat tab is handled by code.js once it is loaded
 document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code")) loadCode().then((c) => c?.show?.("code")).catch((err) => toast("Code mode failed to load: " + err.message)); });
 
@@ -2755,6 +2790,55 @@ function styleChanged() {
   saveHost();
 }
 for (const id of ["ai-persona", "ai-sampling", "ai-thinking", "ai-length"]) $(id).addEventListener("change", styleChanged);
+// Room settings: every select in the sheet shows as a segmented control (or chips, for the answer
+// styles) with plain labels and a line of help for the chosen option. The select stays the source of
+// truth: a click sets it and fires its change, so everything that listens to it works as before.
+const SEG_LABEL = {
+  "ai-visibility": { all: "Everyone", host: "Only me", asker: "Whoever asked" },
+  "ai-length": { short: "Short", normal: "Normal", long: "Long" },
+  "ai-sampling": { creative: "Creative", focused: "Focused", exact: "Exact" },
+  "ai-split": { memory: "By memory", speed: "For speed" },
+  "ai-persona": { default: "Plain", concise: "Concise", eli5: "Like I'm five", pirate: "Pirate", haiku: "Haiku", swarm: "The room speaks" },
+};
+const SEG_HELP = {
+  "ai-visibility": { all: "Everyone in the room sees the questions and the answers.", host: "Only this device sees the text. Every device still helps write it.", asker: "Each answer goes to whoever asked it. Every device still helps write it." },
+  "ai-length": { short: "About a paragraph at most (150 tokens).", normal: "A few paragraphs (400 tokens).", long: "Room for long answers and code (1,200 tokens)." },
+  "ai-sampling": { creative: "Varied wording: ask twice, get two different answers.", focused: "Steadier wording, fewer surprises.", exact: "Always the likeliest word: the same question gets the same answer." },
+  "ai-split": { memory: "Every device holds some layers, sized by what it lends.", speed: "The fastest devices hold the layers, with the fewest hops. Takes effect when the layers are dealt again." },
+};
+const segLabel = (id, o) => SEG_LABEL[id]?.[o.value] || o.text.replace(/\s*\(.*\)$/, "").replace(/^./, (c) => c.toUpperCase());
+function buildSegs() {
+  for (const seg of document.querySelectorAll(".seg[data-for]")) {
+    const id = seg.dataset.for, sel = $(id);
+    seg.innerHTML = [...sel.options].map((o) => `<button type="button" role="radio" data-v="${esc(o.value)}" aria-checked="false" tabindex="-1" title="${esc(o.text)}">${esc(segLabel(id, o))}</button>`).join("");
+  }
+  syncSegs();
+}
+function syncSegs() {
+  for (const seg of document.querySelectorAll(".seg[data-for]")) {
+    const sel = $(seg.dataset.for);
+    for (const b of seg.children) { const on = b.dataset.v === sel.value; b.setAttribute("aria-checked", String(on)); b.tabIndex = on ? 0 : -1; b.disabled = sel.disabled; }
+    const help = document.querySelector(`.set-help[data-help="${seg.dataset.for}"]`);
+    if (help) help.textContent = SEG_HELP[seg.dataset.for]?.[sel.value] || "";
+  }
+}
+function segPick(b) {
+  const seg = b.closest(".seg[data-for]"), sel = $(seg.dataset.for);
+  if (sel.value !== b.dataset.v) { sel.value = b.dataset.v; sel.dispatchEvent(new Event("change", { bubbles: true })); }
+  syncSegs();
+}
+document.addEventListener("click", (e) => { const b = e.target.closest?.(".seg[data-for] > button"); if (b) segPick(b); });
+document.addEventListener("keydown", (e) => {
+  const b = e.target.closest?.(".seg[data-for] > button");
+  if (!b || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+  const all = [...b.parentElement.children], k = all.indexOf(b), d = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
+  const nb = all[(k + d + all.length) % all.length];
+  e.preventDefault(); nb.focus(); segPick(nb);
+});
+document.addEventListener("change", (e) => { if (e.target.closest?.("#room-menu")) syncSegs(); });
+buildSegs();
+$("room-menu").addEventListener("toggle", () => { if ($("room-menu").open) syncSegs(); });
+$("menu-close").addEventListener("click", () => { $("room-menu").open = false; $("room-menu").querySelector("summary").focus(); });
 $("cache-clear").addEventListener("click", async (ev) => {
   ev.preventDefault();
   try { await caches.delete("swarmllm-weights-v1"); weightCache = null; toast("cached weights cleared"); } catch { toast("could not clear the cache"); }
@@ -2831,7 +2915,7 @@ mascot("Hi! Create a room, or type a friend's code to join one.");
 // ---- ?sim=1 on localhost: made-up devices, loading, chat and passes, for looking at the UI
 // without a GPU (the visual checks use it). It paints; it never loads or runs a model.
 if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "localhost"].includes(location.hostname)) {
-  const fake = { "MacBook Air": { ua: "Mac", webgpu: true, contribGB: 12 }, "Desktop PC": { ua: "Device", webgpu: true, contribGB: 12 }, "Pixel 8": { ua: "Android", webgpu: true, phone: true, contribGB: 2 } };
+  const fake = { "MacBook Air": { ua: "Mac", webgpu: true, contribGB: 12 }, "Desktop PC": { ua: "Device", webgpu: true, contribGB: 12 }, "Pixel 8": { ua: "Android", webgpu: true, phone: true, contribGB: 2 }, "iPad": { ua: "iPad", webgpu: true, contribGB: 6 } };
   const names = () => [myName, ...[...conns.values()].map((c) => c.name)];
   const deal = () => {
     const rank = (nm) => { const k = Object.keys(fake).indexOf(nm); return k < 0 ? 9 : k; };
@@ -2852,7 +2936,9 @@ if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "lo
       }
       updateCluster();
     },
-    loading(p = 0.4) {
+    // loading(p, { cache: true }) pictures a load from the browser cache; { early: true } one that
+    // started a few seconds ago (no time left yet)
+    loading(p = 0.4, { cache = false, early = false } = {}) {
       this.devices();
       setModelValue("qwen3.6-35b-moe"); ai.model = "qwen3.6-35b-moe";
       ai.layersByName = deal(); ai.cfg = { num_hidden_layers: 40 };
@@ -2861,7 +2947,10 @@ if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "lo
       ai.prog = Object.fromEntries(names().map((nm, i) => [nm, Math.round(Math.min(100, p * 100 * (1 + i * 0.6)))]));
       ai.myPct = ai.prog[myName];
       aiLoading(true, `Loading Qwen 3.6 35B MoE`);
-      aiProgress(p * 9.4 * 2 ** 30, 9.4 * 2 ** 30);
+      const total = 3.1 * 2 ** 30, done = p * total, now = performance.now();
+      ai.netBytes = cache ? 0 : done; ai.peerBytes = 0; cacheHits = cache ? done : 0;
+      Object.assign(eta, { t0: now - (early ? 6000 : 48000), t: now, done, rate: (total - done) / 128, hist: [] });
+      aiProgress(done, total);
       for (const card of document.querySelectorAll("#peers .peer-card")) peerStatus(card, `${ai.prog[card.dataset.name] ?? 0}%`);
       loadCardRender();
     },
@@ -2872,13 +2961,12 @@ if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "lo
       aiLoading(false);
       $("ai-panel").classList.add("online");
       $("ai-row").style.display = "flex"; $("chat-tools").hidden = false; $("mode-bar").hidden = false;
-      $("ai-empty").textContent = "The model is ready. Ask anything.";
+      emptyText("The model is ready. Ask anything.");
       for (const card of document.querySelectorAll("#peers .peer-card")) peerStatus(card, "ready", true);
       const ns = names();
       renderMap(Object.keys(ai.layersByName).map((nm, i) => ({ name: nm, layers: ai.layersByName[nm], host: i === 0 ? 1 : 0, ms: 18 + i * 9 })), { tps: 21.4, lap: 64 }, false);
       aiStatus("cluster online");
       simReady = true; setCtx(1846, 32768);
-      codeFirst();
     },
     chat() {
       if (!$("ai-panel").classList.contains("online")) this.ready();
@@ -2898,6 +2986,15 @@ if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "lo
       this.pulse(6);
       loadCode().then((c) => c?.show?.("chat"));
     },
+    // deal the layers again over the devices now in the room (after more tabs joined)
+    reset() {
+      ai.layersByName = deal();
+      const mine = /^(\d+)\D+(\d+)$/.exec(ai.layersByName[myName] || "");
+      ai.range = mine ? [+mine[1], +mine[2] + 1] : null;
+      renderMap(Object.keys(ai.layersByName).map((nm, i) => ({ name: nm, layers: ai.layersByName[nm], host: i === 0 ? 1 : 0, ms: 18 + i * 9 })), { tps: 21.4, lap: 64 }, false);
+    },
+    // Code mode's context meter (a scripted model has no token count of its own)
+    codeCtx(used = 5400, max = 32768) { return loadCode().then((c) => c?.ctx?.(used, max)); },
     pulse(n = 1) { for (let i = 0; i < n; i++) setTimeout(() => { pulseAt = 0; mapPulse(); }, i * 250); },
     idle() { $("ai-panel").classList.remove("online", "loading"); ai.range = null; },
     compute(on) { on ? compute.open() : compute.close(); },

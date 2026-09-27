@@ -19,7 +19,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
   const circles = [...logo.querySelectorAll("circle")];
   let open = false, raf = 0, timer = 0, lastSpawn = 0, owed = 0;
   let tokens = 0, lastMs = null, statAt = 0;
-  const stamps = [];            // pass times over the last few seconds, for the rate
+  const stamps = [];            // [time, tokens] of the passes over the last few seconds, for the rate
   const packets = [];           // { t0, dur }
   let W = 0, H = 0, dpr = 1, cy = 0, lx = 0, lw = 0;
 
@@ -100,12 +100,12 @@ export function computeScreen({ state, keepAwake = () => {} }) {
 
   function renderStats() {
     const now = performance.now();
-    while (stamps.length && now - stamps[0] > 4000) stamps.shift();
+    while (stamps.length && now - stamps[0][0] > 4000) stamps.shift();
     const s = state();
     $("cs-tok").textContent = fmt(tokens);
-    $("cs-rate").textContent = stamps.length > 1 ? (stamps.length / Math.max(1, (now - stamps[0]) / 1000)).toFixed(1) : "0";
+    $("cs-rate").textContent = stamps.length > 1 ? (stamps.reduce((t, x) => t + x[1], 0) / Math.max(1, (now - stamps[0][0]) / 1000)).toFixed(1) : "0";
     $("cs-ms").textContent = lastMs != null ? Math.round(lastMs) + " ms" : "-";
-    $("cs-rate-k").textContent = s.role === "host" ? "tokens / s" : "passes / s";
+    $("cs-rate-k").textContent = "tokens per second";
   }
   function refresh() {
     if (!open) return;
@@ -115,15 +115,19 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     const has = s.lo != null && s.hi != null;
     const lay = has ? `${s.lo + 1}–${s.hi}` : "";
     let k, title, sub;
-    if (s.phase === "serving" && has) { k = s.role === "host" ? "Lending, and writing the tokens" : "Lending"; title = `Serving layers ${lay}`; sub = `of ${s.model}`; }
-    else if (s.phase === "loading") { k = "Loading"; title = has ? `Loading layers ${lay}` : "Loading the model"; sub = `${s.model}${s.pct != null ? ` · ${Math.round(s.pct)}%` : ""}`; }
-    else if (s.phase === "serving") { k = "The room is running"; title = "Not holding layers"; sub = `${s.model} runs on the other devices. This one asks.`; }
-    else { k = "Idle"; title = "Ready to lend"; sub = "It starts serving when someone in the room starts a model."; }
+    const of = s.total ? ` of ${s.total}` : "";
+    if (s.phase === "serving" && has) {
+      k = `This device is helping run ${s.model}`; title = `Serving layers ${lay}`;
+      sub = s.role === "host" ? `${s.hi - s.lo}${of} layers here. It also turns the room's work into words.` : `${s.hi - s.lo}${of} layers here. Every token passes through them.`;
+    }
+    else if (s.phase === "loading") { k = `Getting ready to run ${s.model}`; title = has ? `Loading layers ${lay}` : "Loading the model"; sub = `${s.pct != null ? `${Math.round(s.pct)}% · ` : ""}only this device's layers download`; }
+    else if (s.phase === "serving") { k = `The room is running ${s.model}`; title = "No layers here"; sub = "The other devices hold the model. This one can still ask."; }
+    else { k = "Not serving yet"; title = "Ready to lend"; sub = "This device starts helping as soon as someone in the room starts a model."; }
     root.dataset.phase = s.phase;
     // serving, and no pass for a moment: say so, and let the logo rest
-    const quiet = s.phase === "serving" && has && (!stamps.length || performance.now() - stamps[stamps.length - 1] > 2500);
+    const quiet = s.phase === "serving" && has && (!stamps.length || performance.now() - stamps[stamps.length - 1][0] > 2500);
     root.toggleAttribute("data-quiet", quiet);
-    if (quiet) k = "Lending, waiting for the next token";
+    if (quiet) k = `This device is helping run ${s.model} · waiting for a question`;
     $("cs-k").textContent = k; $("cs-title").textContent = title; $("cs-sub").textContent = sub;
     // this device's slice of the model
     const strip = $("cs-strip"), total = s.total || 0;
@@ -175,7 +179,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
       tokens += n;
       if (ms != null) lastMs = ms;
       const now = performance.now();
-      stamps.push(now);
+      stamps.push([now, n]);
       if (stamps.length > 400) stamps.splice(0, stamps.length - 400);
       if (!open || document.hidden) return;
       if (root.hasAttribute("data-quiet")) refresh();
