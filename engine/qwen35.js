@@ -1545,7 +1545,8 @@ export class Qwen35Engine {
     }
     return this._runBatchAndRead(basePos, n);
   }
-  restoreDN(k) { this._restoreDN(k); }
+  // (a no-op before the first batched pass: nothing was verified, so there is nothing to roll back)
+  restoreDN(k) { if (this.B) this._restoreDN(k); }
   setHidden(h) { this._pre = null; this.device.queue.writeBuffer(this.x, 0, h); }   // final trunk hidden (chain host) for the draft head
 
   // final norm + LM head for n hidden states (n*dim floats, or null to use the
