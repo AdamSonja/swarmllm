@@ -1,0 +1,111 @@
+// harness/codetools.js: line-range reads, output caps, append, old/new edits, preview();
+// harness/workspace.js: bytes, remove, watch; harness/diff.js: lineDiff.
+import { MemoryWorkspace, watch } from "../../harness/workspace.js";
+import { codingTools, MAX_LINES, MAX_CHARS, MAX_HITS, MAX_ENTRIES } from "../../harness/codetools.js";
+import { previewTools } from "../../harness/preview-tools.js";
+import { PreviewServer } from "../../harness/preview.js";
+import { toolsSystemPrompt } from "../../harness/tools.js";
+import { lineDiff } from "../../harness/diff.js";
+
+const eq = (a, b, m) => { const ja = JSON.stringify(a), jb = JSON.stringify(b); if (ja !== jb) throw new Error((m || "mismatch") + ": " + ja + " != " + jb); };
+const ok = (c, m) => { if (!c) throw new Error(m || "assertion failed"); };
+const T = (ws) => Object.fromEntries(codingTools(ws).map((t) => [t.name, t]));
+const lines = (n, f = (i) => "line " + i) => Array.from({ length: n }, (_, i) => f(i + 1)).join("\n") + "\n";
+
+Deno.test("read_file: 200 lines per call, numbered N|text, with the continuation hint", async () => {
+  const t = T(new MemoryWorkspace({ "big.js": lines(412) }));
+  const r = (await t.read_file.run({ path: "big.js" })).split("\n");
+  eq(r.length, MAX_LINES + 1); eq(r[0], "1|line 1"); eq(r[199], "200|line 200");
+  eq(r[200], "(lines 1-200 of 412; read on with start_line=201)");
+  const r2 = (await t.read_file.run({ path: "big.js", start_line: 401 })).split("\n");
+  eq(r2, ["401|line 401", ...Array.from({ length: 11 }, (_, i) => `${402 + i}|line ${402 + i}`)], "the tail needs no hint");
+  eq(await t.read_file.run({ path: "big.js", start_line: 41, end_line: 43 }), "41|line 41\n42|line 42\n43|line 43", "an explicit range needs no hint");
+  eq(await t.read_file.run({ path: "big.js", start_line: 500 }), "error: big.js has 412 lines");
+});
+
+Deno.test("read_file: 8,000 chars per call and long lines cut", async () => {
+  const t = T(new MemoryWorkspace({ "wide.js": lines(150, () => "x".repeat(99)), "min.js": "y".repeat(5000) + "\nend\n", "e.txt": "" }));
+  const r = await t.read_file.run({ path: "wide.js" });
+  ok(r.length <= MAX_CHARS + 80, r.length);
+  ok(r.endsWith("(lines 1-77 of 150; read on with start_line=78)"), r.slice(-60));
+  const m = await t.read_file.run({ path: "min.js" });
+  ok(m.startsWith("1|" + "y".repeat(1000) + "…(4000 chars cut)\n2|end"), m.slice(990, 1040));
+  eq(await t.read_file.run({ path: "e.txt" }), "(e.txt is empty)");
+});
+
+Deno.test("list_dir and search caps", async () => {
+  const files = {};
+  for (let i = 0; i < 250; i++) files[`many/f${String(i).padStart(3, "0")}.js`] = `const hit = ${i}; // ${"z".repeat(300)}\n`;
+  const t = T(new MemoryWorkspace(files));
+  const l = (await t.list_dir.run({ path: "many" })).split("\n");
+  eq(l.length, MAX_ENTRIES + 1); eq(l.at(-1), "(+50 more)");
+  const s = (await t.search.run({ pattern: "hit =" })).split("\n");
+  eq(s.length, MAX_HITS + 1); eq(s.at(-1), "(+220 more; narrow the pattern or path)");
+  ok(s[0].startsWith("many/f000.js:1: const hit = 0;") && s[0].endsWith("…(158 chars cut)"), s[0]);
+});
+
+Deno.test("edit_file: old/new, 0 and 2 matches, lines reported; preview before/after", async () => {
+  const ws = new MemoryWorkspace({ "g.js": "a\nb\nc\nb\n", "h.js": "one\ntwo\n" }), t = T(ws);
+  eq(await t.edit_file.run({ path: "g.js", old: "zzz", new: "y" }), "error: old not found in g.js; read_file it again and copy the text exactly (whitespace included)");
+  eq(await t.edit_file.run({ path: "g.js", old: "b", new: "y" }), "error: old appears 2 times in g.js; include more surrounding lines so it is unique");
+  eq(await t.edit_file.run({ path: "nope.js", old: "a", new: "b" }), "error: no such file: nope.js; use write_file to create it");
+  const p = await t.edit_file.preview({ path: "h.js", old: "two", new: "2\n2b" });
+  eq(p, { path: "h.js", before: "one\ntwo\n", after: "one\n2\n2b\n" });
+  eq(await ws.read("h.js"), "one\ntwo\n", "preview does not write");
+  eq(await t.edit_file.run({ path: "h.js", old: "two", new: "2\n2b" }), "edited h.js lines 2-3 (1 -> 2 lines)");
+  eq(await ws.read("h.js"), "one\n2\n2b\n");
+  ok((await t.edit_file.preview({ path: "g.js", old: "b", new: "y" })).error.includes("2 times"));
+});
+
+Deno.test("write_file: create, replace, append; preview", async () => {
+  const ws = new MemoryWorkspace(), t = T(ws);
+  eq(await t.write_file.preview({ path: "a.js", content: "1\n" }), { path: "a.js", before: null, after: "1\n" });
+  eq(await t.write_file.run({ path: "a.js", content: "1\n" }), "wrote a.js (1 lines, 2 B)");
+  eq(await t.write_file.preview({ path: "a.js", content: "2\n", append: true }), { path: "a.js", before: "1\n", after: "1\n2\n" });
+  eq(await t.write_file.run({ path: "a.js", content: "2\n", append: true }), "appended to a.js (now 2 lines, 4 B)");
+  eq(await t.write_file.run({ path: "n/b.js", content: "x", append: true }), "wrote n/b.js (1 lines, 1 B)", "append to a new file creates it");
+  eq(await t.write_file.run({ path: "a.js", content: "y".repeat(3000) }), "wrote a.js (1 lines, 2.9 KB)");
+});
+
+Deno.test("workspace: bytes, remove, watch", async () => {
+  const mem = new MemoryWorkspace({ "a.txt": "hé" }), ws = watch(mem), seen = [];
+  eq([...(await ws.readBytes("a.txt"))], [104, 195, 169]);
+  const off = ws.onChange((e) => seen.push(e));
+  ok(watch(ws) === ws, "watching twice returns the same view");
+  await ws.writeBytes("img/x.png", new Uint8Array([1, 2, 3]));
+  eq([...(await ws.readBytes("img/x.png"))], [1, 2, 3]);
+  await ws.write("./b.txt", "b");
+  await ws.remove("img");
+  eq(await ws.exists("img/x.png"), false);
+  eq(seen, [{ path: "img/x.png", kind: "write" }, { path: "b.txt", kind: "write" }, { path: "img", kind: "remove" }]);
+  off(); await ws.write("c.txt", "c"); eq(seen.length, 3);
+  eq(await mem.read("c.txt"), "c", "writes land in the wrapped workspace");
+  let threw = false; try { await ws.remove("nope"); } catch { threw = true; } ok(threw);
+});
+
+Deno.test("lineDiff: add, remove, change, folding, cap", () => {
+  eq(lineDiff("a\nb\nc\n", "a\nb\nc\n"), []);
+  eq(lineDiff(null, "x\ny\n"), [{ op: "+", text: "x" }, { op: "+", text: "y" }]);
+  eq(lineDiff("a\nb\nc", "a\nB\nc\nd"), [{ op: " ", text: "a" }, { op: "-", text: "b" }, { op: "+", text: "B" }, { op: " ", text: "c" }, { op: "+", text: "d" }]);
+  const big = lines(1000), edited = big.replace("line 500\n", "line five hundred\n");
+  const d = lineDiff(big, edited);
+  eq(d.map((r) => r.op + (r.skip ?? r.text)).join(","), " 496, line 497, line 498, line 499,-line 500,+line five hundred, line 501, line 502, line 503, 497");
+  eq(lineDiff("", lines(500)), null, "over max rows");
+  eq(lineDiff("", lines(500), { max: 600 }).length, 500);
+});
+
+Deno.test("prompt size: the 8 code tools in the xml block plus the F.2 prompt stay under 4,200 chars", () => {
+  const ws = watch(new MemoryWorkspace()), s = new PreviewServer(ws);
+  const tools = [...codingTools(ws, { server: s }), ...previewTools(s)].map(({ name, description, parameters }) => ({ name, description, parameters }));
+  eq(tools.map((t) => t.name), ["list_dir", "read_file", "search", "edit_file", "write_file", "serve", "preview_logs", "stop_serve"]);
+  // the integrator owns the final text (docs/design/harness-app.md F.2); this is its target shape
+  const system = `You are a coding agent in a browser. Files live in a project folder; there is no shell.
+Build static web apps (HTML, CSS, JS modules). They run in a sandboxed preview: no network except
+cdn.jsdelivr.net and cdnjs.cloudflare.com, no server code.
+Work in small steps: write files with write_file (split files over ~150 lines with append),
+fix with edit_file, then serve and check preview_logs. Fix every error before you finish.
+Read files by line range. Keep answers short; when done, say what you built in one or two lines.`;
+  const p = toolsSystemPrompt(tools, { style: "xml", system });
+  ok(p.length <= 4200, `system prompt + tool block is ${p.length} chars`);
+  s.close();
+});
