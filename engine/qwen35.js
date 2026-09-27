@@ -128,7 +128,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, attnPrefillTile = false, attnPrefillSplits = 32, attnPrefillTK = 0, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, attnPrefillTile = true, attnPrefillSplits = 32, attnPrefillTK = 0, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -213,10 +213,12 @@ export class Qwen35Engine {
     this.attnTile = this.attnTileOn;
     // attnPrefillTile: tiled causal flash attention for full-width prefill passes (engine/wgsl/attn_tile.js):
     // one workgroup per (split, kv head, group of up to 64 query rows) instead of per column (pair).
-    // It changes the prefill summation order (tolerance, not bits), so it is off by default and only
-    // ever runs where the prefill GEMM runs (nCols === NC); decode and verify keep attn_flash.
-    // engine.attnPrefillTile = false at runtime restores attn_flash(_t2) for A/B.
-    this.attnPTCfg = this.flash && !this.kvQ8 && attnPrefillTile === true
+    // It changes the prefill summation order (tolerance, not bits) and only ever runs where the prefill
+    // GEMM runs (nCols === NC); decode and verify keep attn_flash. On by default since the GB10
+    // validation (every golden passes with it; 27B relDiff vs attn_flash 9.6e-5 at 16k; prefill 2.2x at
+    // 16k on the 27B, 1.45x on the MoE: docs/research/prefill-profile-2026-09.md, candidate E).
+    // attnPrefillTile: false (or engine.attnPrefillTile = false at runtime) restores attn_flash(_t2).
+    this.attnPTCfg = this.flash && !this.kvQ8 && attnPrefillTile !== false
       ? attnTileConfig({ hd, G: nH / nKV, faSplit: this.faSplit, faSplits: this.faSplits,
         wgMem: device.limits.maxComputeWorkgroupStorageSize, target: attnPrefillSplits, tk: attnPrefillTK }) : null;
     // fused attention glue (qsplit + q/k head_norm + rope in one dispatch, bit-identical); its

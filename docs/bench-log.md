@@ -145,3 +145,19 @@ branch alone shows it; the cause is open.
 ## 2026-09-26: load time for tests and benches (CPU side; GPU not yet measured)
 
 Loader CPU cost, with the GPU upload stubbed (`tests/bench/load_profile.js`): the 27B took 43.8 s (6.5 s reading, 37.2 s converting, 20.1 s of that the Q4_0 repack) and the MoE 46.0 s (8.4 s reading, 37.6 s converting). The repack is now 3x faster (u16 copies). With the new converted-weights cache (`tests/weight_cache.js`), a warm load is 4 to 6 s for the 27B and about 9 s for the MoE. The Chrome bench's static server read ranges at 0.27 GB/s; 8 MB reads bring that to 2 GB/s, and pre-converted tensors (`bench.html?wcache=1`) take the MoE tab load path from 74.7 s to 17 s on the CPU side. `tests/run_q38_once.js` runs the 27B suite over one upload. Details, and the commands still to run for GPU validation, are in [testing-fast.md](testing-fast.md).
+
+## 2026-09-27: tiled prefill attention (attnPrefillTile, candidate E), on by default
+
+`attn_flash_tile` (engine/wgsl/attn_tile.js) replaces attn_flash / attn_flash_t2 on full-width prefill passes: one
+workgroup per (split, KV head, 64 query rows) shares each K/V tile across the whole pass. GB10, Deno,
+`bench_ctx.js` CTX=16640 TOKENS=8, prefill tok/s over the segment ending at each fill, off → on:
+
+| | 512 | 4096 | 16384 |
+|---|---|---|---|
+| 27B | 65.9 → 69.8 | 57.4 → 74.3 | 30.2 → 66.1 |
+| MoE | 151.3 → 159.7 | 133.3 → 166.0 | 80.8 → 117.2 |
+
+Whole 16000-token prompt: 27B 39.7 → 69.1, MoE 99.5 → 153.9. Attention kernel time at 4096 (`prof_prefill.js`):
+27B 14.5 → 2.2 s, MoE 4.8 → 1.0 s. Decode never uses the kernel. Every golden passes with it on; logit relDiff vs
+attn_flash and the MoE router caveat are in docs/research/prefill-profile-2026-09.md (candidate E).
+`ATTN_PREFILL_TILE=0` / `?attnptile=0` restores attn_flash.

@@ -17,7 +17,8 @@ import { attachWeightCache } from "./weight_cache.js";
 import { Qwen35Engine } from "../engine/qwen35.js";
 
 // A/B switches for every test and bench that loads through this file (engine defaults, not per test):
-//   ATTN_PREFILL_TILE=1   tiled causal flash attention for full-width prefill passes (engine/wgsl/attn_tile.js)
+//   ATTN_PREFILL_TILE=0|1 tiled causal flash attention for full-width prefill passes (engine/wgsl/attn_tile.js;
+//                         on by default, 0 restores attn_flash)
 //   ATTN_PREFILL_TK=4|8|16  its positions per tile (default: the largest that fits the workgroup memory;
 //                         16 needs 32 KB, which gpuDevice() then requests from the adapter)
 //   ATTN_PREFILL_SPLITS=N its target number of context splits per pass (default 32)
