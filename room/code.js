@@ -3,7 +3,7 @@
 // and calls initCode(roomApi, { mock }) once; it returns { show(mode) }.
 //
 // Host: a project (OPFS scratch folder or a picked folder, harness/projects.js), a PreviewServer
-// over it, the 7 tools, and an Agent over the room's model (harness/room-model.js; with
+// over it, the 8 tools, and an Agent over the room's model (harness/room-model.js; with
 // ?mock=code, window.__pooledMock.model instead). A run holds the room's lock for all its steps.
 // Everything the timeline shows is an ai-code-* message: the host renders it, keeps it for late
 // joiners and broadcasts it (visibility rules apply, room.js sendCode).
@@ -70,6 +70,8 @@ function wireDiff(d) {
   while (k > 0 && JSON.stringify(rows.slice(0, k)).length > 3800) k = Math.floor(k * 0.8);
   return { ...w, rows: rows.slice(0, k), more: rows.length - k };
 }
+
+const EVAL = new URLSearchParams(globalThis.location?.search || "").get("eval");
 
 export async function initCode(api, { mock = null } = {}) {
   const ui = codeUI({ onMode: (m) => { if (m === "code") entered(); } });
@@ -338,6 +340,7 @@ export async function initCode(api, { mock = null } = {}) {
     const box = $("code-prompt"), text = box.value.trim();
     if (!text || running || !isHost()) return;
     if (!api.ready()) { localNote("the model is not loaded yet: pick a model in the sidebar and press start", true); return; }
+    if (EVAL != null && /^\/eval\b/.test(text)) { box.value = ""; grow(); return runEval(text.slice(5).trim() || EVAL); }
     running = true;
     ui.running(true);
     try {
@@ -367,6 +370,39 @@ export async function initCode(api, { mock = null } = {}) {
     } finally {
       running = false; ctrl = null;
       ui.running(false);
+    }
+  }
+  // ?eval=all (or ?eval=tetris,todo): "/eval [ids]" in the prompt runs the eval suite
+  // (tests/eval/) on the room's model, each task in a fresh in-memory project; the records and
+  // trajectories download as .jsonl at the end
+  async function runEval(spec) {
+    if (!api.lock("code")) { localNote("the room is busy: try again when it is done", true); return; }
+    running = true; ui.running(true); ctrl = new AbortController();
+    const lines = [];
+    try {
+      const { TASKS, byId } = await import("../tests/eval/tasks/index.js");
+      const S = await import("../tests/eval/suite.js");
+      const tasks = !spec || spec === "all" ? TASKS : spec.split(",").map((id) => byId(id.trim())).filter(Boolean);
+      const style = detectStyle(api.chatTemplate());
+      localNote(`eval: ${tasks.length} task${tasks.length === 1 ? "" : "s"} on ${api.peers().length + 1} device(s)`);
+      const recs = await S.runSuite(tasks, {
+        model: "room", signal: ctrl.signal, root: document.body,
+        makeModel: ({ tools }) => ({ ...roomModel(api, { tools, style, maxNew: 8192 }), style }),
+        onResult: ({ rec, trajectory }) => {
+          lines.push(JSON.stringify(rec), JSON.stringify({ trajectory }));
+          localNote(`${rec.ok ? "PASS" : "FAIL"} ${rec.id} · ${rec.reason} · ${rec.steps} steps · ${rec.generated} tok · ${(rec.ms / 1000).toFixed(0)} s`, !rec.ok);
+        },
+      });
+      localNote(S.summary(recs));
+    } catch (err) { localNote("eval failed: " + err.message, true); }
+    finally {
+      api.unlock(); running = false; ctrl = null; ui.running(false);
+      if (lines.length) {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "application/x-ndjson" }));
+        a.download = `eval-room-${new Date().toISOString().slice(0, 16).replace(/:/g, "")}.jsonl`;
+        a.click();
+      }
     }
   }
   api.onStop(() => ctrl?.abort());
