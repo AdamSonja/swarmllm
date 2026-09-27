@@ -123,7 +123,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true, headRows = 0 }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -359,6 +359,17 @@ export class Qwen35Engine {
       });
     }));
 
+    // LM head GEMVs (full and draft) with their own rows per workgroup (off by default: no gain on the
+    // 27B head, 5.78 vs 5.79 ms on the GB10): rows per workgroup never enter
+    // a row's arithmetic, so the logits are bit-identical to the coopRows kernel (tests/bench_wide.js)
+    this.headRows = hasHead && matvecVariant === "coop" && headRows > 0 && headRows !== coopRows ? headRows : 0;
+    if (this.headRows) {
+      const modH = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, this.headRows, 64, batchCols, coopRowsB, unpack) });
+      for (const name of ["matvec_q8_coop", "matvec_q4_coop", "matvec_coop"]) {
+        const layout1 = device.createBindGroupLayout({ entries: G1[name].map((t, i) => ({ binding: i, visibility: C, buffer: { type: bufType[t] } })) });
+        this.pipes[name + "_h"] = await device.createComputePipelineAsync({ layout: device.createPipelineLayout({ bindGroupLayouts: [layout0, layout1] }), compute: { module: modH, entryPoint: name } });
+      }
+    }
     // ---- uniforms ----
     const cfgData = new ArrayBuffer(48);
     const cu = new Uint32Array(cfgData), cf = new Float32Array(cfgData);
@@ -685,7 +696,13 @@ export class Qwen35Engine {
       this.stageArg = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       this.bgArgmax = this._bg(this.pipes.argmax, 1, [this.logits, this.argBuf, this._buf(new Uint32Array([vocab, 0, 0, 0]), GPUBufferUsage.UNIFORM)]);
       this.bgFinalNorm = bgNorm(this.x, this.finalNorm, this.xn);
-      this.headOp = mv(this.headEntry, this.xn, this.logits, vocab, dim);
+      const headMv = (n) => {
+        const op = mv(this.headEntry, this.xn, this.logits, n, dim);
+        if (!this.headRows) return op;
+        const bufs = this.headEntry.kind === "f32" ? [this.headEntry.buf, this.xn, this.logits, this._shape(n, dim)] : [this.headEntry.qs, this.headEntry.sc, this.xn, this.logits, this._shape(n, dim)];
+        return { pipe: op.pipe + "_h", acc: false, wgs: Math.ceil(n / this.headRows), bg: this._bg(this.pipes[op.pipe + "_h"], 1, bufs) };
+      };
+      this.headOp = headMv(vocab);
       // Draft head over the first `draftVocab` rows only (BPE ids roughly follow frequency, so the
       // prefix holds the common tokens): the head is the biggest matrix a draft reads (0.7 GB on
       // the 27B), and drafts only need to be good guesses. The verify pass still uses the full
@@ -693,7 +710,7 @@ export class Qwen35Engine {
       const dv = draftVocab > 0 && draftVocab < vocab ? Math.ceil(draftVocab / 64) * 64 : 0;
       if (dv && dv < vocab) {
         this.draftVocab = dv;
-        this.headOpDraft = mv(this.headEntry, this.xn, this.logits, dv, dim);
+        this.headOpDraft = headMv(dv);
         this.bgArgmaxDraft = this._bg(this.pipes.argmax, 1, [this.logits, this.argBuf, this._buf(new Uint32Array([dv, 0, 0, 0]), GPUBufferUsage.UNIFORM)]);
         // The small head can only draft ids < dv. On English prose and code 1-2.5% of tokens lie
         // at or above 65536 (benchmarks/draftvocab_coverage.js), but on Chinese it is ~84% and on
@@ -2116,23 +2133,43 @@ export class Qwen35Engine {
     return await this._readback(this.logits, this.stageLogits, vocab);
   }
 
-  // Whole token in one encoder + one submit; no hidden-state readback between
-  // the last layer and the head (that round trip cost a full pipeline drain).
-  async forwardToken(tokenId) {
-    this._pre = null;
+  // Whole token in one encoder + one submit; no hidden-state readback between the last layer and
+  // the head (that round trip cost a full pipeline drain), and the logits copy rides in the same
+  // command buffer. Encode-ahead: while the GPU runs token N and we wait for its logits, the command
+  // buffer for position N + 1 is recorded as well. A token's commands depend only on the position and
+  // the runtime switches (the embedding and the frame uniform are queue writes made at call time), so
+  // the next call submits at once instead of paying the CPU encode (~900 dispatches) on the critical
+  // path. Same commands, same bits. engine.encodeAhead = false for A/B.
+  _fwdKey() { return [this.attnGlue, this.fuseProj, this.dnFuse, this.softmaxWG, this.b4, this.skip ? 1 : 0, this._common ? 1 : 0].join(); }
+  _encodeForward(pos) {
     const { vocab } = this.dims;
-    this._setFrame(this.pos, this.pos + 1);
-    this.device.queue.writeBuffer(this.x, 0, this._embedRowF32(tokenId));
     const enc = this.device.createCommandEncoder();
-    for (let i = 0; i < this.layers.length; i++) this._encodeLayer(enc, i);
+    for (let i = 0; i < this.layers.length; i++) this._encodeLayerR(enc, this.layers[i], pos);
     {
       const p = enc.beginComputePass();
       this._d(p, "rmsnorm", this.bgFinalNorm, 256, 256);
       this._dop(p, this.headOp);
       p.end();
     }
-    this.device.queue.submit([enc.finish()]);
-    const logits = await this._readback(this.logits, this.stageLogits, vocab);
+    this._stageI = (this._stageI || 0) ^ 1;   // alternate staging buffers: one can still be mapped
+    const stage = this._stageI ? (this.stageLogits2 ||= this.device.createBuffer({ size: vocab * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })) : this.stageLogits;
+    enc.copyBufferToBuffer(this.logits, 0, stage, 0, vocab * 4);
+    return { pos, key: this._fwdKey(), cb: enc.finish(), stage };
+  }
+  async forwardToken(tokenId) {
+    this._pre = null;
+    const { vocab } = this.dims;
+    this._setFrame(this.pos, this.pos + 1);
+    this.device.queue.writeBuffer(this.x, 0, this._embedRowF32(tokenId));
+    const pre = this._fwdPre;
+    this._fwdPre = null;
+    const job = pre && pre.pos === this.pos && pre.key === this._fwdKey() ? pre : this._encodeForward(this.pos);
+    this.device.queue.submit([job.cb]);
+    const mapped = job.stage.mapAsync(GPUMapMode.READ);
+    if (this.encodeAhead !== false && this.pos + 1 < this.maxSeq) this._fwdPre = this._encodeForward(this.pos + 1);
+    await mapped;
+    const logits = Float32Array.from(new Float32Array(job.stage.getMappedRange(), 0, vocab));
+    job.stage.unmap();
     this.pos++;
     return logits;
   }

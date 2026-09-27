@@ -574,10 +574,24 @@ fn argmax(@builtin(local_invocation_id) lid: vec3<u32>) {
 @group(1) @binding(6) var<storage, read_write> pp_v: array<f32>;   // conv output [q heads | k heads | v]
 @group(1) @binding(7) var<uniform> pp_dn: DN;
 fn pp_l2(off: u32) {
+  // eight loads in flight, then the same in-order sum (bit-identical to the one-at-a-time loop)
   var ss: f32 = 0.0;
-  for (var i: u32 = 0u; i < pp_dn.dState; i++) { let v = pp_v[off + i]; ss += v * v; }
+  var i: u32 = 0u;
+  for (; i + 8u <= pp_dn.dState; i += 8u) {
+    let v0 = pp_v[off + i]; let v1 = pp_v[off + i + 1u]; let v2 = pp_v[off + i + 2u]; let v3 = pp_v[off + i + 3u];
+    let v4 = pp_v[off + i + 4u]; let v5 = pp_v[off + i + 5u]; let v6 = pp_v[off + i + 6u]; let v7 = pp_v[off + i + 7u];
+    ss += v0 * v0; ss += v1 * v1; ss += v2 * v2; ss += v3 * v3; ss += v4 * v4; ss += v5 * v5; ss += v6 * v6; ss += v7 * v7;
+  }
+  for (; i < pp_dn.dState; i++) { let v = pp_v[off + i]; ss += v * v; }
   let inv = 1.0 / max(sqrt(ss), pp_dn.eps2);
-  for (var i: u32 = 0u; i < pp_dn.dState; i++) { pp_v[off + i] *= inv; }
+  var j: u32 = 0u;
+  for (; j + 8u <= pp_dn.dState; j += 8u) {
+    let v0 = pp_v[off + j]; let v1 = pp_v[off + j + 1u]; let v2 = pp_v[off + j + 2u]; let v3 = pp_v[off + j + 3u];
+    let v4 = pp_v[off + j + 4u]; let v5 = pp_v[off + j + 5u]; let v6 = pp_v[off + j + 6u]; let v7 = pp_v[off + j + 7u];
+    pp_v[off + j] = v0 * inv; pp_v[off + j + 1u] = v1 * inv; pp_v[off + j + 2u] = v2 * inv; pp_v[off + j + 3u] = v3 * inv;
+    pp_v[off + j + 4u] = v4 * inv; pp_v[off + j + 5u] = v5 * inv; pp_v[off + j + 6u] = v6 * inv; pp_v[off + j + 7u] = v7 * inv;
+  }
+  for (; j < pp_dn.dState; j++) { pp_v[off + j] *= inv; }
 }
 @compute @workgroup_size(128)
 fn dn_pre(@builtin(local_invocation_id) lid: vec3<u32>) {

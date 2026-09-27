@@ -2,10 +2,11 @@
 // speculative) with 1k .. 32k+ tokens already in the cache. Also checks that speculative decoding
 // stays identical to plain at every fill and that no logit goes NaN.
 //   MODEL=moe|27b  CTX=<maxSeq, default the room default>  FILLS=1024,4096,16384,32000  TOKENS=32
-//   cd tests && MODEL=moe deno run --unstable-webgpu --allow-read --allow-env bench_ctx.js
+//   cd tests && MODEL=moe deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights bench_ctx.js
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { makeTokenizer, argmax } from "../engine/engine.js";
-import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
+import { qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
+import { openGGUF } from "./load_model.js";
 import { CTX } from "../room/models.js";
 
 const env = (k, d) => Deno.env.get(k) ?? d;
@@ -16,15 +17,14 @@ const MAXSEQ = +env("CTX", CTX[ROOM_KEY].def);
 const N = +env("TOKENS", 32), K = +env("K", 3);
 const FILLS = env("FILLS", [1024, 4096, 16384, 32768, 65536].filter((f) => f + 2 * N + 16 <= MAXSEQ).join(",")).split(",").map(Number);
 
-const fh = await Deno.open(PATH);
-const readAt = async (off, len) => { await fh.seek(off, Deno.SeekMode.Start); const out = new Uint8Array(len); let got = 0;
-  while (got < len) { const n = await fh.read(out.subarray(got)); if (n === null) break; got += n; } return out; };
+const model = openGGUF(PATH);   // node:fs reads through the converted-weights cache (tests/weight_cache.js; WEIGHT_CACHE=0 disables)
+const readAt = model.readAt;
 const adapter = await navigator.gpu.requestAdapter();
 const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
 let gpuErrors = 0;
 device.addEventListener?.("uncapturederror", (e) => { if (gpuErrors++ < 4) console.error("GPU ERROR:", e.error?.message?.slice(0, 200)); });
 
-const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer);
+const G = model.G;
 const m = G.meta, nBlk = m["qwen35.block_count"], L = nBlk - (m["qwen35.nextn_predict_layers"] || 0);
 const hasMtp = Object.keys(G.tensors).some((k) => k.startsWith(`blk.${nBlk - 1}.`));
 const kvPerPos = m["qwen35.attention.head_count_kv"] * m["qwen35.attention.key_length"] * 2 * 2 * Math.ceil(L / m["qwen35.full_attention_interval"]);
