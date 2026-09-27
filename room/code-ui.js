@@ -6,7 +6,9 @@
 // Everything that came from the model or the preview is untrusted text: it goes in with
 // textContent, and model prose through mdChat (room/markdown.js), which escapes first.
 import { mdChat } from "./markdown.js";
-import { working } from "./working.js";
+// a namespace import: a tab loaded before a deploy keeps the old working.js in memory, and a named
+// import of something newer would fail to link (Safari: "Importing binding name ... is not found")
+import * as W from "./working.js";
 
 const $ = (id) => document.getElementById(id);
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -143,7 +145,10 @@ const DOTS = '<svg class="dl" viewBox="0 0 24 24" aria-hidden="true">' + [[3.4, 
 
 export function codeUI({ onMode = () => {} } = {}) {
   const pane = $("chatpane"), log = $("code-log");
-  let host = false, mode = "chat", empty = null, waiting = 0;
+  // host: this tab runs the agent (the model host). drive: this screen can send requests, stop
+  // its own run and answer its own approvals (the host, and any member when the room shares Code)
+  let host = false, drive = false, mode = "chat", empty = null, waiting = 0;
+  let waitText = () => "waiting for approval";
   const title0 = document.title;
   // short announcements for screen readers (the streamed log itself is not live)
   const say = (text) => { const s = $("code-status"); if (s) s.textContent = text; };
@@ -201,7 +206,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     log.querySelector(".cm-working")?.remove();
     if (!on || !runAt) return;
     const w = h("div", "cm-working");
-    w.append(working({ since: runAt, label: "the agent is working" }));
+    w.append(W.working({ since: runAt, label: "the agent is working" }));
     add(w);
   }
 
@@ -273,29 +278,26 @@ export function codeUI({ onMode = () => {} } = {}) {
     editWin.show(p);
   }
 
-  // ---------------- the edit window over the preview: once an app is served, a file the agent writes
-  // again streams into a small editor window over the running app (its name in the title bar, the
-  // editor's colours). When the call is complete and the preview has reloaded (or after a moment),
-  // it closes. Host and peers alike (it is drawn from the same ai-code-live messages).
+  // ---------------- the edit overlay: once an app is served, while the agent edits a file the preview
+  // frosts over with the Pooled dots in their wave and "Editing game.js" (no code: the code shows in the agent's card), then
+  // "Reloading" once the call is complete, and it lifts when the preview has reloaded (or after a moment).
+  // Host and peers alike (it is drawn from the same ai-code-live messages).
   const editWin = (() => {
-    let el = null, code = null, raf = 0, last = null, closeT = 0, revAt = 0;
+    let el = null, raf = 0, last = null, closeT = 0, revAt = 0, shownAt = 0, doneT = 0;
     const served = () => { const P = ports.get(active); return P && P.rev > 0 ? P : null; };
     function build() {
-      el = h("div", "ew"); el.setAttribute("role", "status"); el.setAttribute("aria-label", "The agent is editing a file");
-      const bar = h("div", "ew-bar");
-      bar.append(h("span", "ew-dots"), h("span", "ew-nm", ""), h("b", "", ""), h("span", "ew-n", ""));
-      code = h("pre", "ew-code");
-      el.append(bar, code);
+      el = h("div", "ew"); el.setAttribute("role", "status");
+      const box = h("div", "ew-box");
+      box.innerHTML = W.markSVG ? W.markSVG(40) : "";
+      box.append(h("span", "ew-t", ""));
+      el.append(box);
     }
     function paint() {
       raf = 0;
       if (!el || !last) return;
-      el.querySelector(".ew-nm").textContent = last.name === "edit_file" ? "editing" : "writing";
-      el.querySelector("b").textContent = last.path || "";
-      el.querySelector(".ew-n").textContent = plural(last.code.split("\n").length, "line");
-      el.title = last.path || "";
-      code.innerHTML = highlight(last.path, last.code);
-      code.scrollTop = code.scrollHeight;
+      const name = (last.path || "").split("/").pop();
+      el.querySelector(".ew-t").textContent = el.classList.contains("done") ? "Reloading\u2026" : `${last.name === "edit_file" ? "Editing" : "Writing"} ${name}`;
+      el.setAttribute("aria-label", el.querySelector(".ew-t").textContent);
     }
     function show(p) {
       const P = served();
@@ -304,26 +306,30 @@ export function codeUI({ onMode = () => {} } = {}) {
       if (!el) build();
       const wrap = $("pv-frame-wrap");
       if (el.parentNode !== wrap) wrap.append(el);
+      if (!el.isConnected || el.classList.contains("out") || el.classList.contains("done")) shownAt = performance.now();
+      clearTimeout(doneT); doneT = 0;
       el.classList.remove("out", "done");
       last = p; revAt = P?.rev || 0;
-      raf ||= requestAnimationFrame(paint);
+      paint();   // just a label now: set it at once (a fast edit would otherwise skip straight to Reloading)
     }
     function close() {
-      clearTimeout(closeT); closeT = 0;
+      clearTimeout(closeT); closeT = 0; clearTimeout(doneT); doneT = 0;
       if (!el?.isConnected || el.classList.contains("out")) return;
       el.classList.add("out");
       const gone = () => { if (el.classList.contains("out")) el.remove(); };
       if (matchMedia("(prefers-reduced-motion: reduce)").matches) gone(); else setTimeout(gone, 200);
     }
     // the call is complete: the file is written, the preview reloads; close once it has (or soon)
+    // "Editing <file>" stays up at least a moment, even when the call completes at once
     function end() {
       if (!el?.isConnected) return;
-      el.classList.add("done");
-      clearTimeout(closeT); closeT = setTimeout(close, 2500);
+      const wait = Math.max(0, 900 - (performance.now() - shownAt));
+      clearTimeout(doneT);
+      doneT = setTimeout(() => { doneT = 0; if (!el?.isConnected) return; el.classList.add("done"); paint(); clearTimeout(closeT); closeT = setTimeout(close, 2500); }, wait);
     }
     // the preview reloaded with the new file: a beat to see the last lines, then close
     function reloaded(port, rev) {
-      if (el?.isConnected && el.classList.contains("done") && port === active && rev > revAt) { clearTimeout(closeT); closeT = setTimeout(close, 450); }
+      if (el?.isConnected && port === active && rev > revAt) { const go = () => { if (!el?.isConnected || el.classList.contains("out")) return; if (el.classList.contains("done")) { clearTimeout(closeT); closeT = setTimeout(close, 450); } else setTimeout(go, 100); }; go(); }
     }
     return { show, end, close, reloaded };
   })();
@@ -368,9 +374,9 @@ export function codeUI({ onMode = () => {} } = {}) {
       pre.textContent = d.result;
     }
     if (d.diff && !el.querySelector(".cm-diff")) el.append(diffBlock(d.diff, host ? viewFull : null));
-    // peers (and the host's own record) see the pending state; the host adds buttons with ask()
+    // everyone sees the pending state; whoever may answer it (the asker, the host) gets buttons from ask()
     let ap = el.querySelector(".cm-approve");
-    if (d.state === "pending" && !host && !ap) { ap = h("div", "cm-approve"); ap.append(h("span", "wait", "waiting for the host's approval")); el.append(ap); }
+    if (d.state === "pending" && !host && !ap) { ap = h("div", "cm-approve"); ap.append(h("span", "wait", waitText(d.mid))); el.append(ap); }
     if (d.state !== "pending") ap?.remove();
     if (d.state === "error") det.open = true;
     // declined: the diff is struck through, and the reason, if one was given, says why
@@ -385,8 +391,8 @@ export function codeUI({ onMode = () => {} } = {}) {
     return el;
   }
 
-  // host only: Approve / Reject… / Allow edits for this task, on the card of call i. While it
-  // waits, the Code tab carries a dot and the page title says so (the host may be in Chat).
+  // Approve / Reject… / Allow edits for this task, on the card of call i, for the host and for the
+  // member who asked. While it waits, the Code tab carries a dot and the page title says so.
   function waitMark(on) {
     waiting = Math.max(0, waiting + (on ? 1 : -1));
     if (waiting) { $("mode-code").classList.add("fresh"); document.title = "(needs approval) " + title0; }
@@ -674,7 +680,7 @@ export function codeUI({ onMode = () => {} } = {}) {
       if (warns) c.append(h("b", "w", plural(warns, "warning")), " · ");
       c.append(plural(logs, "log"));
       c.dataset.errors = String(errs);
-      $("pv-to-agent").hidden = !host || !errs;   // only when there is something to fix
+      $("pv-to-agent").hidden = !drive || !errs;   // only when there is something to fix
       for (const r of P?.rows || []) {
         if (r.sep) { rows.append(h("div", "pv-row rev", r.sep)); continue; }
         const row = h("div", `pv-row ${r.level}${r.old ? " old" : ""}`);
@@ -695,25 +701,29 @@ export function codeUI({ onMode = () => {} } = {}) {
   $("pv-reload").onclick = () => { if (active != null) onReload(active); };
   $("pv-open").onclick = () => { if (active != null) onOpen(active, ports.get(active)?.path || null); };
 
-  // ---------------- host vs peer chrome
-  function setHost(v) {
-    host = !!v;
-    $("code-project").hidden = !host;
-    $("code-row").hidden = !host;
-    $("code-bar").hidden = !host;
-    $("code-driver").hidden = host;
-    $("pv-to-agent").hidden = !host || !(+$("pv-counts").dataset.errors > 0);
+  // ---------------- host vs peer chrome. Anyone who can drive gets the project bar, the prompt
+  // and the bar under the log; only the host opens a folder on disk or saves in the editor.
+  function setHost(v, { canDrive = v } = {}) {
+    host = !!v; drive = !!canDrive;
+    $("code-project").hidden = !drive;
+    $("code-open").hidden = !host || $("code-open").dataset.can !== "1";
+    $("code-row").hidden = !drive;
+    $("code-bar").hidden = !drive;
+    $("pv-to-agent").hidden = !drive || !(+$("pv-counts").dataset.errors > 0);
     if (edPath != null) { edRO = !host || !saveFile; ta.readOnly = edRO; edState(); }
   }
+  // a line above the log about where the agent runs (empty: hidden)
+  function driverNote(text) { const el = $("code-driver"); el.textContent = text || ""; el.hidden = !text; }
   setHost(false);
   viewFile(null);
 
   return {
-    show, poke, apply, ask, cancelAsk, clear, placeholder, setHost, tree, viewFile, openFile, fileChanged, outTab,
+    show, poke, apply, ask, cancelAsk, clear, placeholder, setHost, driverNote, tree, viewFile, openFile, fileChanged, outTab,
     get mode() { return mode; },
     get activePort() { return active; },
     get openPath() { return edPath; },
     onFile(fn) { fileClick = fn; },
+    onWaitText(fn) { waitText = fn; },
     onSave(fn) { saveFile = fn; },
     onClosePort(fn) { onClose = fn; },
     onReload(fn) { onReload = fn; },
@@ -728,6 +738,14 @@ export function codeUI({ onMode = () => {} } = {}) {
       el.title = `${used.toLocaleString("en-US")} of ${max.toLocaleString("en-US")} tokens`;
       el.classList.toggle("warn", used > max * 0.8);
     },
-    running(on) { $("code-send").hidden = !!on; $("code-stop").hidden = !on; },
+    // while a run goes, Send queues the next request; Stop shows for whoever may stop it
+    running(on, canStop = on) {
+      $("code-send").textContent = on ? "Queue" : "Send";
+      $("code-send").title = on ? "Runs after the current request" : "";
+      $("code-stop").hidden = !(on && canStop);
+      const pr = $("code-prompt");
+      pr.dataset.ph ||= pr.placeholder;
+      pr.placeholder = on ? "Queue another request" : pr.dataset.ph;
+    },
   };
 }

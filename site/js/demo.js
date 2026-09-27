@@ -147,7 +147,9 @@
   }
   timeWords();
   const c = x => C + x;                               // steps 6 to 8
-  const rate = t => SLOWS.some(([a, b]) => t >= a && t < b) ? SPEED / SLOW : SPEED;
+  // the Code part (the switch to Code until the changed app is on screen) plays at half speed: twice as long
+  const CODE_RATE = .5;
+  const rate = t => (t >= C && t < GAME ? CODE_RATE : 1) * (SLOWS.some(([a, b]) => t >= a && t < b) ? SPEED / SLOW : SPEED);
 
   /* ---------- the caption bar ---------- */
   const dotBtns = [...demo.querySelectorAll(".sb-dots button")];
@@ -548,25 +550,15 @@
   }
   const wake = () => { if (needs() && !raf) { last = 0; raf = requestAnimationFrame(loop); } };
   const halt = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } };
-  // first load: under half a second of the agent's edit, right before the changed app is served (the diff
-  // on screen, the reload next), then the story starts from the top
-  const HOOK_MS = 400;
-  let hookT = 0, hookWait = false;
-  const endHook = () => { hookT = 0; frozen = false; if (playing) { hookWait = true; return; } hookWait = false; tl.reset(); tl.started = true; wake(); };
   const begin = () => {
     if (tl.started) { wake(); return; }
     tl.started = true;
     if (RM) { tl.final(); return; }
-    frozen = true; tl.reset();
-    const at = c(RELOAD) - .1;
-    while (tl.t < at - 1e-6) tl.advance(Math.min(1 / 30, at - tl.t));
-    hookT = setTimeout(endHook, HOOK_MS);
+    wake();
   };
-  const cancelHook = () => { if (hookT) { clearTimeout(hookT); hookT = 0; frozen = false; } hookWait = false; };
 
   // jump to a moment; with reduced motion, to a step's finished state, frozen
   const seek = (s, freeze) => {
-    cancelHook();
     stopPlay(true);
     halt(); tl.started = true; frozen = !!freeze;
     tl.reset();
@@ -614,7 +606,6 @@
     inst.auto(); inst.reset(11); inst.v2(true); inst.warm(WARM_S[APP]);
     if (!RM) inst.start();
     if (!quiet && document.activeElement === game) game.blur();
-    if (hookWait) { endHook(); return; }
     wake();
   }
   pvPlay.addEventListener("pointerdown", e => { lastPointer = e.pointerType; });

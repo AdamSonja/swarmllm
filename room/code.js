@@ -1,6 +1,17 @@
-// Code mode (docs/design/harness-app.md E): the host's agent controller and the peers' read-only
-// view. room.js imports this lazily (the Code tab, or a host's code message arriving at a peer)
-// and calls initCode(roomApi, { mock }) once; it returns { show(mode) }.
+// Code mode (docs/design/harness-app.md E): the host's agent controller and the peers' view.
+// room.js imports this lazily (the Code tab, or a code message arriving) and calls
+// initCode(roomApi, { mock }) once; it returns { show(mode) }.
+//
+// One shared agent session per room, run on the model host (the device that samples every token).
+// Anyone in the room can drive it, like Chat: a member's request goes to the host as ai-code-ask,
+// queues behind the current run, and its bubble carries the asker's name. Who may do what:
+//   request, new task, switch or create a project saved in the browser: any member who sees Code
+//     (the room's "who sees answers" is Everyone; with "Only me" / "Whoever asked" Code is the host's)
+//   approve / reject an edit, Stop: the member who asked that request, or the host
+//   open a folder from disk, save in the editor, drive a folder project: the host only (the files
+//     are on the host's disk, and what the agent reads there would reach the asker's screen)
+// Projects live in the host's browser (OPFS) or on its disk; members see them through the timeline,
+// the file tree and the preview.
 //
 // Host: a project (OPFS scratch folder or a picked folder, harness/projects.js), a PreviewServer
 // over it, the 8 tools, and an Agent over the room's model (harness/room-model.js; with
@@ -28,6 +39,7 @@ const $ = (id) => document.getElementById(id);
 const str = (v, n) => String(v ?? "").slice(0, n);
 const cap = (s, n) => (s.length > n ? s.slice(0, n) + `\n…(${s.length - n} chars cut)` : s);
 const HIST = 50, TOK_MS = 50, EDGE = 50;
+const QUEUE_MAX = 6, ASK_MAX = 4000;   // requests waiting on the host (two per member), a request's length
 // tools whose results are the project's own content: for a folder on disk they stay on the host
 const READS = new Set(["read_file", "search", "list_dir"]);
 const WORDS = new Set(("a an the me my us our please build make create write code develop implement simple small little basic new "
@@ -78,6 +90,9 @@ const EVAL = DEV_HOST ? new URLSearchParams(globalThis.location?.search || "").g
 export async function initCode(api, { mock = null } = {}) {
   const ui = codeUI({ onMode: (m) => { if (m === "code") entered(); } });
   const isHost = () => api.role() === "host" || (!api.role() && !!api.myId() && api.myId() === api.hostId());
+  const hostName = () => (isHost() ? api.name?.() : api.nameOf?.(api.hostId())) || "the host";
+  // the room shares Code with every member only when everyone sees the answers
+  const shared = () => (api.visibility?.() || "all") === "all";
   let sid = crypto.getRandomValues(new Uint32Array(1))[0].toString(36);
 
   // ================================================================ host
@@ -85,6 +100,8 @@ export async function initCode(api, { mock = null } = {}) {
   let sessionJson = null, hist = [], tree = [], running = false, ctrl = null, allowTask = false;
   let userAuto = null;   // the user's own tick of "auto-approve edits", kept across projects
   let mid = "", toolN = 0;
+  let queue = [], asker = null, retry = 0;   // requests waiting: { text, name, from }; asker: who asked the current run
+  let remoteAns = null;                      // the asker's answer to the approval card on screen: { mid, i, res }
   const callIdx = new Map();
 
   // render, remember for late joiners, broadcast
@@ -148,24 +165,42 @@ export async function initCode(api, { mock = null } = {}) {
   }
 
   // ---- projects
+  let projList = [];
   async function refreshProjects() {
-    const sel = $("code-proj-select"), list = await listProjects().catch(() => []);
-    sel.replaceChildren(new Option(list.length ? "Open a project…" : "No projects yet", ""));
-    for (const p of list) sel.add(new Option(p.name + (p.kind === "folder" ? " (folder)" : ""), p.id));
-    sel.value = project?.id || "";
+    projList = (await listProjects().catch(() => [])).slice(0, 50);
+    fillProjects(projList, project?.id || "");
     $("code-proj-kind").textContent = project ? (project.kind === "folder" ? "folder on disk · edits ask first" : "saved in this browser") : "";
     $("code-newtask").disabled = !project;
+    driverNote();
+    sendProjects();
   }
-  function closeProject() {
+  function fillProjects(list, cur, { guest = false } = {}) {
+    const sel = $("code-proj-select");
+    sel.replaceChildren(new Option(list.length ? "Open a project…" : "No projects yet", ""));
+    for (const p of list) {
+      const o = new Option(p.name + (p.kind === "folder" ? " (folder)" : ""), p.id);
+      o.disabled = guest && p.kind === "folder";   // a folder on the host's disk: the host opens it
+      sel.add(o);
+    }
+    sel.value = cur;
+  }
+  // members see the host's projects, the one open and the auto-approve box
+  const projMsg = () => ({ t: "ai-code-projects", list: projList.map(({ id, name, kind }) => ({ id, name, kind })), cur: project?.id || "",
+    kind: project?.kind || "", auto: $("code-auto").checked });
+  function sendProjects(to = null) { if (!isHost()) return; if (to) api.send(to, projMsg()); else api.broadcast(projMsg()); }
+  // another project: requests queued for this one are dropped (except when the queue's first
+  // request is what made the project)
+  function closeProject({ keepQueue = false } = {}) {
     if (running) ctrl?.abort();
+    if (!keepQueue) for (const q of queue.splice(0)) tell(q.from, "the project changed: your queued request was dropped", true);
     publisher?.close(); server?.close();
     for (const port of [...ui.ports.keys()]) ui.dropPort(port);
     project = server = publisher = agent = model = null; agentSrc = null; tools = [];
   }
-  // keepAuto: the project run() made for the first request keeps the box as the user left it
+  // keepAuto: the project pump() made for the first request keeps the box as the user left it
   async function useProject(p, { keepAuto = false } = {}) {
     if (!p) return;
-    closeProject();
+    closeProject({ keepQueue: keepAuto });
     project = p;
     server = new PreviewServer(p.ws);
     // run_js only when the snippet runs on the isolated preview host (a loop there cannot freeze the room)
@@ -241,6 +276,7 @@ export async function initCode(api, { mock = null } = {}) {
 
   $("code-proj-select").addEventListener("change", async (e) => {
     const id = e.target.value;
+    if (!isHost()) { if (id && id !== peerProj.cur) askHost({ t: "ai-code-cmd", cmd: "open", id }); e.target.value = peerProj.cur; return; }
     if (!id || id === project?.id) return;
     if (running) { e.target.value = project?.id || ""; return; }
     try { await useProject(await openProject(id)); } catch (err) { localNote(err.message, true); refreshProjects(); }
@@ -255,24 +291,31 @@ export async function initCode(api, { mock = null } = {}) {
   newName.addEventListener("keydown", async (e) => {
     if (e.key === "Escape") { newName.hidden = true; $("code-proj-select").hidden = false; return; }
     if (e.key !== "Enter" || !newName.value.trim()) return;
-    const name = newName.value.trim();
+    const name = newName.value.trim().slice(0, 40);
     newName.hidden = true; $("code-proj-select").hidden = false;
+    if (!isHost()) { askHost({ t: "ai-code-cmd", cmd: "new", name }); return; }
     try { await useProject(await createProject(name)); } catch (err) { localNote("could not create the project: " + err.message, true); }
   });
-  $("code-open").hidden = !canOpenFolder();
+  $("code-open").dataset.can = canOpenFolder() ? "1" : "";
   $("code-open").addEventListener("click", async () => {
-    if (running) return;
+    if (running || !isHost()) return;
     try { const p = await openFolder(); if (p) await useProject(p); } catch (err) { localNote("could not open the folder: " + err.message, true); }
   });
-  $("code-newtask").addEventListener("click", () => {
-    if (running || !project) return;
+  $("code-newtask").addEventListener("click", () => { if (isHost()) newTask(); else askHost({ t: "ai-code-cmd", cmd: "newtask" }); });
+  function newTask(by = null) {
+    if (running || !project) return false;
     agent?.reset(); sessionJson = null;
     mid = "";
-    note("new task: the agent starts fresh · files and previews stay");
+    note(`new task${by ? ` (${by})` : ""}: the agent starts fresh · files and previews stay`);
     save();
     ctxMeter();
+    return true;
+  }
+  $("code-auto").addEventListener("change", (e) => {
+    if (!isHost()) { askHost({ t: "ai-code-cmd", cmd: "auto", on: e.target.checked }); e.target.checked = peerProj.auto; return; }
+    if (project?.kind !== "folder") userAuto = e.target.checked;
+    sendProjects();
   });
-  $("code-auto").addEventListener("change", (e) => { if (project?.kind !== "folder") userAuto = e.target.checked; });
   $("pv-to-agent").addEventListener("click", () => { $("code-prompt").value = "Fix the errors in the preview console"; grow(); $("code-prompt").focus(); });
 
   // a line only this screen sees (not part of the session)
@@ -310,7 +353,7 @@ export async function initCode(api, { mock = null } = {}) {
     // a file of a folder on disk that can run commands (package.json, a script, a dotfile) always
     // asks, whatever auto-approve and "Allow edits for this task" say
     if (diff && project?.kind === "folder" && riskyPath(diff.path)) diff.risky = true;
-    // a failing edit is not worth a question (run() returns the error to the model), nor is a
+    // a failing edit is not worth a question (the tool returns the error to the model), nor is a
     // write that changes nothing
     const same = diff && !diff.error && diff.rows && !diff.isNew && !diff.add && !diff.del;
     const auto = !diff?.risky && ($("code-auto").checked || allowTask || info?.error || same);
@@ -318,8 +361,10 @@ export async function initCode(api, { mock = null } = {}) {
     if (auto) return true;
     let off = null;
     const stopped = new Promise((r) => { const f = () => r({ ok: false, reason: "stopped" }); ctrl.signal.addEventListener("abort", f, { once: true }); off = () => ctrl?.signal.removeEventListener("abort", f); });
-    const v = await Promise.race([ui.ask(mid, i, { risky: !!diff?.risky }), stopped]);
-    off?.(); ui.cancelAsk(mid, i);
+    // the host answers on its own screen; a member who asked answers on theirs (ai-code-approve)
+    const remote = asker && asker !== api.myId() ? new Promise((res) => { remoteAns = { mid, i, res }; }) : null;
+    const v = await Promise.race([ui.ask(mid, i, { risky: !!diff?.risky }), stopped, ...(remote ? [remote] : [])]);
+    off?.(); ui.cancelAsk(mid, i); remoteAns = null;
     if (v === "all") allowTask = true;
     const ok = v === true || v === "all";
     tool(i, { state: ok ? "approved" : v?.reason === "stopped" ? "stopped" : "declined" });
@@ -363,44 +408,88 @@ export async function initCode(api, { mock = null } = {}) {
     if (r.reason !== "done") parts.push(r.reason);
     return parts.join(" · ");
   }
-  async function run() {
+  // the Send button: the host queues its own request; a member sends it to the host
+  function submit() {
     const box = $("code-prompt"), text = box.value.trim();
-    if (!text || running || !isHost()) return;
-    if (!api.ready()) { localNote("the model is not loaded yet: pick a model in Chat and press Start", true); return; }
-    if (EVAL != null && /^\/eval\b/.test(text)) { box.value = ""; grow(); return runEval(text.slice(5).trim() || EVAL); }
+    if (!text) return;
+    if (isHost()) {
+      if (EVAL != null && /^\/eval\b/.test(text)) { if (running) return; box.value = ""; grow(); return runEval(text.slice(5).trim() || EVAL); }
+      box.value = ""; grow();
+      request(text, api.name?.() || "host", api.myId());
+      return;
+    }
+    if (!shared()) { localNote(`only ${hostName()} uses Code in this room (Room settings: who sees answers)`, true); return; }
+    if (peerProj.kind === "folder") { localNote(`${hostName()} has a folder from their disk open: only they can send requests to it`, true); return; }
+    box.value = ""; grow();
+    askHost({ t: "ai-code-ask", text: str(text, ASK_MAX) });
+  }
+  // a line for whoever asked: on this screen, or sent to that member's screen
+  function tell(from, text, err = false) {
+    if (from === api.myId()) localNote(text, err);
+    else api.send(from, { t: "ai-code-msg", text: str(text, 300), ...(err ? { err: true } : {}) });
+  }
+  // the host takes a request (its own, or a member's) into the queue; the queue runs in order
+  function request(text, name, from) {
+    if (!api.ready()) { tell(from, "the model is not loaded yet: pick a model in Chat and press Start", true); return; }
+    if (from !== api.myId() && project?.kind === "folder") { tell(from, `${hostName()} has a folder from their disk open: only they can send requests to it`, true); return; }
+    if (queue.length >= QUEUE_MAX || queue.filter((q) => q.from === from).length >= 2) { tell(from, "the queue is full: send again after the current request", true); return; }
+    queue.push({ text: str(text, ASK_MAX), name: str(name, 40), from });
+    const ahead = queue.length - 1 + (running ? 1 : 0);
+    if (ahead) tell(from, `queued: ${ahead} request${ahead === 1 ? "" : "s"} ahead of yours`);
+    pump();
+  }
+  async function pump() {
+    if (running || !queue.length) return;
+    clearTimeout(retry); retry = 0;
+    const q = queue[0];
     running = true;
-    ui.running(true);
+    let wait = false;
     try {
-      if (!project) await useProject(await createProject(projectName(text)), { keepAuto: true });
-      if (!api.lock("code")) {
-        localNote(api.busy() ? "the room is answering a chat question: send again when it is done" : "the room cannot run the agent right now (a device left? re-deal first)", true);
+      if (!api.ready()) {
+        for (const x of queue.splice(0)) tell(x.from, "the model is not loaded: the request was dropped", true);
         return;
       }
-      box.value = ""; grow();
-      ensureAgent();
-      mid = "m" + Date.now().toString(36);
-      toolN = 0; callIdx.clear(); allowTask = false;
-      ctrl = new AbortController();
-      emit({ t: "ai-code-start", sid, mid, name: api.name?.() || "host", text: str(text, 4000) });
-      const t0 = Date.now(), gen0 = model?.stats?.generated || 0;
-      let r;
-      // files the user edited by hand since the agent's last turn: it is told, so it reads them first
-      const told = handEdits.size ? `\n\n(I edited ${[...handEdits].join(", ")} by hand since your last turn: read ${handEdits.size === 1 ? "it" : "them"} before changing ${handEdits.size === 1 ? "it" : "them"}.)` : "";
-      handEdits.clear();
-      try { r = await agent.run(text + told, { signal: ctrl.signal }); }
-      catch (err) { console.error(err); r = { steps: 0, calls: 0, reason: "error" }; note("error: " + err.message, true); }
-      finally { flushTok(); api.unlock(); }
-      if (r.reason === "stopped") note("stopped");
-      if (r.reason === "context") note(r.text, true);
-      emit({ t: "ai-code-done", mid, steps: r.steps, reason: r.reason, stats: stats(r, t0, gen0) });
-      save();
-      ctxMeter();
+      if (!project) await useProject(await createProject(projectName(q.text)), { keepAuto: true });
+      if (!api.lock("code")) {
+        // a chat answer holds the room: try again when it is done
+        if (api.busy()) { wait = true; return; }
+        queue.shift();
+        tell(q.from, "the room cannot run the agent right now (a device left? re-deal first)", true);
+        return;
+      }
+      queue.shift();
+      await runOne(q);
     } catch (err) {
       localNote(err.message, true);
     } finally {
-      running = false; ctrl = null;
+      running = false; ctrl = null; asker = null;
       ui.running(false);
+      if (wait) retry = setTimeout(pump, 700);
+      else if (queue.length) setTimeout(pump, 0);
     }
+  }
+  // one request, holding the room's lock (released here)
+  async function runOne({ text, name, from }) {
+    ensureAgent();
+    mid = "m" + Date.now().toString(36);
+    toolN = 0; callIdx.clear(); allowTask = false;
+    ctrl = new AbortController();
+    asker = from;
+    ui.running(true, true);
+    emit({ t: "ai-code-start", sid, mid, name, from, text });
+    const t0 = Date.now(), gen0 = model?.stats?.generated || 0;
+    let r;
+    // files the user edited by hand since the agent's last turn: it is told, so it reads them first
+    const told = handEdits.size ? `\n\n(I edited ${[...handEdits].join(", ")} by hand since your last turn: read ${handEdits.size === 1 ? "it" : "them"} before changing ${handEdits.size === 1 ? "it" : "them"}.)` : "";
+    handEdits.clear();
+    try { r = await agent.run(text + told, { signal: ctrl.signal }); }
+    catch (err) { console.error(err); r = { steps: 0, calls: 0, reason: "error" }; note("error: " + err.message, true); }
+    finally { flushTok(); api.unlock(); }
+    if (r.reason === "stopped") note("stopped");
+    if (r.reason === "context") note(r.text, true);
+    emit({ t: "ai-code-done", mid, steps: r.steps, reason: r.reason, stats: stats(r, t0, gen0) });
+    save();
+    ctxMeter();
   }
   // ?eval=all (or ?eval=tetris,todo): "/eval [ids]" in the prompt runs the eval suite
   // (tests/eval/) on the room's model, each task in a fresh in-memory project; the records and
@@ -437,28 +526,101 @@ export async function initCode(api, { mock = null } = {}) {
     }
   }
   api.onStop(() => ctrl?.abort());
-  $("code-send").addEventListener("click", run);
-  $("code-stop").addEventListener("click", () => api.stop());
+  $("code-send").addEventListener("click", submit);
+  // Stop: the host stops the run; the member who asked it asks the host to
+  const stopRun = () => { if (isHost()) api.stop(); else if (peerRun) askHost({ t: "ai-code-stop", mid: peerRun.mid }); };
+  $("code-stop").addEventListener("click", stopRun);
   const grow = () => { const p = $("code-prompt"); p.style.height = "auto"; p.style.height = Math.min(p.scrollHeight, 160) + "px"; };
   $("code-prompt").addEventListener("input", grow);
   $("code-prompt").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !matchMedia("(pointer: coarse)").matches) { e.preventDefault(); run(); }
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !matchMedia("(pointer: coarse)").matches) { e.preventDefault(); submit(); }
   });
   // Esc stops the run, but not from a field or the approval buttons (Esc there backs out of them)
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || !running || ui.mode !== "code" || e.defaultPrevented) return;
+    if (e.key !== "Escape" || ui.mode !== "code" || e.defaultPrevented) return;
+    if (!(isHost() ? running && ctrl : peerRun?.from === api.myId())) return;
     if (e.target?.closest?.("input, textarea, select, .cm-approve")) return;
-    api.stop();
+    stopRun();
   });
   api.on("ai-pv-want", (from, d) => { if (isHost()) publisher?.onWant(from, d); });
   api.onPeerJoin((id) => {
-    if (!isHost() || (!hist.length && !server?.ports().length)) return;
-    api.send(id, { t: "ai-code-history", sid, items: hist.slice(-HIST), tree });
+    if (!isHost()) return;
+    sendProjects(id);
+    if (!hist.length && !server?.ports().length) return;
+    api.send(id, { t: "ai-code-history", sid, items: hist.slice(-HIST), tree, ...(running && asker ? { run: { mid, from: asker } } : {}) });
     publisher?.helloTo(id);
+  });
+
+  // ---- a member's requests and answers (room.js lets these through only from members who see
+  // Code; they are typed and capped here, and nothing in them runs: text goes to the agent as a
+  // request, as the host's own would, and ids are looked up in the host's list)
+  const MEMBER = api.nameOf ? (id) => str(api.nameOf(id) || "guest", 40) : () => "guest";
+  api.on("ai-code-ask", (from, d) => {
+    if (!isHost()) return;
+    const text = str(d.text, ASK_MAX).trim();
+    if (text) request(text, MEMBER(from), from);
+  });
+  api.on("ai-code-stop", (from, d) => {
+    if (!isHost() || !running || !ctrl || from !== asker || str(d.mid, 40) !== mid) return;
+    note(`${MEMBER(from)} pressed stop`);
+    api.stop();
+  });
+  api.on("ai-code-approve", (from, d) => {
+    if (!isHost() || !remoteAns || from !== asker || str(d.mid, 40) !== remoteAns.mid || d.i >>> 0 !== remoteAns.i) return;
+    const v = d.v === "yes" ? true : d.v === "all" ? "all" : d.v === "no" ? { ok: false, reason: str(d.reason, 300).trim() } : null;
+    if (v != null) remoteAns.res(v);
+  });
+  api.on("ai-code-cmd", async (from, d) => {
+    if (!isHost()) return;
+    const who = MEMBER(from);
+    if (running || queue.length) { tell(from, "the agent is working: try again when it is done", true); return; }
+    try {
+      if (d.cmd === "newtask") { if (!newTask(who)) tell(from, "no project open yet", true); }
+      else if (d.cmd === "auto") {
+        if (project?.kind === "folder") { tell(from, `edits to ${hostName()}'s folder always ask ${hostName()}`, true); return; }
+        $("code-auto").checked = userAuto = !!d.on;
+        note(`${who} turned auto-approve ${d.on ? "on" : "off"}`);
+        sendProjects();
+      } else if (d.cmd === "open") {
+        const id = str(d.id, 120), p = projList.find((x) => x.id === id);
+        if (!p || p.kind !== "opfs") { tell(from, "that project cannot be opened from here", true); return; }
+        if (id !== project?.id) { await useProject(await openProject(id)); note(`${who} opened the project ${p.name}`); }
+      } else if (d.cmd === "new") {
+        const name = str(d.name, 40).replace(/[\u0000-\u001f\u007f]/g, "").trim();
+        if (!name) return;
+        await useProject(await createProject(name));
+        note(`${who} started the project ${name}`);
+      }
+    } catch (err) { tell(from, err.message, true); }
+  });
+  // a member opened Code: the projects, and the session so far
+  const synced = new Map();
+  api.on("ai-code-sync", (from) => {
+    if (!isHost() || Date.now() - (synced.get(from) || 0) < 2000) return;
+    synced.set(from, Date.now());
+    sendProjects(from);
+    api.send(from, { t: "ai-code-history", sid, items: hist.slice(-HIST), tree, ...(running && asker ? { run: { mid, from: asker } } : {}) });
+    publisher?.helloTo(from);
   });
 
   // ================================================================ peer
   let sub = null;
+  let peerRun = null;                                  // the run going on: { mid, from }
+  const askers = new Map();                            // mid -> { from, name }, for the approval wait line
+  let peerProj = { list: [], cur: "", kind: "", auto: true };
+  let pending = 0;                                     // a request sent, no word back yet
+  // a message to the host; a host on an older Pooled ignores it, so say so if nothing comes back
+  function askHost(msg) {
+    const id = api.hostId();
+    if (!id || !api.peers().includes(id)) { localNote("not connected to the host", true); return; }
+    api.send(id, msg);
+    if (msg.t !== "ai-code-ask") return;
+    clearTimeout(pending);
+    pending = setTimeout(() => localNote(`${hostName()} did not pick up the request: if their tab runs an older Pooled, reload both pages`, true), 8000);
+  }
+  const heard = () => { clearTimeout(pending); pending = 0; };
+  const mine = (m) => !!m && m === api.myId();
+  function peerRunning() { ui.running(!!peerRun, mine(peerRun?.from)); }
   function peerView() {
     if (sub) return sub;
     sub = new PreviewSubscriber({ send: (m) => api.send(api.hostId(), m), hostId: () => api.hostId() });
@@ -476,7 +638,7 @@ export async function initCode(api, { mock = null } = {}) {
     const o = { t: d.t, mid: str(d.mid, 40) };
     if ("step" in d) o.step = d.step >>> 0;
     if ("i" in d) o.i = d.i >>> 0;
-    for (const k of ["sid", "name", "text", "brief", "state", "result", "stats", "reason"]) if (k in d) o[k] = str(d[k], k === "text" ? 8000 : k === "result" ? 4000 : 400);
+    for (const k of ["sid", "name", "from", "text", "brief", "state", "result", "stats", "reason"]) if (k in d) o[k] = str(d[k], k === "text" ? 8000 : k === "result" ? 4000 : 400);
     if ("ms" in d) o.ms = d.ms >>> 0;
     if ("steps" in d) o.steps = d.steps >>> 0;
     if (d.err) o.err = true;
@@ -492,50 +654,117 @@ export async function initCode(api, { mock = null } = {}) {
     }
     return o;
   }
+  // who a run's approval waits for, on screens that cannot answer it
+  ui.onWaitText((m) => {
+    const a = isHost() ? { name: null } : askers.get(m);
+    const host = hostName();
+    return a?.name && !mine(a.from) && a.from !== api.hostId() ? `waiting for ${a.name} or ${host} to approve` : `waiting for ${host} to approve`;
+  });
+  function track(m) {
+    if (m.t === "ai-code-start") {
+      askers.set(m.mid, { from: m.from || "", name: m.name || "" });
+      if (askers.size > 200) askers.delete(askers.keys().next().value);
+      peerRun = { mid: m.mid, from: m.from || "" };
+      if (mine(m.from)) heard();
+    } else if (m.t === "ai-code-done" && peerRun?.mid === m.mid) peerRun = null;
+  }
   const peerMsg = (d) => {
     if (isHost()) return;
     peerView();
-    ui.setHost(false);
+    setChrome();
     ui.poke();
     const m = clean(d);
     if (m.t === "ai-code-start" && m.sid && m.sid !== sid) { sid = m.sid; }
+    // an answered approval: this screen's buttons go (whoever answered)
+    if (m.t === "ai-code-tool" && m.state && m.state !== "pending") ui.cancelAsk(m.mid, m.i);
+    track(m);
     ui.apply(m);
+    if (m.t === "ai-code-start" || m.t === "ai-code-done") peerRunning();
+    // the member who asked answers its own approvals
+    if (m.t === "ai-code-tool" && m.state === "pending" && peerRun?.mid === m.mid && mine(peerRun.from)) {
+      const i = m.i, at = m.mid;
+      ui.ask(at, i, { risky: !!m.diff?.risky }).then((v) => {
+        if (v?.reason === "approval card missing") return;
+        api.send(api.hostId(), { t: "ai-code-approve", mid: at, i, v: v === true ? "yes" : v === "all" ? "all" : "no", reason: str(v?.reason, 300) });
+      });
+    }
   };
   for (const t of ["ai-code-start", "ai-code-tok", "ai-code-live", "ai-code-tool", "ai-code-note", "ai-code-done"]) api.on(t, (from, d) => peerMsg(d));
   api.on("ai-code-files", (from, d) => { if (!isHost() && Array.isArray(d.tree)) ui.tree(d.tree.slice(0, 500).map((p) => str(p, 300))); });
   api.on("ai-code-history", (from, d) => {
     if (isHost()) return;
-    peerView(); ui.setHost(false); ui.poke();
+    peerView(); setChrome(); ui.poke();
     sid = str(d.sid, 40);
     ui.clear();
-    for (const it of (Array.isArray(d.items) ? d.items : []).slice(-HIST)) if (it && typeof it === "object") ui.apply(clean(it));
+    peerRun = null;
+    for (const it of (Array.isArray(d.items) ? d.items : []).slice(-HIST)) if (it && typeof it === "object") { const m = clean(it); track(m); ui.apply(m); }
+    // a run cut from the history's window is still going: the host says whose it is
+    if (d.run && typeof d.run === "object") peerRun = { mid: str(d.run.mid, 40), from: str(d.run.from, 80) };
+    if (!$("code-log").children.length) placeholderFor(false);
     if (Array.isArray(d.tree)) ui.tree(d.tree.slice(0, 500).map((p) => str(p, 300)));
+    peerRunning();
   });
+  // the host's projects: a member can open (not a folder), start one, and tick auto-approve
+  api.on("ai-code-projects", (from, d) => {
+    if (isHost()) return;
+    const list = (Array.isArray(d.list) ? d.list : []).slice(0, 50).filter((p) => p && typeof p === "object")
+      .map((p) => ({ id: str(p.id, 120), name: str(p.name, 60), kind: p.kind === "folder" ? "folder" : "opfs" }));
+    peerProj = { list, cur: str(d.cur, 120), kind: d.kind === "folder" ? "folder" : d.kind === "opfs" ? "opfs" : "", auto: !!d.auto };
+    fillProjects(list, peerProj.cur, { guest: true });
+    $("code-auto").checked = peerProj.auto;
+    $("code-auto").disabled = peerProj.kind === "folder";
+    $("code-newtask").disabled = !peerProj.cur;
+    $("code-proj-kind").textContent = peerProj.kind === "folder" ? `a folder on ${hostName()}'s disk` : peerProj.kind ? `saved in ${hostName()}'s browser` : "";
+    setChrome();
+  });
+  api.on("ai-code-msg", (from, d) => { if (isHost()) return; heard(); localNote(str(d.text, 300), !!d.err); });
   api.on("ai-pv", (from, d) => { if (!isHost()) { peerView().onManifest(from, d); ui.poke(); } });
   api.on("ai-pv-blob", (from, d) => { if (!isHost()) peerView().onBlob(from, d); });
   api.on("ai-pv-stop", (from, d) => { if (!isHost()) peerView().onStop(from, d); });
 
   // ================================================================ both
+  // what this screen may do, and the line about where the agent runs and where the files live
+  function driverNote() {
+    if (isHost()) { ui.driverNote(api.peers().length && project?.kind === "folder" ? "This project is a folder on your disk: only you can send requests to it." : ""); return; }
+    const host = hostName();
+    ui.driverNote(!shared() ? `Only ${host} uses Code in this room. You see nothing of it.`
+      : peerProj.kind === "folder" ? `${host} has a folder from their disk open: only ${host} can drive it. You see what it does, live.`
+      : `The agent runs on ${host}'s device, and the project's files live in ${host}'s browser. Anyone in the room can ask.`);
+  }
+  function setChrome() {
+    const host = isHost();
+    ui.setHost(host, { canDrive: host || (shared() && peerProj.kind !== "folder") });
+    driverNote();
+  }
+  function placeholderFor(host) {
+    if (host) {
+      ui.placeholder(api.ready()
+        ? "<b>Code mode</b>: the room's model writes a web app, serves it on a port and fixes its own errors.<br>Ask for something to build, like “a tetris game”."
+        : "<b>Code mode</b> runs on the room's model.<br>Pick a model in Chat and press Start, then ask for something to build.");
+    } else ui.placeholder(shared()
+      ? `<b>Code mode</b>: ask for something to build, like “a tetris game”.<br>The agent runs on ${escapeHTML(hostName())}'s device; everyone in the room sees it work, live`
+      : `only ${escapeHTML(hostName())} uses Code in this room`);
+  }
   function entered() {
     const host = isHost();
-    ui.setHost(host);
+    setChrome();
     if (host) {
       refreshProjects();
-      if (!project && !hist.length) {
-        ui.placeholder(api.ready()
-          ? "<b>Code mode</b>: the room's model writes a web app, serves it on a port and fixes its own errors.<br>Ask for something to build, like “a tetris game”."
-          : "<b>Code mode</b> runs on the room's model.<br>Pick a model in Chat and press Start, then ask for something to build.");
-      }
-      setTimeout(() => $("code-prompt").focus(), 0);
-    } else if (!$("code-log").children.length) ui.placeholder("the host hasn't started the agent yet<br>what it does shows up here, live");
+      if (!project && !hist.length) placeholderFor(true);
+    } else {
+      if (!$("code-log").children.length) placeholderFor(false);
+      if (api.hostId() && api.peers().includes(api.hostId())) api.send(api.hostId(), { t: "ai-code-sync" });
+      peerRunning();
+    }
+    if (!$("code-row").hidden) setTimeout(() => $("code-prompt").focus(), 0);
   }
   api.onRole(() => {
     const host = isHost();
-    ui.setHost(host);
+    setChrome();
     if (!host && running) ctrl?.abort();
     // a device left mid-run: the next step would wait out the lap timeouts, so stop here
     else if (running && !api.ready() && !ctrl?.signal.aborted) { note("a device left: stopped · re-deal the layers, then send again", true); ctrl?.abort(); }
   });
-  ui.setHost(isHost());
+  setChrome();
   return { show: (m) => ui.show(m), ctx: (used, max) => ui.ctx(used, max) };
 }

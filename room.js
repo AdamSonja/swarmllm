@@ -20,7 +20,7 @@ const ctxMax = () => ai.engine?.maxSeq || MAX_SEQ;
 const CKPT_MAX = Math.max(0, parseInt(new URLSearchParams(location.search).get("ckpt") ?? "2", 10) || 0);
 import { makeLink, attachWire, wireReady, sendFrame, PROTOCOL, DROP_ALL } from "./room/transport.js";
 import { PERSONAS, specials, fitContext, reusablePrefix } from "./room/conversation.js";
-import { planSplit, planForSpeed, ladder, bestFit, codeFromLocation } from "./room/plan.js";
+import { planSplit, planForSpeed, ladder, bestFit, codeFromLocation, pickModelHost } from "./room/plan.js";
 import { qrSVG } from "./room/qr.js";
 import { lookupDrafts } from "./room/lookup.js";
 import { drawCard } from "./room/card.js";
@@ -342,7 +342,11 @@ function renderPool(pledged) {
   meter.querySelector(".apm-fill").innerHTML = devs.map((d) => `<i style="--sw:${devColor(d.name)};width:${(d.meta.contribGB / top * 100).toFixed(2)}%" title="${esc(String(d.name))}: ${d.meta.contribGB} GB"></i>`).join("");
   // a tick where each model starts to fit; the picked one says what it needs
   const sel = $("ai-model").value;
-  meter.querySelector(".apm-ticks").innerHTML = needs.map(([k, gb]) => `<span class="${pledged >= gb ? "ok" : ""}${k === sel ? " sel" : ""}${gb / top > 0.6 ? " r" : gb / top < 0.3 ? " l" : ""}" style="left:${(gb / top * 100).toFixed(2)}%" title="${esc(shortName(k))} needs ${gb} GB">${k === sel ? `<b>${esc(shortName(k))} needs ${gb} GB</b>` : ""}</span>`).join("");
+  meter.querySelector(".apm-ticks").innerHTML = needs.map(([k, gb]) => `<span class="${pledged >= gb ? "ok" : ""}${k === sel ? " sel" : ""}${gb / top > 0.6 ? " r" : gb / top < 0.3 ? " l" : ""}" style="left:${(gb / top * 100).toFixed(2)}%" title="${esc(shortName(k))} needs ${gb} GB"></span>`).join("");
+  // what the selected model needs, as its own line under the meter (not a label hanging off its tick)
+  const selNeed = needs.find(([k]) => k === sel);
+  $("ap-need").hidden = !selNeed;
+  if (selNeed) { const [k, gb] = selNeed, short = gb - pledged; $("ap-need").innerHTML = `${esc(shortName(k))} needs <b>${gb} GB</b><span>${short > 0 ? `${+short.toFixed(1)} GB short` : "fits"}</span>`; $("ap-need").classList.toggle("ok", short <= 0); }
   $("ap-devs").innerHTML = devs.map((d) => `<li style="--sw:${devColor(d.name)}"><i></i><span>${esc(String(d.name))}${d.name === myName ? " <small>(this device)</small>" : ""}</span><b>${d.meta.contribGB} GB</b></li>`).join("")
     || '<li class="none">No device with WebGPU yet</li>';
   const can = !!myMeta.webgpu;
@@ -1522,11 +1526,10 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
 }
 
 // ---- host ----
+// the model host (room/plan.js pickModelHost): the strongest device, a computer before a phone,
+// whoever pressed Start. The room's creator stays the PeerJS hub either way.
 function biggestPeerId() {
-  const gb = (m) => (m?.webgpu ? m?.contribGB ?? 0 : 0);
-  let best = peer.id, bestGB = gb(myMeta);
-  for (const [id, e] of conns) if (gb(e.meta) > bestGB || (gb(e.meta) === bestGB && id < best)) { best = id; bestGB = gb(e.meta); }
-  return best;
+  return pickModelHost([{ id: peer.id, meta: myMeta }, ...[...conns].map(([id, e]) => ({ id, meta: e.meta }))]) || peer.id;
 }
 function aiStartAnywhere() {
   const model = $("ai-model").value;
@@ -2768,6 +2771,7 @@ async function aiOnData(from, d) {
     case "ai-visibility":
       ai.visibility = d.mode;
       toast(d.mode === "all" ? "the host shows the chat to everyone" : d.mode === "host" ? "the host keeps the chat private" : "the host shows each answer to whoever asked");
+      codeRoleChanged();   // Code is shared with every member only when everyone sees the answers
       break;
     case "ai-style":
       toast(`answers now: ${PERSONAS[d.persona]?.label || d.persona}${d.thinking ? " · thinking first" : ""}`);
@@ -2845,10 +2849,15 @@ async function aiOnData(from, d) {
 // ?mock=code on localhost (tests only): no model needed. roomApi.ready() is true, the lock works
 // without an engine, and room/code.js takes its model from window.__pooledMock.model.
 const MOCK = new URLSearchParams(location.search).get("mock") === "code" && ["127.0.0.1", "localhost"].includes(location.hostname);
-// Code messages only the host sends; the one that goes the other way is ai-pv-want.
+// Code messages only the host sends, and the ones members send it: the preview's file requests, and
+// driving the shared agent (a request, Stop and an approval for the member's own request, New task,
+// a project, the auto-approve box, and "send me the session" on opening Code). room/code.js checks
+// each against its own state (who asked the run, the project list) and caps every field.
 const CODE_FROM_HOST = new Set(["ai-code-start", "ai-code-tok", "ai-code-live", "ai-code-tool", "ai-code-note", "ai-code-done", "ai-code-files", "ai-code-history",
-  "ai-pv", "ai-pv-blob", "ai-pv-stop"]);
-const CODE_TO_HOST = new Set(["ai-pv-want"]);
+  "ai-code-projects", "ai-code-msg", "ai-pv", "ai-pv-blob", "ai-pv-stop"]);
+const CODE_TO_HOST = new Set(["ai-pv-want", "ai-code-ask", "ai-code-stop", "ai-code-approve", "ai-code-cmd", "ai-code-sync"]);
+const CODE_DRIVE = new Set(["ai-code-ask", "ai-code-cmd", "ai-code-sync"]);   // these load Code on a host that has not opened it
+const CODE_MSG_MAX = 12000;   // a member's message, serialized (a request is at most 4000 characters)
 const codeHandlers = new Map();   // message type -> fn(from, d)
 const codeJoin = [], codeRole = [], codeStop = [];
 let codeLoad = null, codeQ = Promise.resolve(), lockKind = null;
@@ -2893,10 +2902,16 @@ function codeOnData(from, d) {
   if (CODE_FROM_HOST.has(d.t)) {
     if (codeHost() || from !== codeHostId()) return;
   } else if (CODE_TO_HOST.has(d.t)) {
-    if (!codeHost() || !codeRecipients().includes(from)) return;
+    // only from a device that said hello (a room member), only when the room shows it Code
+    if (!codeHost() || !members.has(from)) return;
+    if (!codeRecipients().includes(from)) {
+      if (d.t === "ai-code-ask") sendTo(from, { t: "ai-code-msg", text: `only ${myName} uses Code in this room (Room settings: who sees answers)`, err: true });
+      return;
+    }
+    if (d.t !== "ai-pv-want" && JSON.stringify(d).length > CODE_MSG_MAX) return;
   } else return;
   codeQ = codeQ.then(async () => {
-    if (!codeHandlers.has(d.t) && CODE_FROM_HOST.has(d.t)) await loadCode();
+    if (!codeHandlers.has(d.t) && (CODE_FROM_HOST.has(d.t) || CODE_DRIVE.has(d.t))) await loadCode();
     await codeHandlers.get(d.t)?.(from, d);
   }).catch((err) => console.error("code message", d.t, err));
 }
@@ -2904,7 +2919,19 @@ function codeOnData(from, d) {
 let simReady = false;
 // initCode returns { show(mode) }; the Chat tab is handled by code.js once it is loaded
 document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code") && $("mode-code").getAttribute("aria-selected") !== "true") window.pooledSparkle?.($("mode-code")); }, true);   // switching to Code sparkles (site/js/sparkle.js); capture: before the tab flips
-document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code")) loadCode().then((c) => c?.show?.("code")).catch((err) => toast("Code mode failed to load: " + err.message)); });
+// A tab opened before a deploy has the old modules in memory; Code mode's newer files can then fail to
+// link against them. Say so plainly: a host reloads (it goes straight back into its room), a guest is asked to.
+const staleModule = (err) => err instanceof SyntaxError || /binding name|export named|does not provide an export|not found in module|Failed to fetch dynamically imported module|error loading dynamically imported module/i.test(err?.message || "");
+function codeLoadFailed(err) {
+  if (staleModule(err)) {
+    let tried = false; try { tried = sessionStorage.getItem("pooled-stale-reload") === "1"; sessionStorage.setItem("pooled-stale-reload", "1"); } catch {}
+    if (isHost && !tried) { toast("Pooled was just updated: reloading to open Code…"); setTimeout(() => location.reload(), 900); return; }
+    toast("Pooled was just updated. Reload this page to open Code.");
+    return;
+  }
+  toast("Code mode failed to load: " + err.message);
+}
+document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code")) loadCode().then((c) => { try { sessionStorage.removeItem("pooled-stale-reload"); } catch {} c?.show?.("code"); }).catch(codeLoadFailed); });
 
 const roomApi = {
   myId: () => peer?.id,
@@ -2930,6 +2957,8 @@ const roomApi = {
   broadcast: (msg) => sendCode(msg),
   recipients: () => codeRecipients(),
   hostId: () => codeHostId(),
+  nameOf: (id) => (id === peer?.id ? myName : conns.get(id)?.name || members.get(id)?.name || ""),
+  visibility: () => ai.visibility || "all",   // "all": Code is shared, every member can drive it
   peers: () => [...conns.keys()],
   channel: (id) => conns.get(id)?.conn?.dataChannel || null,   // for bufferedAmount back-pressure (ai-pv-blob)
   on: (type, fn) => { codeHandlers.set(type, fn); },

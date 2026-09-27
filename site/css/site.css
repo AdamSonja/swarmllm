@@ -4,7 +4,7 @@
   /* colors, type, radius and motion come from tokens.css; these are the landing's own layout values */
   --gutter:clamp(16px,4vw,48px);
   --shadow:0 1px 2px rgba(20,22,29,.04),0 12px 28px -14px rgba(20,22,29,.12),0 44px 90px -48px rgba(20,22,29,.26);
-  --body-h:clamp(300px,calc(100svh - 420px),580px);--band:112px;--pvw:460px;
+  --body-h:clamp(300px,calc(100svh - 420px),580px);--band:122px;--pvw:460px;
   color-scheme:light;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -34,9 +34,23 @@ ol,ul{list-style:none}
 .btn-line{background:var(--white);color:var(--ink);box-shadow:inset 0 0 0 1px var(--rule-3)}
 .btn-line:hover{background:var(--bg-2);box-shadow:inset 0 0 0 1px var(--ink-3)}
 .btn-line svg{color:var(--ink-2)}
-.btn-star{gap:8px}
-.btn-star svg.gh{color:var(--ink)}
-.btn-star svg.star{fill:#E3B341;margin-right:-1px}   /* the only gold: the star glyph */
+/* ---------- Star button (the closing section, next to Start a room) ----------
+   A secondary .btn.btn-sm: white, 1px --rule-3 outline, the GitHub mark in ink, a gold star glyph (the only
+   gold), "Star", then the live count after a hairline, all in ink. 36px tall, like the Start a room button next
+   to it. Phones: marks + count only (the word shows when there is no count). stars.js fills .st-n. */
+.btn-star{gap:6px;height:36px;padding:0 12px;background:var(--white);color:var(--ink);box-shadow:inset 0 0 0 1px var(--rule-3)}
+.btn-star:hover{background:var(--bg-2);box-shadow:inset 0 0 0 1px var(--ink-3)}
+.btn-star .gh{flex:none;color:var(--ink)}
+.btn-star .star{flex:none;fill:#E3B341;margin-left:1px}
+.btn-star.has-n .st-l{display:none}
+.btn-star.has-n .st-n{margin-left:0;padding-left:0;border-left:0}
+.btn-star .st-n{margin-left:3px;padding-left:9px;border-left:1px solid var(--rule-3);line-height:18px;font-variant-numeric:tabular-nums}
+@media (max-width:640px){
+  .btn-star{padding:0 10px;gap:5px}
+  .btn-star .st-n{margin-left:1px;padding-left:7px}
+}
+/* ---------- end Star button ---------- */
+.ctas .btn-star{height:auto;align-self:stretch}
 .btn svg{transition:transform .16s var(--ease)}
 .btn-blue:hover svg{transform:translateX(2px)}
 
@@ -235,6 +249,14 @@ html:not(.js) .card{display:none}
 /* ---------- 4, 5: the layers, one row per device (as in the room's band: p2p.html #swarm-map) ---------- */
 .band{position:relative;display:flex;flex-direction:column;padding:0 56px;transition:opacity .5s var(--ease) .1s,transform .7s var(--glide),padding .9s var(--glide)}
 .js .model:not(.dl) .band{opacity:0;transform:translateY(8px);pointer-events:none}
+/* downloading: the layers sit in a white card, like the room's download card */
+.demo[data-scene="split"] .band{align-self:center;width:min(880px,calc(100% - 48px));padding:24px 28px 20px;background:var(--white);border:1px solid var(--rule);border-radius:16px;
+  box-shadow:0 1px 2px rgba(20,22,29,.04),0 12px 24px -12px rgba(20,22,29,.10),0 40px 80px -40px rgba(20,22,29,.22)}
+.demo[data-scene="split"] .bd-h{margin-bottom:18px}
+.demo[data-scene="split"] .rows{gap:0;border-top:1px solid var(--rule-2)}
+.demo[data-scene="split"] .row{padding:10px 0;border-bottom:1px solid var(--rule-2)}
+.demo[data-scene="split"] .lk-l{margin-top:14px}
+@media (max-width:640px){.demo[data-scene="split"] .band{width:calc(100% - 20px);padding:18px 14px 14px}}
 .bd-h{display:flex;flex-direction:column;align-items:center;gap:7px;margin-bottom:26px;text-align:center;min-width:0;transition:margin .9s var(--glide)}
 .bd-n{font:400 var(--d-md)/1.1 var(--display);letter-spacing:-.02em;white-space:nowrap}
 .bd-s{font:400 var(--t-sm)/1.2 var(--mono);color:var(--ink-3);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
@@ -285,7 +307,7 @@ html:not(.js) .card{display:none}
 .demo[data-scene="chat"] .rows{gap:5px}
 .demo[data-scene="chat"] .row{grid-template-columns:minmax(0,230px) minmax(0,1fr)}
 .demo[data-scene="chat"] .hl{flex-wrap:nowrap;font-size:var(--t-sm)}
-.demo[data-scene="chat"] .hs{flex-basis:auto;margin-left:auto;padding-left:6px}
+.demo[data-scene="chat"] .hs{flex:none;width:12ch;margin-left:auto;padding-left:6px;justify-content:flex-start}   /* one column: "layers" starts at the same place on every row */
 .demo[data-scene="chat"] .hg{display:none}
 .demo[data-scene="chat"] .cells{height:12px;gap:2px}
 .demo[data-scene="chat"] .cells i{border-radius:2px}
@@ -374,7 +396,7 @@ html:not(.js) .card{display:none}
 /* the offer to play: an overlay on the whole game, the game dimmed behind a big play pill */
 .pv-play{position:absolute;inset:0;z-index:3;display:grid;place-items:center;padding:0;border:0;border-radius:0;background:rgba(9,12,26,.52);-webkit-backdrop-filter:blur(1.5px);backdrop-filter:blur(1.5px);cursor:pointer;
   opacity:0;visibility:hidden;transition:opacity .3s var(--ease),visibility 0s .3s}
-.pv-pill{display:inline-flex;align-items:center;gap:9px;height:48px;padding:0 22px 0 18px;border-radius:var(--r-pill);background:var(--blue);color:#fff;font:500 16px/1 var(--sans);white-space:nowrap;
+.pv-pill{display:inline-flex;align-items:center;gap:9px;height:46px;padding:0 20px 0 17px;border-radius:10px;background:var(--blue);color:#fff;font:500 16px/1 var(--sans);white-space:nowrap;
   box-shadow:0 1px 0 rgba(255,255,255,.18) inset,0 10px 26px -8px rgba(42,69,224,.85);transform:scale(.94);transition:transform .35s var(--ease),background-color .2s ease}
 .pv-play:hover .pv-pill{background:var(--blue-600)}
 .demo.served.app-on:is(.ask,.done):not(.playing) .pv-play{opacity:1;visibility:visible;transition:opacity .3s var(--ease),visibility 0s}

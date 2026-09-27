@@ -523,9 +523,17 @@ announces a session (`ai-code-start` or `ai-pv`), with a dot when something new 
   - Files: `#code-tree` (read-only tree from `walk()`, max 500); clicking a file opens
     `#code-view` (numbered lines, monospace, no editing in v1).
 
-**Peers** get the same pane read-only: the timeline without approval buttons (they see
-"waiting for the host's approval"), no project bar or prompt row (a line says "the host is
-driving the agent"), Preview with port tabs and their own console strip, and Files from
+**Peers** get the same pane, and drive it like the host when the room shows answers to everyone:
+one shared agent session per room, run on the model host. A member's request goes to the host as
+`ai-code-ask` and queues (six at most, two per member) behind the current run; its bubble carries
+the member's name. The member who asked, or the host, answers its approvals (`ai-code-approve`)
+and can stop it (`ai-code-stop`); others see "waiting for <name> to approve". Any member can start
+a new task, open or create a project saved in the host's browser, or tick auto-approve
+(`ai-code-cmd`); `ai-code-projects` mirrors the host's project list and `ai-code-sync` asks for the
+session on opening Code. The host alone opens a folder from disk, saves in the editor, and drives
+a folder project (what the agent reads there would reach the asker's screen). With "Only me" or
+"Whoever asked", Code stays the host's. A line above the log says where the agent runs and where
+the files live. Preview with port tabs and their own console strip, and Files from
 `ai-code-files`. Joining late: `ai-code-history` (last 50 items, results already capped) plus
 `ai-pv` per port.
 
