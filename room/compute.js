@@ -9,7 +9,10 @@ const $ = (id) => document.getElementById(id);
 const REDUCED = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 // the mark's nine dots (site/logo/mark.svg), in a 24-unit box
 const DOTS = [[3.4, 3.4, 1.8], [10.2, 3.4, 1.99], [18.5, 3.4, 2.38], [3.4, 10.2, 1.99], [10.2, 10.2, 2.38], [18.5, 10.2, 2.94], [3.4, 18.5, 2.38], [10.2, 18.5, 2.94], [18.5, 18.5, 3.9]];
-const PACKET = ["#2A45E0", "#6E86FF", "#9AA8F0"];
+const PACKET = ["#2A45E0", "#7C8FFF", "#B9C6FF"];   // --blue-500, --blue-400, --blue-200
+// this device's colour in the room, for its layers here; the two dark neutrals read as light on the dark screen
+const onDark = (c) => (/^#(2B2F3C|5E616B)$/i.test(c || "") ? "#EEF0F6" : c || "");
+const THEME_LIGHT = "#F6F5F1", THEME_DARK = "#0B0F1F";
 const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "k" : String(n);
 
 export function computeScreen({ state, keepAwake = () => {} }) {
@@ -59,7 +62,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
       // a soft trail
       ctx.globalAlpha = a * 0.22;
       const g = ctx.createLinearGradient(x - 90, 0, x, 0);
-      g.addColorStop(0, "rgba(42,69,224,0)"); g.addColorStop(1, "rgba(110,134,255,0.9)");
+      g.addColorStop(0, "rgba(42,69,224,0)"); g.addColorStop(1, "rgba(124,143,255,0.9)");
       ctx.fillStyle = g; ctx.fillRect(x - 90, cy - 1, 90, 2);
       ctx.globalAlpha = 1;
     }
@@ -74,7 +77,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     waveAt = now;
     for (const c of circles) {
       const rc = +c.style.getPropertyValue("--rc");
-      c.animate([{ transform: "scale(1)", fill: c.classList.contains("lit") ? "#6E86FF" : "#EEF0F6" }, { transform: "scale(1.22)", fill: "#8EA2FF", offset: 0.35 }, { transform: "scale(1)", fill: c.classList.contains("lit") ? "#6E86FF" : "#EEF0F6" }],
+      c.animate([{ transform: "scale(1)", fill: c.classList.contains("lit") ? "#7C8FFF" : "#EEF0F6" }, { transform: "scale(1.22)", fill: "#B9C6FF", offset: 0.35 }, { transform: "scale(1)", fill: c.classList.contains("lit") ? "#7C8FFF" : "#EEF0F6" }],
         { duration: 520, delay: delay + rc * 55, easing: "cubic-bezier(.2,.7,.2,1)" });
     }
   }
@@ -118,17 +121,19 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     const of = s.total ? ` of ${s.total}` : "";
     if (s.phase === "serving" && has) {
       k = `This device is helping run ${s.model}`; title = `Serving layers ${lay}`;
-      sub = s.role === "host" ? `${s.hi - s.lo}${of} layers here. It also turns the room's work into words.` : `${s.hi - s.lo}${of} layers here. Every token passes through them.`;
+      sub = s.role === "host" ? `${s.hi - s.lo}${of} layers here. It also picks each next word (the model's last step).` : `${s.hi - s.lo}${of} layers here. Every word passes through them.`;
     }
     else if (s.phase === "loading") { k = `Getting ready to run ${s.model}`; title = has ? `Loading layers ${lay}` : "Loading the model"; sub = `${s.pct != null ? `${Math.round(s.pct)}% · ` : ""}only this device's layers download`; }
     else if (s.phase === "serving") { k = `The room is running ${s.model}`; title = "No layers here"; sub = "The other devices hold the model. This one can still ask."; }
     else { k = "Not serving yet"; title = "Ready to lend"; sub = "This device starts helping as soon as someone in the room starts a model."; }
     root.dataset.phase = s.phase;
+    if (s.color) root.style.setProperty("--me", onDark(s.color));
     // serving, and no pass for a moment: say so, and let the logo rest
     const quiet = s.phase === "serving" && has && (!stamps.length || performance.now() - stamps[stamps.length - 1][0] > 2500);
     root.toggleAttribute("data-quiet", quiet);
     if (quiet) k = `This device is helping run ${s.model} · waiting for a question`;
     $("cs-k").textContent = k; $("cs-title").textContent = title; $("cs-sub").textContent = sub;
+    if ($("cs-ex")) $("cs-ex").hidden = s.phase === "serving" && !has;
     // this device's slice of the model
     const strip = $("cs-strip"), total = s.total || 0;
     const n = total ? Math.min(total, 64) : 0, per = total ? total / n : 1;
@@ -151,6 +156,8 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     if (on === open) return;
     open = on;
     root.hidden = !on;
+    // the browser's bar matches the screen: dark while lending, the room's off-white after
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", on ? THEME_DARK : THEME_LIGHT);
     document.documentElement.classList.toggle("computing", on);
     if (on) {
       keepAwake();

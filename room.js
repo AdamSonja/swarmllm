@@ -120,7 +120,15 @@ async function measureBudgetGB(adapter, capGB) {
 }
 
 // the join screen says up front whether this browser can hold layers, and what to do if not
-preflight().then((v) => { if (!v.ok && !$("join-status").textContent) { $("join-status").textContent = v.line; $("join-status").classList.add("warn"); } });
+preflight().then((v) => {
+  if (v.ok) return;
+  $("join-gpu-t").textContent = v.line;
+  $("join-gpu-d").textContent = v.detail || "";
+  $("join-gpu").querySelector("details").hidden = !v.detail;
+  $("join-gpu").hidden = false;
+  $("join-pledge").classList.add("no-gpu");
+  $("ap-no").textContent = v.line;
+});
 // probe once at load; fill the contribution selector
 const metaPromise = (async () => {
   const m = await probeGPU();
@@ -153,6 +161,23 @@ const ICONS = {
 const iconFor = (meta) => meta.phone || /iPhone|Android$/.test(meta.ua || "") ? ICONS.phone : /Mac|iPad/.test(meta.ua || "") ? ICONS.laptop : ICONS.desk;
 // "0–19" (what the deal sends) -> "1–20", the way people count layers
 const humanRange = (r) => { const m = /^(\d+)\D+(\d+)$/.exec(String(r || "")); return m ? `${+m[1] + 1}\u2013${+m[2] + 1}` : String(r || ""); };
+// One colour per device, everywhere (chips, pool bar, loading rows, band, Lend screen): given once,
+// in join order, to each device that can hold layers. A device that only asks is grey everywhere.
+const SWATCH = ["#2A45E0", "#2B2F3C", "#7C8FFF", "#5E616B", "#B9C6FF", "#1C33B8"];
+const devSlots = new Map();   // name -> slot, in the order devices were first seen
+function metaOf(name) {
+  if (name === myName) return myMeta;
+  for (const c of conns.values()) if (c.name === name) return c.meta || {};
+  for (const m of members.values()) if (m.name === name) return m.meta || {};
+  return null;
+}
+function devColor(name) {
+  if (name == null) return "var(--faint)";
+  const meta = metaOf(name);
+  if (meta && meta.webgpu === false) return "var(--ink-4)";
+  if (!devSlots.has(name)) devSlots.set(name, devSlots.size);
+  return SWATCH[devSlots.get(name) % SWATCH.length];
+}
 function peerCard(id, name, meta, self) {
   // a chip in the room bar (the landing's: dot, icon, name, GB); a click opens the device's card
   const card = document.createElement("div");
@@ -169,7 +194,7 @@ function peerCard(id, name, meta, self) {
         <span>rtt <b class="rtt">-</b></span>
         <span>bw <b class="bw">-</b></span>
       </div>
-      ${self ? '<button class="compute-btn" id="compute-btn-self" type="button"><span class="cdots" aria-hidden="true"><i></i><i></i><i></i></span>Lend this device</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}
+      ${self ? '<button class="compute-btn" id="compute-btn-self" type="button"><svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="11" height="11" rx="2.2"/><rect x="7" y="7" width="4" height="4" rx=".8"/><path d="M7 1.3v2.2M11 1.3v2.2M7 14.5v2.2M11 14.5v2.2M1.3 7h2.2M1.3 11h2.2M14.5 7h2.2M14.5 11h2.2"/></svg>Lend this device</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}
     </div>`;
   paintCard(card, name, meta, self);
   $("peers").appendChild(card);
@@ -194,7 +219,17 @@ function chipPop(card) {
   }
 }
 document.addEventListener("click", (e) => { if (!e.target.closest?.(".pop")) chipPop(null); if (!e.target.closest?.("#room-menu") || e.target === $("room-menu")) $("room-menu").open = false; });   // (a click on the phone sheet's backdrop lands on the details itself)
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") { chipPop(null); $("room-menu").open = false; } });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  chipPop(null); $("room-menu").open = false;
+  if (!$("share").hidden) closeShare();
+  if (!$("card").hidden) $("card").hidden = true;
+});
+document.addEventListener("pointerdown", (e) => {
+  const t = e.target.closest?.("[data-tip]"); if (!t) return;
+  t.classList.add("tip-off");
+  t.addEventListener("pointerleave", () => t.classList.remove("tip-off"), { once: true });
+});
 addEventListener("resize", () => chipPop(null));
 $("peers").addEventListener("scroll", () => chipPop(null), { passive: true });
 // what a card says about its device (the sim hook repaints with made-up devices)
@@ -209,9 +244,10 @@ function paintCard(card, name, meta, self) {
     ? `${meta.ua} · ${meta.gpu}` : `${meta.ua} · no WebGPU`;
   const budget = meta.budgetGB || meta.maxBufGB;
   card.querySelector(".buf").textContent = meta.webgpu === false ? "no WebGPU" : meta.contribGB ? lends(meta.contribGB) : (budget ? budget + " GB" : "-");
-  card.querySelector(".cg").textContent = meta.webgpu === false ? "asks" : meta.contribGB ? meta.contribGB + " GB" : "";
-  card.querySelector(".pchip").title = `${name}: ${card.querySelector(".buf").textContent}`;
-  peerStatus(card, meta.webgpu === false ? "asks only" : self ? "this device" : "connected");
+  card.querySelector(".cg").textContent = meta.webgpu === false ? "chat only" : meta.contribGB ? meta.contribGB + " GB" : "";
+  card.querySelector(".pchip").title = meta.webgpu === false ? `${name}: this device can ask but can't hold model layers` : `${name}: ${card.querySelector(".buf").textContent}`;
+  card.style.setProperty("--sw", devColor(name));
+  peerStatus(card, meta.webgpu === false ? "chat only" : self ? "this device" : "connected");
 }
 // the status word on a device card: connected, loading N%, ready. While it loads, its chip shows the %
 function peerStatus(card, text, ok = false) {
@@ -241,7 +277,12 @@ if (DEV) Object.keys(MODELS).forEach(addModelOption);
 function setModelValue(key) { if (!MODELS[key]) return; addModelOption(key); $("ai-model").value = key; }
 function renderLadder(pledged) {
   const el = $("ai-ladder"); if (!el) return;
-  el.innerHTML = ladder(PICK_NEED, pledged).map((x) => `<button type="button" class="rung${x.ok ? " ok" : ""}${x.key === $("ai-model").value ? " sel" : ""}" data-k="${x.key}" aria-pressed="${x.key === $("ai-model").value}"><span class="rn">${esc(shortName(x.key))}</span><span class="nd">${NEED_GB[x.key] ?? ""} GB</span><b>${x.ok ? "fits" : x.short + " GB short"}</b></button>`).join("");
+  const none = !(pledged > 0);
+  el.innerHTML = (none ? '<p class="ai-nogpu">Needs a device with WebGPU</p>' : "") + ladder(PICK_NEED, pledged).map((x) => {
+    const gb = `<span class="nd">${NEED_GB[x.key] ?? ""} GB</span>`;
+    const fig = x.ok ? `${gb}<b>fits</b>` : none ? gb : `<span class="more">needs ${x.short} GB more</span>`;
+    return `<button type="button" class="rung${x.ok ? " ok" : " short"}${x.key === $("ai-model").value ? " sel" : ""}" data-k="${x.key}" aria-pressed="${x.key === $("ai-model").value}"${x.ok ? "" : ' title="Invite a device to fit this"'}><span class="rn">${esc(shortName(x.key))}</span><span class="fig">${fig}</span></button>`;
+  }).join("");
 }
 $("ai-ladder").addEventListener("click", (e) => {
   const b = e.target.closest(".rung"); if (!b || $("ai-model").disabled) return;
@@ -259,6 +300,7 @@ function updateNeed(pledged) {
     : `Needs ${need} GB. The room has ${has} GB, ${(need - pledged).toFixed(1)} GB short.`;
   $("ai-need").classList.toggle("ok", ok);
   if (!ai.busy && !ai.engine) $("ai-start").disabled = !ok;
+  $("ai-why").hidden = ok || !!ai.busy || !!ai.engine;
   if (ok && !wasReady) { $("ai-start").classList.remove("unlocked"); void $("ai-start").offsetWidth; $("ai-start").classList.add("unlocked"); }
   wasReady = ok;
 }
@@ -286,11 +328,11 @@ function renderPool(pledged) {
   const top = Math.max(pledged, ...needs.map((x) => x[1])) * 1.06 || 1;
   $("ap-total").textContent = `${+pledged.toFixed(1)} GB`;
   const meter = $("ap-meter");
-  meter.querySelector(".apm-fill").innerHTML = devs.map((d, i) => `<i style="--sw:${swatch(i)};width:${(d.meta.contribGB / top * 100).toFixed(2)}%" title="${esc(String(d.name))}: ${d.meta.contribGB} GB"></i>`).join("");
+  meter.querySelector(".apm-fill").innerHTML = devs.map((d) => `<i style="--sw:${devColor(d.name)};width:${(d.meta.contribGB / top * 100).toFixed(2)}%" title="${esc(String(d.name))}: ${d.meta.contribGB} GB"></i>`).join("");
   // a tick where each model starts to fit; the picked one says what it needs
   const sel = $("ai-model").value;
   meter.querySelector(".apm-ticks").innerHTML = needs.map(([k, gb]) => `<span class="${pledged >= gb ? "ok" : ""}${k === sel ? " sel" : ""}${gb / top > 0.6 ? " r" : gb / top < 0.3 ? " l" : ""}" style="left:${(gb / top * 100).toFixed(2)}%" title="${esc(shortName(k))} needs ${gb} GB">${k === sel ? `<b>${esc(shortName(k))} needs ${gb} GB</b>` : ""}</span>`).join("");
-  $("ap-devs").innerHTML = devs.map((d, i) => `<li style="--sw:${swatch(i)}"><i></i><span>${esc(String(d.name))}${d.name === myName ? " <small>(this device)</small>" : ""}</span><b>${d.meta.contribGB} GB</b></li>`).join("")
+  $("ap-devs").innerHTML = devs.map((d) => `<li style="--sw:${devColor(d.name)}"><i></i><span>${esc(String(d.name))}${d.name === myName ? " <small>(this device)</small>" : ""}</span><b>${d.meta.contribGB} GB</b></li>`).join("")
     || '<li class="none">No device with WebGPU yet</li>';
   const can = !!myMeta.webgpu;
   $("ap-step").hidden = !can; $("ap-no").hidden = can;
@@ -320,7 +362,8 @@ function enterRoom() {
   $("side-code").textContent = roomCode;
   $("side-code").addEventListener("click", openShare);
   $("ap-qr").innerHTML = qrSVG(roomLink(), { size: 112 });
-  if (isHost) { $("host-controls").hidden = false; $("mode-bar").hidden = false; }   // Code tab: peers see it once the host starts a session
+  // Chat | Code shows once a model is ready (?mock=code: at once, there is no model); peers see Code once the host starts a session
+  if (isHost) { $("host-controls").hidden = false; if (MOCK) $("mode-bar").hidden = false; }
   peerCard("self", myName, myMeta, true);
   updateCluster();
   log("room", `${roomCode}: type this code on your other devices`);
@@ -560,7 +603,10 @@ $("name-shuffle").addEventListener("click", (e) => { e.preventDefault(); $("name
 function joinWait(on, text = "") {
   $("join-screen").classList.toggle("waiting", !!on);
   $("join-wait").hidden = !on;
-  if (text) $("jw-t").textContent = text;
+  if (text) {
+    const m = /^(.*room )([A-Z0-9]{4,6})(.*)$/.exec(text), el = $("jw-t");
+    if (m) { const b = document.createElement("b"); b.textContent = m[2]; el.replaceChildren(m[1], b, m[3]); } else el.textContent = text;
+  }
 }
 function joinFailed(text) {
   joinWait(false);
@@ -603,7 +649,7 @@ async function start(create, resume = null) {
     const timeout = setTimeout(() => {
       const ice = conn.peerConnection?.iceConnectionState;
       joinFailed(ice === "checking" || ice === "failed" || ice === "disconnected"
-        ? "found the room, but the direct connection failed (strict NAT/firewall on one side) — trying relay, give it ~20s or try another network"
+        ? "found the room, but the direct connection failed (strict NAT/firewall on one side). Trying a relay: give it ~20 s, or try another network"
         : "no room with that code (is the host page open?)");
     }, 15000);
     conn.on("open", () => {
@@ -683,6 +729,7 @@ function computeState() {
     total: ai.cfg?.num_hidden_layers || spanMax || 0,
     phase: online ? "serving" : loading ? "loading" : "idle",
     pct: ai.myPct ?? (ai.prog || {})[myName] ?? null,
+    color: devColor(myName),
   };
 }
 const compute = computeScreen({ state: computeState, keepAwake });
@@ -691,6 +738,8 @@ $("create-btn").addEventListener("click", () => { keepAwake(); start(true); });
 // (auto-rejoin removed: the user prefers to see what happened)
 $("join-btn").addEventListener("click", () => { keepAwake(); start(false); });
 $("code-input").addEventListener("keydown", (e) => { if (e.key === "Enter") start(false); });
+const codeReady = () => $("join-btn").classList.toggle("ready", /^[A-Z0-9]{4,6}$/i.test($("code-input").value.trim()));
+$("code-input").addEventListener("input", codeReady);
 // Virtual devices: the host can add devices that are iframes of this page on this same computer.
 // Each joins the room like any other device (its own WebGPU device, its own WebRTC link, its own
 // layers), which shows what a room does before friends arrive; the GPU is shared, so it is a
@@ -731,12 +780,15 @@ function openShare() {
   $("share-code").textContent = roomCode;
   $("share-native").hidden = !navigator.share;
   $("share").hidden = false;
+  $("share-close").focus({ preventScroll: true });
 }
 $("room-badge").addEventListener("click", openShare);
 $("share-btn").addEventListener("click", openShare);
-for (const b of document.querySelectorAll("[data-invite]")) b.addEventListener("click", openShare);
-$("share-close").addEventListener("click", () => { $("share").hidden = true; });
-$("share").addEventListener("click", (e) => { if (e.target === $("share")) $("share").hidden = true; });
+for (const b of document.querySelectorAll("[data-invite]")) b.addEventListener("click", (e) => { e.preventDefault(); openShare(); });
+function closeShare() { $("share").hidden = true; if (document.body.classList.contains("in-room")) $("share-btn").focus({ preventScroll: true }); }
+$("share-close").addEventListener("click", closeShare);
+$("share").addEventListener("click", (e) => { if (e.target === $("share")) closeShare(); });
+$("room-over-close").addEventListener("click", () => { $("room-over").hidden = true; });
 $("share-copy").addEventListener("click", copyRoomLink);
 $("share-native").addEventListener("click", () => navigator.share?.({ title: "Join my Pooled room", text: `Room ${roomCode}: lend this device to the AI model we run together`, url: roomLink() }).catch(() => {}));
 $("room-over-new").addEventListener("click", () => { location.href = location.pathname.startsWith("/r/") ? "/room" : location.pathname.replace(/\?.*$/, ""); });
@@ -758,7 +810,7 @@ if (VQ.get("embed") === "1") document.documentElement.classList.add("embed");
 if (VQ.get("vname")) $("name-input").value = VQ.get("vname").slice(0, 20);
 if (+VQ.get("vgb") > 0) $("join-gb").value = +VQ.get("vgb");
 if (linkCode) {
-  $("code-input").value = linkCode;
+  $("code-input").value = linkCode; codeReady();
   joinWait(true, `Joining room ${linkCode}`);
   $("join-status").textContent = "Checking this device\u2026";
   metaPromise.then(() => { if (!peer) start(false); });
@@ -993,11 +1045,10 @@ function loadCardRender() {
   const names = [myName, ...[...conns.values()].map((c) => c.name)];
   const by = ai.layersByName || {};
   const order = Object.keys(by);
-  const idx = (nm) => { const k = order.indexOf(nm); return k < 0 ? names.indexOf(nm) : k; };
   rows.innerHTML = names.map((nm) => {
     const pct = Math.max(0, Math.min(100, (ai.prog || {})[nm] ?? 0));
     const l = by[nm];
-    return `<div class="lc-row${pct >= 100 ? " done" : ""}${l || !order.length ? "" : " out"}" style="--sw:${swatch(idx(nm))}"><i class="sw"></i><div class="n">${esc(String(nm))}${nm === myName ? " <small>(you)</small>" : ""}</div><div class="bar"><div class="fill" style="width:${pct}%"></div></div><div class="pct">${pct >= 100 ? (l ? '<span class="lw">layers </span>' + esc(humanRange(l)) : "ready") : pct + "%"}</div></div>`;
+    return `<div class="lc-row${pct >= 100 ? " done" : ""}${l || !order.length ? "" : " out"}" style="--sw:${devColor(nm)}"><i class="sw"></i><div class="n">${esc(String(nm))}${nm === myName ? " <small>(you)</small>" : ""}</div><div class="bar"><div class="fill" style="width:${pct}%"></div></div><div class="pct">${pct >= 100 ? (l ? '<span class="lw">layers </span>' + esc(humanRange(l)) : "ready") : pct + "%"}</div></div>`;
   }).join("");
   // the model as a strip of layers: each device's share fills in as its download goes
   const spans = order.map((nm) => { const m = /^(\d+)\D+(\d+)$/.exec(by[nm]); return m ? { nm, lo: +m[1], hi: +m[2] + 1 } : null; }).filter(Boolean);
@@ -1010,7 +1061,7 @@ function loadCardRender() {
     const L = c * per, sp = spans.find((x) => L >= x.lo && L < x.hi);
     const pct = sp ? (ai.prog || {})[sp.nm] ?? 0 : 0;
     const got = sp && (L - sp.lo) / Math.max(1, sp.hi - sp.lo) * 100 < pct;
-    html += `<i${got ? ` style="background:${swatch(spans.indexOf(sp))}"` : ""}></i>`;
+    html += `<i${got ? ` style="background:${devColor(sp.nm)}"` : ""}></i>`;
   }
   strip.innerHTML = html;
   $("lc-sum").textContent = `${total} layers · ${spans.length} device${spans.length > 1 ? "s" : ""}`;
@@ -1165,7 +1216,7 @@ function speak(raw) {
 function setDraftView(on) {
   draftView = on;
   $("draft-view").classList.toggle("on", on);
-  $("draft-view").textContent = on ? "hide drafts" : "show drafts";
+  $("draft-view").textContent = on ? "Hide drafts" : "Show drafts";
   for (const m of document.querySelectorAll("#ai-output .m.bot")) if (m.pieces) renderBot(m, m === botEl);
   if (on) toast("blue: guessed by the draft head · green: copied from earlier in the chat · both confirmed by the whole room in one lap");
 }
@@ -1601,7 +1652,7 @@ function aiPeerLeft(id, name) {
   ai.fed = null; ckptClear();
   failWaiters(new Error(why));
   $("ai-row").style.display = ai.engine ? "flex" : "none";
-  aiStatus(`${why} — re-deal the layers to keep going`);
+  aiStatus(`${why}: re-deal the layers to keep going`);
   showRedeal(true, `${why}. Re-deal to split the model over the devices still here; cached layers reload in seconds.`);
   broadcastAll({ t: "ai-degraded", why });
   codeRoleChanged();
@@ -1639,12 +1690,13 @@ function aiMaybeReady() {
   ai.degraded = false;
   ai.busy = false;
   showRedeal(false);
-  aiStatus(`cluster online — ${n} device${n > 1 ? "s" : ""}, ${ai.cfg.num_hidden_layers} layers split ${n} ways`);
+  aiStatus(`cluster online · ${n} device${n > 1 ? "s" : ""}, ${ai.cfg.num_hidden_layers} layers split ${n} ways`);
   clearInterval(ai.progTimer);
   $("ai-panel").classList.add("online");
   $("ai-row").style.display = "flex";
   $("chat-tools").hidden = false;
   $("new-chat").hidden = false;
+  $("mode-bar").hidden = false;
   setAfterAnswer(false, !!ai.conv.turns.length);
   emptyText("The model is ready. Ask anything.");
   sysNote(`Model ready on ${n} device${n > 1 ? "s" : ""}`);
@@ -1889,9 +1941,6 @@ function mapStats(tps, acc) {
   return { tps, acc, lap: Math.round(lap), gpu: Math.round(gpu), net: Math.max(0, Math.round(lap - gpu)) };
 }
 let lastMap = null, bestTps = 0;
-// one colour per device in the chain: the landing's blue, then its near-black, then lighter blues
-const SWATCH = ["#2A45E0", "#2B2F3C", "#8EA2FF", "#4A5FD0", "#5E616B", "#C3CCF8", "#1F2FA8", "#9AA8F0"];
-const swatch = (i) => i < 0 ? "var(--faint)" : SWATCH[i % SWATCH.length];
 function renderMap(nodes, st, live) {
   const el = $("swarm-map"); if (!el || !nodes?.length) return;
   lastMap = { nodes, st: { ...(lastMap?.st || {}), ...(st || {}) } };
@@ -1924,13 +1973,13 @@ function renderMap(nodes, st, live) {
       for (; c < n && c * per < sp.hi; c++) cells += `<i style="--c:${c};grid-column:${c + 1}"></i>`;
       const dev = [...conns.values()].find((e) => e.name === sp.name)?.meta;
       const icon = iconFor(sp.name === myName ? myMeta : dev || {});
-      return `<div class="sm-half" data-name="${esc(String(sp.name))}" style="--sw:${swatch(sp.i)};--c0:${c0}" title="${esc(String(sp.name))}: layers ${sp.lo + 1}–${sp.hi}"><p class="hl"><i class="act" aria-hidden="true"></i>${icon}<b>${esc(String(sp.name))}</b><span class="lr">layers ${sp.lo + 1}–${sp.hi}</span><span class="lms"></span></p><div class="cells">${cells}</div></div>`;
+      return `<div class="sm-half" data-name="${esc(String(sp.name))}" style="--sw:${devColor(sp.name)};--c0:${c0}" title="${esc(String(sp.name))}: layers ${sp.lo + 1}–${sp.hi}"><p class="hl"><i class="act" aria-hidden="true"></i>${icon}<b>${esc(String(sp.name))}</b><span class="lr">layers ${sp.lo + 1}–${sp.hi}</span><span class="lms"></span></p><div class="cells">${cells}</div></div>`;
     }).join("");
     strip.style.setProperty("--cells", n);
     el.style.setProperty("--lanes", Math.max(1, sorted.length));
     el.toggleAttribute("data-many", sorted.length > 4);
     // folded: the same split as one thin bar
-    el.querySelector(".sm-mini").innerHTML = sorted.map((sp, k) => `<i style="--sw:${swatch(sp.i)};--n:${Math.max(1, sp.hi - sp.lo)};--k:${k}"></i>`).join("");
+    el.querySelector(".sm-mini").innerHTML = sorted.map((sp, k) => `<i style="--sw:${devColor(sp.name)};--n:${Math.max(1, sp.hi - sp.lo)};--k:${k}"></i>`).join("");
   }
   // each lane's own time per token (what its GPU spends on its layers)
   for (const lane of strip.querySelectorAll(".sm-half")) {
@@ -1943,7 +1992,7 @@ function renderMap(nodes, st, live) {
   // the device cards say which layers they hold, in the strip's colours
   for (const card of document.querySelectorAll("#peers .peer-card")) {
     const k = nodes.findIndex((x) => x.name === card.dataset.name);
-    card.style.setProperty("--sw", swatch(k));
+    card.style.setProperty("--sw", devColor(card.dataset.name));
     card.style.setProperty("--k", Math.max(0, k));
     card.classList.toggle("holds", k >= 0 && !!nodes[k].layers);
     card.querySelector(".play").textContent = k >= 0 && nodes[k].layers ? `layers ${humanRange(nodes[k].layers)}` : "";
@@ -1955,7 +2004,7 @@ function renderMap(nodes, st, live) {
   el.querySelector(".sm-live").title = live ? "the room is writing an answer" : "waiting for a question";
   const bits = [];
   if (st?.tps) bits.push(`${st.tps.toFixed(1)} tok/s`);
-  if (st?.lap) bits.push(DEV ? `lap ${st.lap} ms = GPUs ${st.gpu} + wire ${st.net}` : `${st.lap} ms a lap`);
+  if (st?.lap) bits.push(DEV ? `lap ${st.lap} ms = GPUs ${st.gpu} + wire ${st.net}` : `${st.lap} ms per word`);
   if (st?.acc != null && DEV) bits.push(`${Math.round(st.acc * 100)}% of drafts accepted`);
   el.querySelector(".sm-meta").textContent = bits.join(" · ") || `${nodes.length} device${nodes.length > 1 ? "s" : ""}`;
   el.querySelector(".sm-meta").title = `${nodes.length} device${nodes.length > 1 ? "s" : ""}: every token takes a lap through all of them`;
@@ -1966,7 +2015,7 @@ const bandMode = () => ($("chatpane").classList.contains("code-mode") ? "code" :
 function bandFolded() {
   let v = null;
   try { v = localStorage.getItem("pooled-band-" + bandMode()); } catch {}
-  return v ? v === "folded" : bandMode() === "code" && innerWidth < 820;   // on a phone, Code starts with it folded
+  return v ? v === "folded" : bandMode() === "code" || innerWidth < 820;   // Code, and phones, start with it folded
 }
 function bandFold(on, save = false) {
   const el = $("swarm-map"), b = $("band-toggle");
@@ -1979,6 +2028,30 @@ function bandFold(on, save = false) {
 $("band-toggle").addEventListener("click", () => bandFold(!$("swarm-map").classList.contains("folded"), true));
 bandFold(bandFolded());
 new MutationObserver(() => bandFold(bandFolded())).observe($("chatpane"), { attributes: true, attributeFilter: ["class"] });
+// Chat | Code sits in the room bar at 820px and wider (the same node, moved), in its own strip on phones
+{
+  const home = document.querySelector(".mode-row"), wide = matchMedia("(min-width: 821px)");
+  const place = () => { const b = $("mode-bar"); if (wide.matches) { if (b.parentNode !== $("room-badge").parentNode) $("room-badge").after(b); } else if (b.parentNode !== home) home.append(b); };
+  place(); wide.addEventListener("change", place);
+}
+// phones: the chat stays on the newest message when the screen shrinks (the keyboard opens), if
+// the reader was at the bottom; while typing, the header chips, the band and Chat | Code step aside
+{
+  const out = $("ai-output");
+  let atEnd = true;
+  out.addEventListener("scroll", () => { atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 40; }, { passive: true });
+  const stick = () => { if (atEnd) out.scrollTop = out.scrollHeight; };
+  new ResizeObserver(stick).observe(out);
+  const coarse = matchMedia("(pointer: coarse)");
+  const kbd = () => {
+    const a = document.activeElement, typing = a && (a.id === "ai-prompt" || a.id === "code-prompt");
+    document.body.classList.toggle("kbd", !!(typing && coarse.matches && (visualViewport?.height ?? innerHeight) < 600));
+    stick();
+  };
+  visualViewport?.addEventListener("resize", kbd);
+  document.addEventListener("focusin", kbd);
+  document.addEventListener("focusout", () => setTimeout(kbd, 0));
+}
 // a token came out: a sweep runs along the layer strip and through the device cards. At most one
 // sweep per lap; tokens that come faster ride along with the one running.
 let pulseAt = 0, bandTokens = 0;
@@ -2946,7 +3019,7 @@ if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "lo
       ai.range = mine ? [+mine[1], +mine[2] + 1] : null;
       ai.prog = Object.fromEntries(names().map((nm, i) => [nm, Math.round(Math.min(100, p * 100 * (1 + i * 0.6)))]));
       ai.myPct = ai.prog[myName];
-      aiLoading(true, `Loading Qwen 3.6 35B MoE`);
+      aiLoading(true, `Loading Qwen3.6 35B MoE`);
       const total = 3.1 * 2 ** 30, done = p * total, now = performance.now();
       ai.netBytes = cache ? 0 : done; ai.peerBytes = 0; cacheHits = cache ? done : 0;
       Object.assign(eta, { t0: now - (early ? 6000 : 48000), t: now, done, rate: (total - done) / 128, hist: [] });
