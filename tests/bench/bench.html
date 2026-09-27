@@ -45,7 +45,8 @@ async function wcacheEntry(device, info) {
   return { kind, shape: info.shape, gpu: { kind, qs, sc } };
 }
 try {
-  const ad = await navigator.gpu.requestAdapter(); const device = await ad.requestDevice({ requiredLimits: { maxBufferSize: ad.limits.maxBufferSize, maxStorageBufferBindingSize: ad.limits.maxStorageBufferBindingSize } });
+  const ad = await navigator.gpu.requestAdapter(); const device = await ad.requestDevice({ requiredLimits: { maxBufferSize: ad.limits.maxBufferSize, maxStorageBufferBindingSize: ad.limits.maxStorageBufferBindingSize,
+    ...(q.has("ubatch") ? { maxComputeWorkgroupStorageSize: ad.limits.maxComputeWorkgroupStorageSize } : {}) } });
   const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer); const tok = makeTokenizer(tokenizerFromGGUF(G.meta));
   const arch = G.meta["general.architecture"], L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
   // stream Q4_0/Q8_0 tensors straight into GPU buffers, as the room does (a 21 GB model does not fit in a tab's JS heap)
@@ -59,17 +60,34 @@ try {
   // draft-side A/B knobs (speed only, the output must not change): draftvocab=N (0 = full head),
   // dvauto=0 (small head always, no language fallback), mtprefill=0 (one refill submit per row),
   // predraft=0 (no pre-run of the next step's first draft), batchcols=N, draftchain=0, specfuse=0
+  // wide prefill (engine option prefillUbatch, off by default): ubatch=256 [tile={"BM":64,...}];
+  // prefilllen=N times prefillTokens over N tokens with the wide path off and on (logits compared)
   const opt = (k, d) => (q.has(k) ? +q.get(k) : d);
   const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,
     draftVocab: opt("draftvocab", 0), draftVocabAuto: opt("dvauto", 1) !== 0, ...(q.has("batchcols") ? { batchCols: +q.get("batchcols"), coopRowsB: +q.get("batchcols") >= 16 ? 1 : 4 } : {}),
     draftChain: q.get("draftchain") !== "0", specFuse: q.get("specfuse") !== "0",
     moeFuse: q.get("moefuse") !== "0", moeDnRows: +(q.get("moednrows") || 1),
+    prefillUbatch: opt("ubatch", 0), ...(q.get("tile") ? { prefillTile: JSON.parse(q.get("tile")) } : {}),
     moeKernel: MOEK });   // ?moefuse=0: unfused MoE (A/B); ?moe=legacy|default|JSON: unfused expert GEMV layout
   eng.mtpBatchRefill = opt("mtprefill", 1) !== 0; eng.mtpPreDraft = opt("predraft", 1) !== 0;
   log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s${G.entryCache ? " (pre-converted tensors from serve.mjs)" : ""}, mtp ${!!eng.mtp}, adapter ${ad.info?.vendor}, draftVocab ${eng.draftVocab || "off"}, refill ${eng.mtpBatchRefill ? "batched" : "per-row"}, predraft ${eng.mtpPreDraft}`);
   log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}, fuseProj ${eng.fuseProj}, moeFuse ${!!eng.moeFuse} R ${eng.moe?.R}, moeKernel ${JSON.stringify(eng.moeK)}`);
   const V = tok.vocab, chat = (s) => [V["<|im_start|>"], ...tok.encode("user\n" + s), V["<|im_end|>"], ...tok.encode("\n"), V["<|im_start|>"], ...tok.encode("assistant\n"), V["<think>"], ...tok.encode("\n\n"), V["</think>"], ...tok.encode("\n\n")];
   const out = [];
+  if (q.has("prefilllen")) {   // prefill speed, wide path off / on, same tokens (this page's own source, repeated)
+    let pids = tok.encode(document.documentElement.outerHTML); while (pids.length < +q.get("prefilllen")) pids = pids.concat(pids);
+    pids = pids.slice(0, +q.get("prefilllen"));
+    const res = {};
+    for (const wide of eng.ubatch ? [false, true] : [false]) {
+      eng.reset(); eng.prefillWide = wide; if (eng.mtp) eng.mtpFill = true;
+      const t1 = performance.now(); await eng.prefillTokens(pids.slice(0, -1)); const lg = Float32Array.from(await eng.forwardToken(pids.at(-1)));
+      res[wide ? "wide" : "default"] = { tokps: +(pids.length / ((performance.now() - t1) / 1000)).toFixed(1), argmax: argmax(lg), lg };
+    }
+    if (res.wide) { let md = 0, sc = 1e-6; for (let i = 0; i < res.wide.lg.length; i++) { md = Math.max(md, Math.abs(res.wide.lg[i] - res.default.lg[i])); sc = Math.max(sc, Math.abs(res.default.lg[i])); } res.relDiff = +(md / sc).toExponential(2); }
+    for (const k of ["default", "wide"]) if (res[k]) delete res[k].lg;
+    eng.prefillWide = !!eng.ubatch;
+    log("prefill " + JSON.stringify({ tokens: pids.length, ubatch: eng.ubatch, tile: eng.wideCfg, ...res })); out.push({ prefill: res });
+  }
   for (const [i, prompt] of ["Write the Python code for two sum. Code only.", "Explain what a hash map is in two sentences."].entries()) {
     const ids = chat(prompt);
     eng.reset(); if (eng.mtp) eng.mtpFill = false; await eng.prefillTokens(ids.slice(0, -1)); let lg = await eng.forwardToken(ids.at(-1));
