@@ -496,3 +496,9 @@ greedy and 0/32 top-40 mismatches; `test_moe_split.js`; `test_prefill_opts.js` 2
 live `engine/qwen35.js`: editing the engine changed the 700-token MoE prompt and its all-on vs all-off relDiff
 (1.5e-3 -> 3.0e-2, over the 2e-2 gate) with identical kernels (same prompt file, both builds: 8.25e-3 and 2.53e-3
 on each). With the fixture the numbers equal v1.0.0's (1.48e-3 / 1.27e-3).
+
+Not in v1: `exp/moe-fused-layout` (its "tuned" preset measured +5 % speculative in Chrome on the old base, still
+flag-off with no keep verdict), `exp/chain-fuse`, `exp/tail-head` and `exp/k-probe` had no GPU validation verdict
+by the cut-off, and each conflicts with v1 in `engine/qwen35.js` / `room.js` / the test harnesses. `exp/one-sync-hop`
+(no speedup; its one-submit readback overlaps v1's encode-ahead, conflicts in 5 files) and `exp/wire-rtt` (nothing
+to gain) are left out too.
