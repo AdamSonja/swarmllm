@@ -24,6 +24,7 @@ while (ids.length < FILL + 16) ids = ids.concat(ids);
 await eng.prefillTokens(ids.slice(0, FILL));
 let t0 = performance.now(); for (let i = 0; i < 10; i++) await eng.forwardToken(ids[FILL + i]); const wall = (performance.now() - t0) / 10;
 const base = eng.pos;
+eng.encodeAhead = false; eng._fwdPre = null;   // the hook must see every recorded dispatch
 
 const MAXQ = 8192, qs = device.createQuerySet({ type: "timestamp", count: MAXQ });
 const res = device.createBuffer({ size: MAXQ * 8, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });

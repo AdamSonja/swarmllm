@@ -325,13 +325,35 @@ export class DenseEngine {
   }
 
   // host peer: full forward for one token -> logits.
-  // Whole token (all layers + head) is recorded into ONE command encoder and
-  // submitted once: per-submit validation/IPC used to cost ~67 submits/token.
+  // Whole token (all layers + head + the logits copy) is recorded into ONE command encoder and
+  // submitted once. Encode-ahead: while the GPU runs token N and we wait for its logits, the command
+  // buffer for position N + 1 is recorded too (a command buffer depends only on the position and the
+  // runtime switches, never on the token id: the embedding row and the frame uniform are written with
+  // queue.writeBuffer at call time), so the next call submits at once instead of spending the CPU
+  // encode time on the critical path. Same commands, same bits. engine.encodeAhead = false for A/B.
+  _fwdKey() { return `${this.attnFast}`; }
+  _encodeForward(pos) {
+    const { vocab } = this.dims;
+    const save = this.pos;
+    this.pos = pos;
+    const enc = this.device.createCommandEncoder();
+    for (let i = 0; i < this.layers.length; i++) this._encodeLayer(enc, i);
+    const pass = enc.beginComputePass();
+    this._dispatch(pass, "rmsnorm", this.bgFinalNorm, 256, 256);
+    this._dispatchOp(pass, this.headOp);
+    pass.end();
+    this.pos = save;
+    this._stageI = (this._stageI || 0) ^ 1;   // alternate staging buffers: one can still be mapped
+    const stage = this._stageI ? (this.stageLogits2 ||= this.device.createBuffer({ size: vocab * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })) : this.stageLogits;
+    enc.copyBufferToBuffer(this.logits, 0, stage, 0, vocab * 4);
+    return { pos, key: this._fwdKey(), cb: enc.finish(), stage };
+  }
   async forwardToken(tokenId, debugCapture) {
     const { dim, vocab } = this.dims;
     this._setFrame(this.pos, this.pos + 1);
     this._stageEmbed(tokenId);
     if (debugCapture) {           // slow path: per-layer readback for tests
+      this._fwdPre = null;
       for (let i = 0; i < this.layers.length; i++) {
         const e2 = this.device.createCommandEncoder();
         this._encodeLayer(e2, i);
@@ -344,16 +366,19 @@ export class DenseEngine {
       this._dispatchOp(pass, this.headOp);
       pass.end();
       this.device.queue.submit([e3.finish()]);
-    } else {
-      const enc = this.device.createCommandEncoder();
-      for (let i = 0; i < this.layers.length; i++) this._encodeLayer(enc, i);
-      const pass = enc.beginComputePass();
-      this._dispatch(pass, "rmsnorm", this.bgFinalNorm, 256, 256);
-      this._dispatchOp(pass, this.headOp);
-      pass.end();
-      this.device.queue.submit([enc.finish()]);
+      const logits = await this._readback(this.logits, this.stageLogits, vocab);
+      this.pos++;
+      return logits;
     }
-    const logits = await this._readback(this.logits, this.stageLogits, vocab);
+    const pre = this._fwdPre;
+    this._fwdPre = null;
+    const job = pre && pre.pos === this.pos && pre.key === this._fwdKey() ? pre : this._encodeForward(this.pos);
+    this.device.queue.submit([job.cb]);
+    const mapped = job.stage.mapAsync(GPUMapMode.READ);
+    if (this.encodeAhead !== false && this.pos + 1 < this.maxSeq) this._fwdPre = this._encodeForward(this.pos + 1);
+    await mapped;
+    const logits = Float32Array.from(new Float32Array(job.stage.getMappedRange(), 0, vocab));
+    job.stage.unmap();
     this.pos++;
     return logits;
   }
