@@ -232,6 +232,10 @@
   const rungSelect = k => { rungs.forEach((li, i) => li.classList.toggle("sel", i === k)); ticks.forEach((tk, i) => tk.classList.toggle("sel", i === k)); paintPool(false); };
 
   /* ---------- 4: the layers are dealt; each device downloads only its own ---------- */
+  // the load card (as the room's #load-card): a percent and a bar per device, the layers strip, the bytes and time left
+  const lcRows = [...$("lcRows").children], lcStrip = [...$("lcStrip").children], lcStatus = $("lcStatus");
+  const LC_RANGE = ["1\u201317", "18\u201337", "38\u201340"];
+  let lcKey = "";
   const segs = [0, 1, 2].map(k => [...$("cells" + k).children]);
   const cells = segs.flat();
   cells.forEach((cel, i) => cel.style.setProperty("--k", i));
@@ -243,6 +247,7 @@
     segs[k].forEach((cel, i) => {
       const on = i < n;
       if (on !== cel.classList.contains("f")) { cel.classList.toggle("f", on); if (on && !RM) restart(cel, "f"); }
+      lcStrip[[0, 17, 37][k] + i].classList.toggle("f", on);
     });
     filled[k] = n;
     const all = segs[k].length, gb = (SEG_GB[k] * n / all).toFixed(1);
@@ -263,15 +268,33 @@
     else mdS.textContent = txt;
     if (eta) { const e = document.createElement("span"); e.className = "eta" + (fresh && !RM ? " in" : ""); e.textContent = " · " + eta; mdS.append(e); }
   };
+  const lcPaint = (pcts, gb, eta) => {
+    const key = pcts.join() + "|" + gb + "|" + eta;
+    if (key === lcKey) return;
+    lcKey = key;
+    lcRows.forEach((rw, k) => {
+      const pct = pcts[k], done = pct >= 100;
+      rw.classList.toggle("done", done);
+      rw.querySelector(".fill").style.width = pct + "%";
+      rw.querySelector(".pct").innerHTML = done ? `<span class="lw">layers </span>${LC_RANGE[k]}` : pct + "%";
+    });
+    // before the bytes flow the room says what this device is doing; then the bytes, the total and the time left
+    const b = +gb >= 1 ? gb + " GB" : Math.round(gb * 1024) + " MB";
+    lcStatus.innerHTML = gb == null ? '<span class="src gpu">This device</span><span>Getting this device ready</span>'
+      : `<span class="src">Downloading</span><span class="b">${b} of 22.5 GB</span>` + (eta ? `<span class="eta${/^estimating/.test(eta) ? " wait" : ""}">${eta}</span>` : "");
+  };
   const loadAt = t => {
-    if (t < FILL0) { [0, 1, 2].forEach(k => fillSeg(k, 0)); setMd("22.5 GB · 40 layers · split 3 ways by memory"); return; }
+    if (t < FILL0) { [0, 1, 2].forEach(k => fillSeg(k, 0)); lcPaint([0, 0, 0], null, ""); setMd("22.5 GB · 40 layers · split 3 ways by memory"); return; }
     const p0 = clamp01((t - FILL0) / (CACHE1 - FILL0)), p = clamp01((t - FILL0) / (FILL1 - FILL0)), p2 = clamp01(p * 1.3);
     fillSeg(0, Math.ceil(17 * p0)); fillSeg(1, Math.ceil(20 * p)); fillSeg(2, Math.ceil(3 * p2));
-    if (p >= 1) { setMd("Ready on 3 devices · 40 layers, split by memory"); return; }
+    const pcts = [p0, p, p2].map(x => Math.round(x * 100));
+    if (p >= 1) { lcPaint(pcts, "22.5", ""); setMd("Ready on 3 devices · 40 layers, split by memory"); return; }
     const gb = (SEG_GB[0] * p0 + SEG_GB[1] * p + SEG_GB[2] * p2).toFixed(1);
     // what is left, at about 50 MB/s: a believable home connection, not the demo's own pace
     const left = (SEG_GB[1] + SEG_GB[2]) * (1 - clamp01((t - ETA0) / (FILL1 - ETA0)) * .75) * .85, mins = Math.round(left / .05 / 60);
-    setMd(`Downloading · ${gb} of 22.5 GB`, t < ETA0 ? "estimating time" : mins >= 1 ? `about ${mins} min left` : "under a minute left");
+    const eta = t < ETA0 ? "estimating time" : mins >= 1 ? `about ${mins} min left` : "under a minute left";
+    lcPaint(pcts, gb, t < ETA0 ? "estimating time left" : mins > 1 ? eta : "about a minute left");
+    setMd(`Downloading · ${gb} of 22.5 GB`, eta);
   };
 
   /* ---------- 5: a hidden state, through every layer, once per word ---------- */
