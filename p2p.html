@@ -290,14 +290,17 @@
   .m.bot.live .wd i:nth-child(2), #swarm-map.live .wd i:nth-child(2) { animation-delay: .33s; }
   .m.bot.live .wd i:nth-child(3), #swarm-map.live .wd i:nth-child(3) { animation-delay: .66s; }
   .sm-strip { display: flex; align-items: flex-end; gap: 0; min-width: 0; }
-  .sm-half { --sw: var(--faint); flex: var(--n) 1 0; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
-  .sm-gap { flex: 0 0 clamp(14px, 3vw, 44px); align-self: stretch; position: relative; }
-  .sm-gap::after { content: ""; position: absolute; left: 4px; right: 4px; bottom: 11px; height: 2px; background: repeating-linear-gradient(90deg, var(--border-2) 0 4px, transparent 4px 8px); }
+  .sm-half { --sw: var(--faint); flex: var(--n) 1 0; min-width: min(172px, 28%); display: flex; flex-direction: column; gap: 7px; }
+  .sm-gap { flex: 0 0 clamp(14px, 8vw, 132px); align-self: stretch; position: relative; }
+  .sm-gap::before { content: "hidden state"; position: absolute; left: 0; right: 0; bottom: 21px; text-align: center; font: 400 10.5px/1 var(--mono); color: var(--muted); white-space: nowrap; }
+  #room-screen.sweep .sm-gap::before { animation: hs calc(var(--lap) * .9) var(--ease); }
+  @keyframes hs { 40%, 60% { color: var(--accent-text); } }
+  .sm-gap::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: 14px; height: 2px; background: repeating-linear-gradient(90deg, var(--border-2) 0 4px, transparent 4px 8px); }
   .hl { display: flex; align-items: center; gap: 7px; height: 16px; min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
   .hl svg { flex: none; width: 13px; height: 13px; color: var(--ink-2); }
   .hl b { font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .hl span { margin-left: auto; padding-left: 8px; font: 400 11.5px/1 var(--mono); flex: none; }
-  .cells { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2.5px; height: 24px; }
+  .cells { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2.5px; height: 30px; }
   .cells i { border-radius: 2.5px; background: var(--sw); transform-origin: center bottom; }
   #room-screen.sweep .sm-strip .cells i { animation: cellhot calc(var(--lap) * .9) var(--ease) both; animation-delay: calc(var(--lap) * .9 * var(--c) / var(--cells, 40)); }
   @keyframes cellhot { 0%, 100% { transform: none; filter: none; box-shadow: none; } 30% { transform: scaleY(1.25); filter: brightness(1.45) saturate(1.2); box-shadow: 0 0 10px rgba(49,82,255,.55); } }
@@ -555,6 +558,8 @@
   #chatpane.code-mode :is(.sm-head, .sm-track, .hl) { display: none; }
   #chatpane.code-mode .cells { height: 6px; gap: 1.5px; }
   #chatpane.code-mode .sm-gap::after { bottom: 2px; }
+  #chatpane.code-mode .sm-gap { flex-basis: 24px; }
+  #chatpane.code-mode .sm-gap::before { display: none; }
   #chatpane.code-mode .mode-row { padding: 10px 16px; border-bottom: 1px solid var(--rule-2); background: var(--panel-3); }
   #code-pane { display: none; }
   #chatpane.code-mode #code-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
@@ -739,7 +744,7 @@
     #code-out { order: 2; border-top: 1px solid var(--rule-2); }
     #code-log { max-height: 62vh; }
   }
-  @container pane (max-width: 1000px) { .sm-meta { display: none; } }
+  @container pane (max-width: 1000px) { .sm-meta { display: none; } .sm-gap::before { display: none; } }
   @container pane (max-width: 700px) { .sm-track { display: none; } }
   .hbrk { display: none; }
 
@@ -772,7 +777,8 @@
     #swarm-map { padding: 12px 12px 14px; gap: 8px; }
     .hl span, .hl svg { display: none; }
     .hl { font-size: 12px; }
-    .cells { gap: 1.5px; height: 22px; }
+    .cells { gap: 1.5px; height: 24px; }
+    .sm-gap::after { bottom: 11px; }
     .cells i { border-radius: 1.5px; }
     .mode-row { padding-top: 10px; }
     #ai-empty { padding: 28px 20px 0; font-size: 22px; }
@@ -844,7 +850,7 @@
     <summary aria-label="Room menu" title="Room menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="13" cy="8" r="1.4"/></svg></summary>
     <div class="menu-pop">
       <div id="cluster-bar">In this room: <b id="cluster-summary">1 device</b> <span class="sr-only">(<span id="peers-n">1</span>)</span></div>
-      <details id="host-controls" class="host-section" hidden>
+      <details id="host-controls" class="host-section" open hidden>
         <summary>Room settings</summary>
         <label for="ai-visibility">who sees the chat</label>
         <select id="ai-visibility" class="host-select">
