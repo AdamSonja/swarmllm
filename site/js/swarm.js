@@ -114,9 +114,9 @@
       const peers = P.filter(p => p.blue && into(p) < .2);
       ctx.lineWidth = .8;
       for (let i = 0; i < peers.length; i++) for (let j = i + 1; j < peers.length; j++) {
-        const a = peers[i], b = peers[j], dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy, R = W < 640 ? 100 : 150;
+        const a = peers[i], b = peers[j], dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy, R = W < 640 ? 90 : 130;
         if (d2 > R * R) continue;
-        const al = (1 - Math.sqrt(d2) / R) * .14;
+        const al = (1 - Math.sqrt(d2) / R) * .12;
         ctx.strokeStyle = `rgba(49,82,255,${al.toFixed(3)})`;
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
