@@ -1,4 +1,4 @@
-// "Lend this device": a full-screen view for a device that is only lending its memory and GPU (a phone on a
+// This device's screen: a full-screen view for a device that is only lending its memory and GPU (a phone on a
 // charger, a laptop in the corner). It shows which layers this device holds, and a packet of dots
 // runs through the logo every time a real forward pass runs here. Pure presentation: it reads the
 // room's state through `state()` and is told about passes by `pass(n, ms)`; it never touches the
@@ -125,7 +125,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     }
     else if (s.phase === "loading") { k = `Getting ready to run ${s.model}`; title = has ? `Loading layers ${lay}` : "Loading the model"; sub = `${s.pct != null ? `${Math.round(s.pct)}% · ` : ""}only this device's layers download`; }
     else if (s.phase === "serving") { k = `The room is running ${s.model}`; title = "No layers here"; sub = "The other devices hold the model. This one can still ask."; }
-    else { k = "Not serving yet"; title = "Ready to lend"; sub = "This device starts helping as soon as someone in the room starts a model."; }
+    else { k = "Not serving yet"; title = "Standing by"; sub = "This device starts helping as soon as someone in the room starts a model."; }
     root.dataset.phase = s.phase;
     if (s.color) root.style.setProperty("--me", onDark(s.color));
     // serving, and no pass for a moment: say so, and let the logo rest

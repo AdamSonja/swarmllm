@@ -26,6 +26,7 @@ import { lookupDrafts } from "./room/lookup.js";
 import { drawCard } from "./room/card.js";
 import { probe as preflight, deviceKind } from "./room/preflight.js";
 import { computeScreen } from "./room/compute.js";
+import { working } from "./room/working.js";
 
 // Hidden-state transport (room/transport.js). ?wire=off falls back to PeerJS messages;
 // ?wire=slice uses one sliced channel; ?wire=stripeN spreads slices over N peer connections.
@@ -44,13 +45,20 @@ const members = new Map();   // id -> { name, meta } for everyone in the room ex
 const cards = new Map();     // id -> card element
 
 const $ = (id) => document.getElementById(id);
-function toast(text) {
-  const t = document.createElement("div");
-  t.className = "toast";
+// a short note top right that goes by itself; at most three at a time (the oldest goes first).
+// sw: a device's colour for the dot (joined / left)
+function toast(text, { sw = null, kind = "" } = {}) {
+  const box = $("toasts"), t = document.createElement("div");
+  t.className = "toast" + (kind ? " " + kind : "");
+  if (sw) t.style.setProperty("--sw", sw);
   t.textContent = text;
-  $("toasts").appendChild(t);
+  box.appendChild(t);
+  while (box.children.length > 3) box.firstElementChild.remove();
   setTimeout(() => t.remove(), 4200);
 }
+// someone joined or left: a toast, but not for the devices already here when this tab came in
+let roomSince = Infinity;
+const presence = (name, joined) => { if (performance.now() - roomSince > 2500) toast(`${name} ${joined ? "joined" : "left"}`, { sw: joined ? devColor(name) : "var(--faint)", kind: "presence" }); };
 function mascot() {}
 const PREFIX = "pooled-room-";   // PeerJS id prefix (was "swarmllm-room-" before the rename; PROTOCOL did not change)
 const HOST_KEY = "pooled-host", OLD_HOST_KEY = "swarm-host";   // localStorage: what a host needs to resume its room after a reload (the old key is still read)
@@ -158,6 +166,8 @@ const ICONS = {
   desk: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M1.8 2.8h12.4v8.4H1.8zM8 11.2v2.6M5.2 13.8h5.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
   phone: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="4.5" y="1.5" width="7" height="13" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 12.2h2" stroke="currentColor" stroke-width="1.3"/></svg>',
 };
+// the Pooled dots mark (site/logo/mark.svg), for the buttons that open this device's screen
+const MARK_SVG = '<svg class="mk" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8"/><circle cx="10.2" cy="3.4" r="1.99"/><circle cx="18.5" cy="3.4" r="2.38"/><circle cx="3.4" cy="10.2" r="1.99"/><circle cx="10.2" cy="10.2" r="2.38"/><circle cx="18.5" cy="10.2" r="2.94"/><circle cx="3.4" cy="18.5" r="2.38"/><circle cx="10.2" cy="18.5" r="2.94"/><circle cx="18.5" cy="18.5" r="3.9" fill="#2A45E0"/></svg>';
 const iconFor = (meta) => meta.phone || /iPhone|Android$/.test(meta.ua || "") ? ICONS.phone : /Mac|iPad/.test(meta.ua || "") ? ICONS.laptop : ICONS.desk;
 // "0–19" (what the deal sends) -> "1–20", the way people count layers
 const humanRange = (r) => { const m = /^(\d+)\D+(\d+)$/.exec(String(r || "")); return m ? `${+m[1] + 1}\u2013${+m[2] + 1}` : String(r || ""); };
@@ -178,6 +188,8 @@ function devColor(name) {
   if (!devSlots.has(name)) devSlots.set(name, devSlots.size);
   return SWATCH[devSlots.get(name) % SWATCH.length];
 }
+// text on a device's colour: ink on the light blues and greys, white on the rest
+const onSwatch = (c) => (/^#(7C8FFF|B9C6FF)$/i.test(c) || /faint/.test(c) ? "var(--ink)" : "#fff");
 function peerCard(id, name, meta, self) {
   // a chip in the room bar (the landing's: dot, icon, name, GB); a click opens the device's card
   const card = document.createElement("div");
@@ -194,7 +206,7 @@ function peerCard(id, name, meta, self) {
         <span>rtt <b class="rtt">-</b></span>
         <span>bw <b class="bw">-</b></span>
       </div>
-      ${self ? '<button class="compute-btn" id="compute-btn-self" type="button"><svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="11" height="11" rx="2.2"/><rect x="7" y="7" width="4" height="4" rx=".8"/><path d="M7 1.3v2.2M11 1.3v2.2M7 14.5v2.2M11 14.5v2.2M1.3 7h2.2M1.3 11h2.2M14.5 7h2.2M14.5 11h2.2"/></svg>Lend this device</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}
+      ${self ? '<button class="compute-btn" id="compute-btn-self" type="button">' + MARK_SVG + 'Open this device\'s screen</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}
     </div>`;
   paintCard(card, name, meta, self);
   $("peers").appendChild(card);
@@ -357,6 +369,7 @@ function enterRoom() {
   $("room-screen").style.display = "flex";
   $("room-badge").style.display = "";
   document.body.classList.add("in-room");
+  roomSince = performance.now();
   $("compute-open").hidden = false;
   $("room-badge").textContent = roomCode;
   $("side-code").textContent = roomCode;
@@ -422,6 +435,7 @@ function ensureCard(id, name, meta) {
     cards.set(id, card);
     updateCluster();
     log("room", `${name || id} joined`);
+    presence(name || id, true);
     if ($("ai-output").style.display === "block") sysNote(`${name || id} joined${meta?.contribGB && meta?.webgpu ? `, lends ${meta.contribGB} GB` : ""}`, "join");
     mascot(`${name || id} joined! ${members.size + 1} devices in the room.`);
   }
@@ -429,7 +443,7 @@ function ensureCard(id, name, meta) {
   if (e) e.card = card;
   return card;
 }
-function dropCard(id) { const c = cards.get(id); if (c) { c.remove(); cards.delete(id); } }
+function dropCard(id) { const c = cards.get(id); if (c) { c.remove(); cards.delete(id); presence(c.dataset.name || id, false); } }
 // open a data link to a chain neighbour if we do not have one yet; resolves when it is up
 function ensureLink(id, timeoutMs = 60000) {
   if (!id || id === "host" || conns.has(id)) return Promise.resolve(true);
@@ -589,14 +603,18 @@ setInterval(() => broadcastAll({ t: "ping", ts: performance.now() }), 2500);
 const stepGB = (d) => { const i = $("join-gb"); const lo = parseFloat(i.min) || 1; const st = parseFloat(i.step) || 1; i.value = Math.min(64, Math.max(lo, (parseFloat(i.value) || lo) + d * st)); };
 $("gb-minus").addEventListener("click", () => stepGB(-1));
 $("gb-plus").addEventListener("click", () => stepGB(1));
-// a friendly name for this device ("Quiet Otter"), filled in on the join screen; any edit wins
-const NAME_A = ["Quiet", "Swift", "Brave", "Sunny", "Clever", "Gentle", "Lucky", "Mellow", "Bright", "Calm", "Bold", "Happy", "Cosmic", "Nimble", "Witty", "Cozy", "Merry", "Plucky", "Breezy", "Jolly"];
-const NAME_B = ["Otter", "Falcon", "Panda", "Fox", "Heron", "Koala", "Lynx", "Robin", "Badger", "Dolphin", "Owl", "Tiger", "Wombat", "Sparrow", "Moose", "Gecko", "Puffin", "Beaver", "Marten", "Crane"];
+// a friendly name for this device ("otter"): one lowercase word, filled in on the join screen; any edit wins
+const NAMES = ["otter", "falcon", "panda", "fox", "heron", "koala", "lynx", "robin", "badger", "dolphin", "owl", "tiger", "wombat", "sparrow",
+  "moose", "gecko", "puffin", "beaver", "marten", "crane", "finch", "orca", "bison", "lemur", "raven", "tapir", "walrus", "yak", "zebra",
+  "ibis", "kestrel", "magpie", "narwhal", "ocelot", "pelican", "quokka", "seal", "stoat", "toucan", "vole", "wren", "hare", "egret",
+  "jackal", "kiwi", "llama", "mole", "newt", "okapi", "plover", "swift", "tern", "urchin", "viper", "weasel", "ferret", "gibbon", "hyena",
+  "iguana", "jay", "koi", "loris", "mink", "numbat", "osprey", "pika", "quail", "rook", "shrew", "trout", "alpaca", "bobcat",
+  "cougar", "dingo", "eland", "gazelle", "hornbill", "impala", "kudu", "lark", "manatee", "nightjar", "oriole", "panther", "sloth", "tamarin"];
 const pick = (a) => a[crypto.getRandomValues(new Uint32Array(1))[0] % a.length];
 function friendlyName() {
   const now = $("name-input").value;
   let n = now;
-  for (let i = 0; i < 8 && n === now; i++) n = `${pick(NAME_A)} ${pick(NAME_B)}`;
+  for (let i = 0; i < 8 && n === now; i++) n = pick(NAMES);
   return n;
 }
 $("name-input").value = friendlyName();
@@ -736,6 +754,17 @@ function computeState() {
 }
 const compute = computeScreen({ state: computeState, keepAwake });
 $("compute-open").addEventListener("click", () => compute.open());
+// the header's dots button says whether this device is working: "on" while it holds layers
+function deviceMark() {
+  const s = computeState(), b = $("compute-open");
+  const on = s.lo != null && s.hi != null && s.phase !== "idle";
+  const tip = on ? (s.phase === "loading" ? `Loading layers ${s.lo + 1}\u2013${s.hi}` : `Holding layers ${s.lo + 1}\u2013${s.hi}`) : "This device's screen";
+  if (b.dataset.tip === tip && b.classList.contains("on") === on) return;
+  b.classList.toggle("on", on);
+  b.dataset.tip = tip;
+  b.setAttribute("aria-label", on ? `This device is working: ${tip.toLowerCase()}. Open its screen` : "Open this device's screen");
+}
+setInterval(deviceMark, 1000);
 $("create-btn").addEventListener("click", () => { keepAwake(); start(true); });
 // (auto-rejoin removed: the user prefers to see what happened)
 $("join-btn").addEventListener("click", () => { keepAwake(); start(false); });
@@ -1128,8 +1157,10 @@ function chatBotStart(mid) {
   const m = document.createElement("div");
   m.className = "m bot";
   if (mid != null) m.dataset.mid = mid;
-  m.innerHTML = `<div class="who"><span class="wn"></span><span class="wd" aria-hidden="true"><i></i><i></i><i></i></span></div><div class="bubble"><span class="cursor"></span></div>`;
+  m.innerHTML = `<div class="who"><span class="wn"></span><span class="wd" aria-hidden="true"><i></i><i></i><i></i></span></div><div class="bubble"></div>`;
   m.querySelector(".wn").textContent = shortName(ai.model || $("ai-model").value) || "room";
+  // until the first token: the working line (the first piece replaces it)
+  m.querySelector(".bubble").append(working());
   m.classList.add("live");
   m.pieces = [];
   o.appendChild(m); scrollChat();
@@ -1981,7 +2012,7 @@ function renderMap(nodes, st, live) {
     el.style.setProperty("--lanes", Math.max(1, sorted.length));
     el.toggleAttribute("data-many", sorted.length > 4);
     // folded: the same split as one thin bar
-    el.querySelector(".sm-mini").innerHTML = sorted.map((sp, k) => `<i style="--sw:${devColor(sp.name)};--n:${Math.max(1, sp.hi - sp.lo)};--k:${k}"></i>`).join("");
+    el.querySelector(".sm-mini").innerHTML = sorted.map((sp, k) => { const c = devColor(sp.name); return `<i style="--sw:${c};--on-sw:${onSwatch(c)};--n:${Math.max(1, sp.hi - sp.lo)};--k:${k}" title="${esc(String(sp.name))}: layers ${sp.lo + 1}\u2013${sp.hi}"><span>${esc(String(sp.name))}</span></i>`; }).join("");
   }
   // each lane's own time per token (what its GPU spends on its layers)
   for (const lane of strip.querySelectorAll(".sm-half")) {
@@ -2010,6 +2041,7 @@ function renderMap(nodes, st, live) {
   if (st?.acc != null && DEV) bits.push(`${Math.round(st.acc * 100)}% of drafts accepted`);
   el.querySelector(".sm-meta").textContent = bits.join(" · ") || `${nodes.length} device${nodes.length > 1 ? "s" : ""}`;
   el.querySelector(".sm-meta").title = `${nodes.length} device${nodes.length > 1 ? "s" : ""}: every token takes a lap through all of them`;
+  deviceMark();
 }
 // The band folds to one line (the model, its state, a thin bar of the split). Each viewer's choice is
 // kept in this browser, separately for Chat and Code.
@@ -3060,6 +3092,13 @@ if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "lo
       renderMap(lastMap.nodes, { tps: 21.4, lap: 64 }, true);
       this.pulse(6);
       loadCode().then((c) => c?.show?.("chat"));
+    },
+    // a question sent, no token yet: the working line in the answer's place
+    waiting() {
+      if (!$("ai-panel").classList.contains("online")) this.ready();
+      chatUser(myName, "write a haiku about the sea");
+      chatBotStart(3);
+      renderMap(lastMap.nodes, { tps: 21.4, lap: 64 }, true);
     },
     // deal the layers again over the devices now in the room (after more tabs joined)
     reset() {

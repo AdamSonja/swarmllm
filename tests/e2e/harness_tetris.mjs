@@ -228,6 +228,10 @@ try {
       window.__live.max = Math.max(window.__live.max, n); if (p && !window.__live.paths.includes(p)) window.__live.paths.push(p);
     } }).observe(document.getElementById("code-log"), { childList: true, subtree: true, characterData: true }); };
   await host.evaluate(watchLive); await peer.evaluate(watchLive);
+  // the working line (room/working.js) shows while the room waits for the model's first output
+  const watchWorking = () => { window.__wk = 0; new MutationObserver(() => { if (document.querySelector("#code-log .cm-working .working")) window.__wk++; })
+    .observe(document.getElementById("code-log"), { childList: true, subtree: true }); };
+  await host.evaluate(watchWorking); await peer.evaluate(watchWorking);
   await host.fill("#code-prompt", "build a tetris game");
   await host.click("#code-send");
   // the first edit asks; "Allow edits for this task" approves the rest
@@ -245,6 +249,10 @@ try {
   await host.click("text=Allow edits for this task");
   await host.waitForSelector(".cm-stats", { timeout: 60000 });
   log("agent run finished");
+  for (const [who, pg] of [["host", host], ["peer", peer]]) {
+    const W = await pg.evaluate(() => ({ seen: window.__wk, left: document.querySelectorAll("#code-log .cm-working").length }));
+    check(`${who}: a working line showed before the model's output, and is gone after the run`, W.seen > 0 && W.left === 0, JSON.stringify(W));
+  }
   for (const [who, pg] of [["host", host], ["peer", peer]]) {
     const L = await pg.evaluate(() => ({ ...window.__live, left: document.querySelectorAll(".cm-live").length }));
     check(`${who}: code streamed live into a "writing" card, then became the tool card`, L.max > 5 && L.paths.includes("game.js") && L.left === 0, JSON.stringify(L));

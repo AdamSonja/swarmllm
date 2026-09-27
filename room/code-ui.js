@@ -6,6 +6,7 @@
 // Everything that came from the model or the preview is untrusted text: it goes in with
 // textContent, and model prose through mdChat (room/markdown.js), which escapes first.
 import { mdChat } from "./markdown.js";
+import { working } from "./working.js";
 
 const $ = (id) => document.getElementById(id);
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -191,7 +192,18 @@ export function codeUI({ onMode = () => {} } = {}) {
     empty.innerHTML = DOTS + words(text);
     log.append(empty);
   }
-  function clear() { log.replaceChildren(); empty = null; jump.hidden = true; viewFile(null); }
+  function clear() { log.replaceChildren(); empty = null; jump.hidden = true; viewFile(null); runAt = 0; }
+
+  // the wait before the model's first output (after a request, and again after each tool result):
+  // the working line at the end of the timeline, gone as soon as text, code or a tool call arrives
+  let runAt = 0;
+  function wait(on) {
+    log.querySelector(".cm-working")?.remove();
+    if (!on || !runAt) return;
+    const w = h("div", "cm-working");
+    w.append(working({ since: runAt, label: "the agent is working" }));
+    add(w);
+  }
 
   function apply(d) {
     switch (d.t) {
@@ -200,6 +212,8 @@ export function codeUI({ onMode = () => {} } = {}) {
         const u = h("div", "cm-user");
         u.append(h("div", "who", d.name || "host"), h("div", "bubble", d.text));
         add(u);
+        runAt = performance.now();
+        wait(true);
         break;
       }
       case "ai-code-tok": {
@@ -210,14 +224,15 @@ export function codeUI({ onMode = () => {} } = {}) {
         const stick = near();
         el.innerHTML = mdChat(el.dataset.raw.replace(/^\s+/, ""));
         if (!el.dataset.raw.trim()) el.hidden = true;   // (kept, so the next piece of the same text finds it)
-        else el.hidden = false;
+        else { el.hidden = false; wait(false); }
         follow(stick);
         break;
       }
       case "ai-code-live": liveCard(d); break;
       case "ai-code-tool": toolCard(d); break;
-      case "ai-code-note": closeText(); add(h("div", "cm-note" + (d.err ? " err" : ""), words(d.text))); break;
+      case "ai-code-note": wait(false); closeText(); add(h("div", "cm-note" + (d.err ? " err" : ""), words(d.text))); break;
       case "ai-code-done": {
+        runAt = 0; wait(false);
         for (const l of log.querySelectorAll(".cm-live")) l.remove();
         closeText();
         const text = d.stats || `${plural(d.steps || 0, "step")} · ${d.reason || "done"}`;
@@ -247,6 +262,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     const p = parseLive(el.dataset.raw);
     if (!p || !p.code) return;
     const stick = near(), pre = el.querySelector("pre");
+    if (el.hidden) wait(false);
     el.hidden = false;
     el.querySelector(".nm").textContent = p.name === "edit_file" ? "editing" : "writing";
     el.querySelector("b").textContent = p.path || "";
@@ -259,6 +275,9 @@ export function codeUI({ onMode = () => {} } = {}) {
   function toolCard(d) {
     const k = key("c", d.mid, d.i);
     let el = find(k);
+    // a call came in: no more waiting. Its result goes back to the model, which thinks again
+    if (d.state === "done" || d.state === "error" || d.state === "declined") queueMicrotask(() => wait(true));
+    else if (!el || d.state) wait(false);
     if (!el) {
       // the model's text before a tool call is complete once the call starts; the card takes the
       // place of the live card that showed the call being typed
