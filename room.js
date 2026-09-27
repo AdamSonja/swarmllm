@@ -2869,6 +2869,7 @@ function codeOnData(from, d) {
 // Chat is the room's first tab; Code is one click away (no switch on its own when the model is ready)
 let simReady = false;
 // initCode returns { show(mode) }; the Chat tab is handled by code.js once it is loaded
+document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code") && $("mode-code").getAttribute("aria-selected") !== "true") window.pooledSparkle?.($("mode-code")); }, true);   // switching to Code sparkles (site/js/sparkle.js); capture: before the tab flips
 document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code")) loadCode().then((c) => c?.show?.("code")).catch((err) => toast("Code mode failed to load: " + err.message)); });
 
 const roomApi = {

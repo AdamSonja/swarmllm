@@ -115,6 +115,7 @@
     demo.dataset.mode = m;
     [[mChat, "chat"], [mCode, "code"]].forEach(([b, k]) => { b.setAttribute("aria-selected", k === m); b.tabIndex = k === m ? 0 : -1; });
     win.setAttribute("aria-labelledby", m === "code" ? "mCode" : "mChat");
+    if (m === "code") window.pooledSparkle?.(mCode);   // switching to Code sparkles (site/js/sparkle.js)
   };
 
   /* ---------- the room: what each device lends, and the layers each one gets ---------- */
