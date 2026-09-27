@@ -1268,7 +1268,12 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
     const G = cachedOk ? ai.G : await fetchGGUFHeader(M.gguf, needTok);
     ai.G = G; ai.GModel = modelKey;
     ai.cfg = { num_hidden_layers: G.meta["qwen35.block_count"] - (G.meta["qwen35.nextn_predict_layers"] || 0) };
-    if (hasEmbed || hasHead) ai.tok = makeTokenizer(tokenizerFromGGUF(G.meta));
+    if (hasEmbed || hasHead) {
+      ai.tok = makeTokenizer(tokenizerFromGGUF(G.meta));
+      // the model's own chat template: Code mode picks the tool-call format from it (Qwen 3.5+ use
+      // XML <function=...> calls, with the full call grammar); without it every model got JSON
+      ai.tok.chatTemplate = G.meta["tokenizer.chat_template"] || "";
+    }
     // the host also loads the model's multi-token-prediction block: it drafts
     // tokens that the trunk then verifies in one batched pass (same output, faster)
     const opts = { lo: range[0], hi: range[1], hasEmbed, hasHead, mtp: hasHead };
@@ -2640,7 +2645,7 @@ const roomApi = {
   role: () => ai.role,                                  // "host" | "worker" | "guest" | undefined
   ready: () => MOCK || (!!ai.engine && !ai.degraded),   // host: can generate now
   tok: () => ai.tok,
-  chatTemplate: () => ai.tok?.chatTemplate || "",
+  chatTemplate: () => ai.tok?.chatTemplate || ai.G?.meta?.["tokenizer.chat_template"] || "",
   maxSeq: () => ctxMax(),
   generate: roomGenerate,
   lock: roomLock, unlock: roomUnlock,
