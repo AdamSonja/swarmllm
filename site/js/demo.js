@@ -4,7 +4,7 @@
    its share, and a friend's phone joins and adds a little, which is what lets the biggest model fit. The
    room picks that model, the layers are dealt by memory and each device fetches only its own (one from its
    cache). "what is Pooled?", and while the answer streams a hidden state travels through every layer on
-   every device, once per word. The answer ends "It can write code too." and the Code tab is pressed.
+   every device, once per word. The answer ends "It can chat, or write code." and, a second later, the Code tab is pressed.
    Code: the visitor asks for an app (a different one each loop: Tetris, 2048, a space shooter, Snake,
    Breakout); the files appear as the agent writes them; it serves the app on :5173 and the preview opens
    on it, running; then a change request, an edit, a reload, and the changed app plays for a moment (with
@@ -37,7 +37,7 @@
     const b = ANI.slice().sort(() => Math.random() - .5);
     NAMES = [0, 1, 2].map(i => b[i]);
     demo.querySelectorAll("[data-name]").forEach(el => { el.textContent = NAMES[+el.dataset.name]; });
-    ANSWER = `Pooled splits one open model across this room. ${NAMES[0]} runs layers 1 to 17, ${NAMES[1]} 18 to 37, ${NAMES[2]} 38 to 40. Every word passes through all three. It can write code too.`;
+    ANSWER = `Pooled splits one big model across these 3 devices, so together they run a model none of them could alone. It can chat, or write code.`;
     WORDS = ANSWER.split(" "); timeWords();
   };
 
@@ -139,7 +139,7 @@
   function timeWords() {
     WT = [A0]; WORDS.forEach((_, i) => WT.push(WT[i] + DUR(i)));
     A1 = WT[WORDS.length];
-    C = Math.ceil((A1 + .8) * 10) / 10;                // time to read "It can write code too.", then the tab switches
+    C = Math.ceil((A1 + 1.5) * 10) / 10;               // a second to read the answer, then the tab switches
     GAME = C + SHOWN;                                  // the app, changed, on screen
     STEPS = [0, S1, S2, S3, CH, C, C + FILES, C + CHANGE];
     END = GAME + 2 * SPEED;                            // about two seconds of it, then the story starts again
@@ -471,7 +471,7 @@
     [CH, () => scene("chat")],
     [CH + .3, () => { geo = null; chatComposer.classList.add("hot"); }],
     [CH + .95, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); a1.textContent = ""; toBottom(); measure(); }],
-    // the answer ends on "It can write code too.": the Code tab is pressed, as if clicked, and the story goes on there
+    // the answer ends on "It can chat, or write code.": a second later the Code tab is pressed, as if clicked, and the story goes on there
     [C - .3, () => press(mCode, 300)],
     // 6: Code
     [C, () => mode("code")],
@@ -506,6 +506,7 @@
   let EV = EVENTS();
 
   const frame = t => {
+    flag("inviting", t >= S1 && t < S3);   // Invite shows only while devices are joining (steps 2 and 3)
     if (t >= DL) loadAt(t);
     if (t > CH + .3 && t < CH + .95) typeInto(chatTyped, Q1, CH + .35, CH + .8, t);
     if (t >= CH) flow(t);
@@ -629,11 +630,11 @@
 
   /* ---------- the app: it plays itself; for a moment (or once the story is over) the visitor can take it over.
      Then the story waits, the keys (or, on a touch screen, the pad) play it, and leaving it lets the story go on ---------- */
-  const pvPlay = $("pvPlay"), pvPlayT = $("pvPlayT"), pvBack = $("pvBack"), pad = $("pad"), pv = $("pv");
+  const pvBack = $("pvBack"), pad = $("pad"), pv = $("pv");
   const COARSE = matchMedia("(pointer: coarse)");
   let lastPointer = "";
   const touchy = () => lastPointer ? lastPointer !== "mouse" : COARSE.matches;
-  const ask = on => { flag("ask", on); pvPlayT.textContent = touchy() ? "Tap to play" : "Click to play"; };
+  const ask = on => flag("ask", on);   // (no "Click to play" offer any more; clicking the game still plays it)
   const canPlay = () => demo.classList.contains("served") && demo.classList.contains("app-on") && (demo.classList.contains("ask") || tl.done);
   const startPlay = () => {
     if (playing || !canPlay()) return false;
@@ -652,8 +653,6 @@
     if (!quiet && document.activeElement === game) game.blur();
     wake();
   }
-  pvPlay.addEventListener("pointerdown", e => { lastPointer = e.pointerType; });
-  pvPlay.addEventListener("click", () => startPlay());
   pvBack.addEventListener("click", () => stopPlay());
   game.addEventListener("pointerdown", e => { lastPointer = e.pointerType; if (!playing) startPlay(); });
   game.addEventListener("keydown", e => {
@@ -702,6 +701,7 @@
 
   useApp("tetris"); labelDots();
   if (RM) tl.final(); else tl.reset();
+  demo.dataset.ready = "1";   // the static page shows the finished Code scene; with JS it starts at Chat, step 1
 
   // tests and screenshots: jump to a moment, pick an app
   window.__demo = {
