@@ -60,7 +60,7 @@ async function pageMain({ configs }) {
   return { out, errs };
 }
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-dense-engine-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pooled-dense-engine-"));
 const d = writeDense(tmp, { seed: 5 });
 // --dense-js FILE: serve FILE as /engine/dense.js (try a patch without touching the tree)
 const srv = serveRepo(PORT, { "/__model.gguf": d.files.gguf, "/__config.json": d.files.cfg, ...(arg("dense-js") ? { "/engine/dense.js": path.resolve(arg("dense-js")) } : {}) });

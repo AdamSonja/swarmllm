@@ -61,7 +61,7 @@ async function pageMain({ cols, plen, ntok }) {
   return { out, allOk };
 }
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-mtpfill-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pooled-mtpfill-"));
 const model = arg("model") || writeSynth(path.join(tmp, "m.gguf"), {}).file;
 const srv = serveRepo(PORT, { "/__synth.gguf": path.resolve(model) });
 const { chromium } = await loadPlaywright();

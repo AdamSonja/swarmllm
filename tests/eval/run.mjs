@@ -2,7 +2,7 @@
 // tests/eval/eval.html in Chromium, runs the tasks and writes the results.
 //
 //   node tests/eval/run.mjs --model mock                        scripted golden runs, no GPU (CI-safe)
-//   E2E_GPU=real node tests/eval/run.mjs --model engine --weights models/q35-2b/x.gguf --headed
+//   E2E_GPU=real node tests/eval/run.mjs --model engine --weights models/q38/model.gguf --headed
 //        [--tasks tetris,calculator] [--repeat 3] [--ctx 16384]
 //   --no-selftest   skip checking that each task's `bad` files fail its check (on by default for mock)
 //   --verbose       print page errors (the apps' own, expected ones included)

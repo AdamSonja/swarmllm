@@ -5,7 +5,7 @@
 //   npm run e2e -- --phone                 host + worker + phone, wire on (default stripe4)
 //   npm run e2e -- --wire off              old PeerJS message path
 //   npm run e2e -- --model qwen3-1.7b --prompt "..." --rounds 3
-//   npm run e2e -- --phone --model qwen3.8-27b   27B from models/q38/model.gguf, pledges 14+2+0.5 GB
+//   npm run e2e -- --phone --model qwen3.8-27b   27B from models/q38/model.gguf, host pledge sized to the model's need
 //   npm run e2e -- --devices 16 --phones 8 --model qwen3.8-27b   16 tabs, half phone-shaped, 1 GB / 0.5 GB pledges
 //   Signaling runs on a local PeerServer (node_modules/.bin/peerjs) unless --signal cloud.
 //
@@ -16,6 +16,7 @@ import { chromium } from "playwright";
 import http from "http";
 import fs from "fs";
 import path from "path";
+import { NEED_GB } from "../../room/models.js";
 
 const arg = (k, d) => { const i = process.argv.indexOf("--" + k); return i > 0 ? process.argv[i + 1] : d; };
 const flag = (k) => process.argv.includes("--" + k);
@@ -29,9 +30,9 @@ const PHONE = PHONES > 0;
 // signaling: our own PeerServer on this machine (default), or the public PeerJS cloud with --signal cloud
 const SIGNAL_PORT = +arg("signal-port", 9000);
 const CLOUD = arg("signal", "local") === "cloud";
-// pledges in GB: host,worker,phone. The 27B needs 16.5 GB in the room.
+// pledges in GB: host,worker,phone. The model's need comes from room/models.js (the 27B needs 17 GB).
 // host pledge: whatever the joiners (1 GB desktop, 0.5 GB phone) leave of the model's need, at least 2 GB
-const NEED = { "qwen3.8-27b": 16.5, "qwen3.6-35b-moe": 22.5, "qwen3-4b": 4.6, "qwen3-1.7b": 2.0, "qwen3-0.6b": 0.8 }[MODEL] || 2;
+const NEED = NEED_GB[MODEL] || 2;
 const HOST_GB = arg("host-gb", String(Math.max(2, Math.ceil(NEED + 0.5 - (DEVICES - 1 - PHONES) * 1 - PHONES * 0.5))));
 // GGUF files already on this machine stand in for Hugging Face (Range requests served from disk)
 const LOCAL = { "Qwen3.8-27B-Q4_0.gguf": "models/q38/model.gguf", "Qwen3-0.6B-Q8_0.gguf": "models/qwen/model.gguf", "Qwen3-1.7B-Q8_0.gguf": "models/qwen17/model.gguf" };
@@ -63,7 +64,7 @@ import https from "https";
 import { execSync } from "child_process";
 import os from "os";
 const TLS_PORT = PORT + 1;
-const tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-e2e-"));
+const tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pooled-e2e-"));
 execSync(`openssl req -x509 -newkey rsa:2048 -nodes -keyout ${tlsDir}/k.pem -out ${tlsDir}/c.pem -days 2 -subj /CN=127.0.0.1 2>/dev/null`);
 const wsrv = https.createServer({ key: fs.readFileSync(`${tlsDir}/k.pem`), cert: fs.readFileSync(`${tlsDir}/c.pem`) }, (q, r) => {
   const p = path.join(ROOT, decodeURIComponent(q.url.split("?")[0]));

@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 import { parseGGUFHeader, dequantF32, tokenizerFromGGUF } from "../../engine/gguf.js";
 import { makeTokenizer } from "../../engine/engine.js";
 
-const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "q38");
+const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../models/q38");
 const fd = fs.openSync(path.join(DIR, "model.gguf"), "r");
 const headBuf = Buffer.alloc(16 * 1024 * 1024);
 fs.readSync(fd, headBuf, 0, headBuf.length, 0);

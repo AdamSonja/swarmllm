@@ -36,7 +36,7 @@
 //   * --greedy: the host picks the "exact" (argmax) sampling preset in #ai-sampling. For older room
 //     builds without it, --greedy-hack makes Math.random() return 0 when called from
 //     room/sampling.js (aiSample then picks the top logit); other callers keep real randomness
-// Pledges go through #join-gb (the 27B needs 16.5 GB in the room; the tiny model fits anywhere).
+// Pledges go through #join-gb (the 27B needs 17 GB in the room; the tiny model fits anywhere).
 // The creating tab pledges the most so it is the one that deals the layers and runs the head.
 //
 // Needs playwright + peer + peerjs importable: NODE_PATH=<node_modules dir> or a node_modules next
@@ -333,7 +333,7 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
 }
 
 // ---------------------------------------------------------------- main
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-room-synth-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pooled-room-synth-"));
 const SHAPES = { "0.6b": { dim: 1024, inter: 3072, nH: 16, nKV: 8, hd: 128 }, "1.7b": { dim: 2048, inter: 6144, nH: 16, nKV: 8, hd: 128 }, "4b": { dim: 2560, inter: 9728, nH: 32, nKV: 8, hd: 128 } };
 const shape = arg("shape") ? { ...SHAPES[arg("shape")], layers: 4 } : {};
 const dense = (MODELS[MODEL_KEY].kind === "safetensors" ? writeSmol : writeDense)(tmp, { ...shape, seed: +arg("seed", 5),   // seed 5: no greedy near-ties (< 0.1 logit) on the default prompts, so f16 wire rounding cannot flip a token

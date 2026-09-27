@@ -50,3 +50,4 @@ const text = tok.decode(gen);
 console.log("split :", JSON.stringify(text));
 console.log("speed:", (12 / ((performance.now() - t0) / 1000)).toFixed(2), "tok/s");
 console.log(text === " Paris.\nThe capital of Germany is Berlin.\nThe" ? "QWEN3.8 SPLIT PASS ✓" : "SPLIT MISMATCH");
+Deno.exit(text === " Paris.\nThe capital of Germany is Berlin.\nThe" ? 0 : 1);

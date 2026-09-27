@@ -52,7 +52,7 @@ async function pageMain({ N }) {
   if (errs.length) say("GPU errors: " + errs.slice(0, 2).join(" | "));
   return { out, ok: ok && !errs.length };
 }
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-dr-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pooled-dr-"));
 const model = arg("model") || writeSynth(path.join(tmp, "m.gguf"), {}).file;
 const srv = serveRepo(PORT, { "/__m.gguf": path.resolve(model) });
 const { chromium } = await loadPlaywright();

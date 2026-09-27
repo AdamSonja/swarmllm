@@ -76,7 +76,7 @@ async function pageMain({ plen, ntok, flash, q8 }) {
   check("no GPU validation errors", !errs.length, errs.slice(0, 2).join(" | "));
   return { out, ok: results.every(Boolean) };
 }
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-st-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pooled-st-"));
 const model = arg("model") || writeSynth(path.join(tmp, "m.gguf"), {}).file;
 const srv = serveRepo(PORT, { "/__m.gguf": path.resolve(model) });
 const { chromium } = await loadPlaywright();

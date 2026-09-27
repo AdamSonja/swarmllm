@@ -30,7 +30,7 @@
 //   * --greedy: the host picks the "exact" (argmax) sampling preset in #ai-sampling. For older room
 //     builds without it, --greedy-hack makes Math.random() return 0 when called from
 //     room/sampling.js (aiSample then picks the top logit); other callers keep real randomness
-// Pledges go through #join-gb (the 27B needs 16.5 GB in the room; the tiny model fits anywhere).
+// Pledges go through #join-gb (the 27B needs 17 GB in the room; the tiny model fits anywhere).
 // The creating tab pledges the most so it is the one that deals the layers and runs the head.
 //
 // Needs playwright + peer + peerjs importable: NODE_PATH=<node_modules dir> or a node_modules next
@@ -73,7 +73,7 @@ const pledgesFor = (n) => {
   const p = arg("pledges");
   if (p) return p.split(",").map(String);
   if (n === 1) return ["17"];
-  return ["12", ...Array(n - 1).fill("5")];   // sum >= 16.5 GB; the creator is the biggest
+  return ["12", ...Array(n - 1).fill("5")];   // sum >= 17 GB; the creator is the biggest
 };
 
 const t0 = Date.now();
@@ -377,7 +377,7 @@ async function codeCheck(tabs, out, label) {
 }
 
 // ---------------------------------------------------------------- main
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-room-synth-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pooled-room-synth-"));
 const modelFile = arg("model") || writeSynth(path.join(tmp, "qwen35-synth.gguf"), { mtp: arg("mtp", "echo"), seed: +arg("seed", 1), eosAt: +arg("eos-at", 90) }).file;
 const modelBytes = fs.readFileSync(modelFile);
 const peerjsJs = fs.readFileSync(path.join(resolvePkg("peerjs"), "dist/peerjs.min.js"));
@@ -398,7 +398,7 @@ const srv = serveRepo(PORT, extra);
 // local https weight server with Range support (self-signed; the contexts ignore certificate errors)
 let weightsURL = null, wsrv = null;
 try {
-  const tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-tls-"));
+  const tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pooled-tls-"));
   execSync(`openssl req -x509 -newkey rsa:2048 -nodes -keyout ${tlsDir}/k.pem -out ${tlsDir}/c.pem -days 2 -subj /CN=127.0.0.1 2>/dev/null`);
   const size = modelBytes.length, TLS_PORT = PORT + 1;
   wsrv = https.createServer({ key: fs.readFileSync(`${tlsDir}/k.pem`), cert: fs.readFileSync(`${tlsDir}/c.pem`) }, async (q, r) => {

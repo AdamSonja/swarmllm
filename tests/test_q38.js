@@ -52,8 +52,11 @@ const REF = [
   [-0.04135, -0.00732],  // token 0: first two dims
   [0.12867, -0.13125],   // token 1
 ];
+let bad = 0;
 for (let ti = 0; ti < ids.length; ti++) {
   const h = await eng.embedRun(ids[ti], ti);
   const ok = Math.abs(h[0] - REF[ti][0]) < 0.02 && Math.abs(h[1] - REF[ti][1]) < 0.02;
   console.log(`token ${ti}: engine [${h[0].toFixed(5)}, ${h[1].toFixed(5)}] ref [${REF[ti]}] ${ok ? "MATCH" : "MISMATCH"}`);
+  if (!ok) bad++;
 }
+Deno.exit(bad ? 1 : 0);

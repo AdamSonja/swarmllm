@@ -8,7 +8,7 @@
 //   -> the peer tab sees the timeline, runs its own sandboxed copy of the preview at the same rev.
 //
 //   NODE_PATH=<dir with peer + peerjs + playwright> node tests/e2e/harness_tetris.mjs [--shots] [--headed]
-//   --shots: saves docs/design/shots/code-desktop.png, code-400.png, code-preview.png, code-peer.png
+//   --shots: saves docs/design/shots/code-desktop.png, code-400.png, code-400-preview.png, code-preview.png, code-peer.png
 //   --port 18990 --signal-port 9011
 // Prerequisites: playwright, the `peer` server package and the PeerJS client bundle (`peerjs`)
 // importable from NODE_PATH or ./node_modules. Without the PeerJS bundle it prints SKIP and
@@ -263,7 +263,7 @@ try {
     tree: [...document.querySelectorAll("#code-tree .f")].map((f) => f.dataset.path),
   }));
   for (const c of H.checks) check("model saw: " + c.name, c.ok, c.detail);
-  check("7 scripted replies used", H.checks.length === 4, JSON.stringify(H.checks.map((c) => c.name)));
+  check("model saw 4 checks", H.checks.length === 4, JSON.stringify(H.checks.map((c) => c.name)));
   check(".pv-tab :5173", H.tabs.some((t) => t.startsWith(":5173")), H.tabs);
   check("timeline: 6 tool cards, all done", H.tools.join(" ") === "write_file:done write_file:done write_file:done serve:done edit_file:done preview_logs:done", H.tools.join(" "));
   check("final answer shown", /Tetris is running on :5173/.test(H.answer || ""), H.answer);

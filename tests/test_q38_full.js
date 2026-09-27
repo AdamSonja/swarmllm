@@ -61,3 +61,4 @@ console.log("engine :", JSON.stringify(text));
 console.log("llama.cpp:", JSON.stringify(GOLDEN));
 console.log("speed:", (12 / secs).toFixed(2), "tok/s");
 console.log(text === GOLDEN ? "\nQWEN3.8-27B FULL PASS ✓✓✓" : "\nQWEN3.8 MISMATCH");
+Deno.exit(text === GOLDEN ? 0 : 1);

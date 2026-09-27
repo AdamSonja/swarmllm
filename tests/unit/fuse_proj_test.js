@@ -67,7 +67,7 @@ for (const kind of ["q4", "q8", "f32"]) {
       assertEquals(srcs[i].gpu, pv, "loader entry now points at its view");
     });
     // the padding rows between segments stay zero
-    const mw = kind === "f32" ? m.w.buf : m.w.qs, r0 = kind === "f32" ? rb[0] : rb[0];
+    const mw = kind === "f32" ? m.w.buf : m.w.qs, r0 = rb[0];
     assert(mw.data.subarray(100 * r0, 128 * r0).every((x) => x === 0));
     for (const w of ws) for (const b of kind === "f32" ? [w.buf] : [w.qs, w.sc]) assert(b.destroyed, "old buffers released");
   });
