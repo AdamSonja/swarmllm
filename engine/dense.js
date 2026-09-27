@@ -427,7 +427,7 @@ export class DenseEngine {
   // runtime switches, never on the token id: the embedding row and the frame uniform are written with
   // queue.writeBuffer at call time), so the next call submits at once instead of spending the CPU
   // encode time on the critical path. Same commands, same bits. engine.encodeAhead = false for A/B.
-  _fwdKey() { return `${this.attnFast}`; }
+  _fwdKey() { return [this.attnFast, this.fuse, this.fuseGlue, this.fuseAcc, this.fuseRms, this.fuseNorm, this.glue3].join(); }
   _encodeForward(pos) {
     const { vocab } = this.dims;
     const save = this.pos;
