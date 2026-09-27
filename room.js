@@ -2126,11 +2126,16 @@ new MutationObserver(() => bandFold(bandFolded())).observe($("chatpane"), { attr
   new ResizeObserver(stick).observe(out);
   const coarse = matchMedia("(pointer: coarse)");
   const kbd = () => {
-    const a = document.activeElement, typing = a && (a.id === "ai-prompt" || a.id === "code-prompt");
+    const a = document.activeElement, typing = a && (a.id === "ai-prompt" || a.id === "code-prompt" || a.id === "ed-text");
     document.body.classList.toggle("kbd", !!(typing && coarse.matches && (visualViewport?.height ?? innerHeight) < 600));
+    // how much of the page the keyboard covers where the browser does not shrink the page for it
+    // (iOS Safari): Code on a phone lifts its prompt by that much
+    const vv = visualViewport, kb = vv && coarse.matches && typing ? Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop)) : 0;
+    document.documentElement.style.setProperty("--kb", kb + "px");
     stick();
   };
   visualViewport?.addEventListener("resize", kbd);
+  visualViewport?.addEventListener("scroll", kbd);
   document.addEventListener("focusin", kbd);
   document.addEventListener("focusout", () => setTimeout(kbd, 0));
 }

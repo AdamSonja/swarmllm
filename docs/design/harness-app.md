@@ -499,6 +499,16 @@ announces a session (`ai-code-start` or `ai-pv`), with a dot when something new 
 
 **`#code-pane`** (host): two columns over 900 px, stacked below.
 
+Phones (640 px and narrower) show one view at a time, picked from `#code-tabs`, a tab bar at the
+bottom (`role="tablist"`, 56 px plus the safe area): **Agent** (the log, the prompt at the bottom;
+an approval waits in `#code-dock` above the prompt), **Preview** (the app at full height with its
+address bar) and **Files** (project and tree; a file opens the editor full screen with a back arrow).
+A dot on a tab: Agent pulses while the agent works and holds a dot while an approval waits, Preview
+gets one for a new revision served while elsewhere. The first app served in a session opens
+Preview. The tab is kept per session (`sessionStorage`); guests get the same layout. While typing,
+the tab bar steps aside and the prompt sits on the keyboard (`--kb` where the browser does not
+resize the page).
+
 - Left, the agent:
   - `#code-project`: project select, `New`, `Open folder…`, project name. Host only.
   - `#code-log`: the timeline. Items:
