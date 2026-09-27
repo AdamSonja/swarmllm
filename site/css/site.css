@@ -441,9 +441,6 @@ html:not(.js) .game canvas{display:none}
 .ctas{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:34px}
 .footer{border-top:1px solid var(--rule)}
 .foot-in{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px 24px;padding-top:22px;padding-bottom:26px;font-size:var(--t-md);color:var(--ink-3)}
-.fl{display:flex;flex-wrap:wrap;gap:6px 22px}
-.fl a{text-decoration:none;color:var(--ink-2)}
-.fl a:hover{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
 
 .cta-note{margin-top:18px;font-size:var(--t-md);color:var(--ink-3)}
 
