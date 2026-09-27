@@ -23,6 +23,7 @@
   <symbol id="i-check" viewBox="0 0 12 12"><path d="m2.5 6.2 2.3 2.3 4.7-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-file" viewBox="0 0 14 14"><path d="M3.5 1.5h4.5l3 3v8h-7.5z M8 1.5v3h3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></symbol>
   <symbol id="i-dir" viewBox="0 0 14 14"><path d="M1.5 3.5h4l1.2 1.3h5.8v6.7h-11z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></symbol>
+  <symbol id="i-down" viewBox="0 0 14 14"><path d="M7 2v7.2M3.8 6.4 7 9.6l3.2-3.2M2.5 12h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-reload" viewBox="0 0 12 12"><path d="M10 6a4 4 0 1 1-1.2-2.85M10 1.8v2.4H7.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 </svg>
 
@@ -32,7 +33,7 @@
   <div class="wrap nav-in">
     <a class="brand" href="#top" aria-label="Pooled home">
       <svg class="mark" width="22" height="22" aria-hidden="true"><use href="#i-mark"/></svg>
-      <span>Pooled</span>
+      <span class="wm">pooled</span>
     </a>
     <div class="right">
       <a class="icon-btn" href="https://github.com/Nehanth/swarmllm" aria-label="Source on GitHub"><svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
@@ -115,23 +116,29 @@
               </div>
             </div>
 
-            <!-- 3, 4: the model, 40 layers, split across the two devices. Then every word passes through them -->
+            <!-- 3 to 5: the model; the room presses Download, each device fetches its 20 layers; then every word passes through them -->
             <div class="model" id="model">
-              <p class="md-h"><span class="md-n">Qwen 3.6 35B MoE</span><span class="md-s" id="mdS">22.5 GB, 40 layers, split 2 ways</span></p>
-              <div class="lane" id="lane">
-                <div class="half h0">
-                  <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-laptop"/></svg><b>MacBook Air</b><span>layers 1-20</span></p>
-                  <div class="cells" id="cells0"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                  <p class="hg" id="hg0">11.2 GB</p>
+              <p class="md-h"><span class="md-n">Qwen 3.6 35B MoE</span><span class="md-s" id="mdS">22.5 GB · 40 layers · split 2 ways</span></p>
+              <div class="md-b">
+                <div class="lane" id="lane">
+                  <div class="half h0">
+                    <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-laptop"/></svg><b>MacBook Air</b><span>layers 1-20</span></p>
+                    <div class="cells" id="cells0"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                    <p class="hg" id="hg0">11.2 GB</p>
+                  </div>
+                  <div class="link" aria-hidden="true"><span class="lk-sp"></span><span class="lk-c"><span class="lk-l"><b>hidden state</b> 10 KB</span><span class="lk-w"><i></i></span></span></div>
+                  <div class="half h1">
+                    <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-desk"/></svg><b>Desktop PC</b><span>layers 21-40</span></p>
+                    <div class="cells" id="cells1"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                    <p class="hg" id="hg1">11.2 GB</p>
+                  </div>
+                  <svg class="ret" id="ret" aria-hidden="true"><path id="retPath" d=""/></svg>
+                  <span class="pkt" id="pkt" aria-hidden="true"></span>
                 </div>
-                <div class="link" aria-hidden="true"><span class="lk-sp"></span><span class="lk-c"><span class="lk-l"><b>hidden state</b> 10 KB</span><span class="lk-w"><i></i></span></span></div>
-                <div class="half h1">
-                  <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-desk"/></svg><b>Desktop PC</b><span>layers 21-40</span></p>
-                  <div class="cells" id="cells1"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                  <p class="hg" id="hg1">11.2 GB</p>
+                <div class="md-go" aria-hidden="true">
+                  <span class="mbtn blue" id="dlBtn"><svg width="14" height="14" aria-hidden="true"><use href="#i-down"/></svg>Download model</span>
+                  <p class="md-fit"><b>24 GB</b> in this room. The model needs 22.5.</p>
                 </div>
-                <svg class="ret" id="ret" aria-hidden="true"><path id="retPath" d=""/></svg>
-                <span class="pkt" id="pkt" aria-hidden="true"></span>
               </div>
             </div>
 
@@ -205,15 +212,16 @@
 
         <!-- the caption: which step this is; each dot jumps to one -->
         <div class="stepbar" id="stepbar">
-          <p class="sb-now"><span class="sb-n" id="sbN">7/7</span><span class="sb-t" id="sbT" aria-live="polite">Ask for a change. It edits the code and reloads.</span></p>
+          <p class="sb-now"><span class="sb-n" id="sbN">8/8</span><span class="sb-t" id="sbT" aria-live="polite">Ask for a change. It edits the code and reloads.</span></p>
           <ol class="sb-dots" aria-label="Steps">
             <li><button type="button" data-step="0"><i></i><span class="lbl">Start a room on your laptop</span></button></li>
             <li><button type="button" data-step="1"><i></i><span class="lbl">Join from your desktop with the code</span></button></li>
-            <li><button type="button" data-step="2"><i></i><span class="lbl">The model splits: layers 1-20 on the laptop, 21-40 on the desktop</span></button></li>
-            <li><button type="button" data-step="3"><i></i><span class="lbl">Every word passes through all 40 layers, on both devices</span></button></li>
-            <li class="gap"><button type="button" data-step="4"><i></i><span class="lbl">Switch to Code and ask for a game</span></button></li>
-            <li><button type="button" data-step="5"><i></i><span class="lbl">It writes the files and serves them on :5173</span></button></li>
-            <li><button type="button" data-step="6"><i></i><span class="lbl">Ask for a change. It edits the code and reloads.</span></button></li>
+            <li><button type="button" data-step="2"><i></i><span class="lbl">Together they fit the model. Download it.</span></button></li>
+            <li><button type="button" data-step="3"><i></i><span class="lbl">Each device downloads its half: layers 1-20 and 21-40</span></button></li>
+            <li><button type="button" data-step="4"><i></i><span class="lbl">Every word passes through all 40 layers, on both devices</span></button></li>
+            <li class="gap"><button type="button" data-step="5"><i></i><span class="lbl">Switch to Code and ask for a game</span></button></li>
+            <li><button type="button" data-step="6"><i></i><span class="lbl">It writes the files and serves them on :5173</span></button></li>
+            <li><button type="button" data-step="7"><i></i><span class="lbl">Ask for a change. It edits the code and reloads.</span></button></li>
           </ol>
           <button class="replay" id="replay" type="button" aria-label="Replay from the start" title="Replay"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v3h3"/></svg></button>
         </div>
@@ -236,7 +244,7 @@
 
 <footer class="footer">
   <div class="wrap foot-in">
-    <span class="brand small"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#i-mark"/></svg><span>Pooled</span></span>
+    <span class="brand small"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#i-mark"/></svg><span class="wm">pooled</span></span>
     <span class="fl"><a href="https://github.com/Nehanth/swarmllm">GitHub</a><span>MIT</span><span>Formerly SwarmLLM</span></span>
   </div>
 </footer>
@@ -244,5 +252,6 @@
 <script src="/site/js/swarm.js"></script>
 <script src="/site/js/tetris.js"></script>
 <script src="/site/js/demo.js"></script>
+<script src="/site/js/stage.js"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
-/* The demo: one window, two modes, seven steps.
-   Chat: a laptop starts a room, a desktop joins with the code; the model's 40 layers split across the
-   two; "what is Pooled?", and while the answer streams a hidden state travels through every layer,
+/* The demo: one window, two modes, eight steps.
+   Chat: a laptop starts a room, a desktop joins with the code; together they hold enough memory, so the
+   room presses Download model and each device fetches its own 20 of the 40 layers; "what is Pooled?", and while the answer streams a hidden state travels through every layer,
    laptop to desktop and back, once per word.
    Code: the tab switches itself; "build me a tetris game"; the files appear on the left as the agent
    writes them; it serves the game on :5173; then a change ("make the pieces blue and add a
@@ -32,13 +32,16 @@
   /* ---------- the timeline's shape ---------- */
   const ANSWER = $("a1").textContent;
   const WORDS = ANSWER.split(" ");
-  const A0 = 13.9;                                            // the answer starts
-  const DUR = i => [2.1, 1.2, .75, .5][i] || .27;             // each word's trip; the first is slow enough to follow
+  const DL = 4.3, SPLIT = 6.45, FILL0 = 6.9, FILL1 = 8.9;  // the model card; Download pressed; the halves fill
+  const CH = 9.55;                                             // chat
+  const A0 = CH + 1.55;                                         // the answer starts
+  const DUR = i => [1.6, .85, .5, .34][i] || .17;             // each word's trip; the first is slow enough to follow
   const WT = [A0]; WORDS.forEach((_, i) => WT.push(WT[i] + DUR(i)));
   const A1 = WT[WORDS.length];                                // the answer ends
-  const C = Math.ceil((A1 + 1.3) * 10) / 10;                  // Code starts
-  const STEPS = [0, 2.8, 6.0, 11.4, C, C + 2.9, C + 11.0];
-  const END = C + 19.0;
+  const C = Math.ceil((A1 + .9) * 10) / 10;                   // Code starts
+  const c = x => C + x;                                       // Code's clock
+  const STEPS = [0, 1.9, DL, SPLIT, CH, C, c(1.75), c(7.05)];
+  const END = c(12.4);
 
   /* ---------- the caption bar ---------- */
   const dotBtns = [...demo.querySelectorAll(".sb-dots button")];
@@ -87,7 +90,7 @@
   };
 
   /* ---------- 3: the model splits and loads ---------- */
-  const model = $("model"), lane = $("lane"), mdS = $("mdS");
+  const model = $("model"), lane = $("lane"), mdS = $("mdS"), dlBtn = $("dlBtn");
   const cells = [...$("cells0").children, ...$("cells1").children];
   const hg = [$("hg0"), $("hg1")];
   let filled = -1;
@@ -100,15 +103,15 @@
     filled = k;
     const gb = (11.2 * k / 20).toFixed(1);
     hg.forEach(h => { h.textContent = k >= 20 ? "11.2 GB, ready" : `${gb} of 11.2 GB`; h.classList.toggle("ok", k >= 20); });
-    mdS.textContent = k <= 0 ? "22.5 GB, 40 layers" : k < 20 ? `Downloading, ${(22.5 * k / 20).toFixed(1)} of 22.5 GB` : "Ready on 2 devices";
+    mdS.textContent = k <= 0 ? "22.5 GB · 40 layers" : k < 20 ? `Downloading · ${(22.5 * k / 20).toFixed(1)} of 22.5 GB` : "Ready on 2 devices";
   };
 
   /* ---------- 4: a hidden state, through every layer, once per word ---------- */
   const pkt = $("pkt"), retPath = $("retPath"), wire = lane.querySelector(".lk-w i"), a1 = $("a1");
   let geo = null;
   const measure = () => {
-    const L = lane.getBoundingClientRect();
-    const r = i => { const b = cells[i].getBoundingClientRect(); return { x: b.left - L.left + b.width / 2, y: b.top - L.top + b.height / 2, b: b.bottom - L.top, l: b.left - L.left, r: b.right - L.left }; };
+    const L = lane.getBoundingClientRect(), k = (L.width / lane.offsetWidth) || 1;   // the stage may be scaled
+    const r = i => { const b = cells[i].getBoundingClientRect(); return { x: (b.left - L.left + b.width / 2) / k, y: (b.top - L.top + b.height / 2) / k, b: (b.bottom - L.top) / k }; };
     const f0 = r(0), l0 = r(19), f1 = r(20), l1 = r(39);
     const by = f0.b + 8, dip = 12;
     geo = { f0, l0, f1, l1, by, dip };
@@ -232,60 +235,64 @@
   const tl = { t: 0, fired: 0, done: false, started: false };
   const EVENTS = [
     // 1: the laptop starts a room
-    [.8, () => press(aGo, 300)],
-    [1.1, () => { tabA.classList.add("done"); setDevices(1, true); }],
-    ...[0, 1, 2, 3].map(i => [1.2 + i * .14, () => letters(i + 1)]),
+    [.45, () => press(aGo, 260)],
+    [.7, () => { tabA.classList.add("done"); setDevices(1, true); }],
+    ...[0, 1, 2, 3].map(i => [.78 + i * .1, () => letters(i + 1)]),
     // 2: the desktop types the code and joins; the two tabs fold into one room
-    [3.0, () => setSlots(0, 0)],
-    [3.25, () => setSlots(1, 1)], [3.5, () => setSlots(2, 2)], [3.75, () => setSlots(3, 3)],
-    [4.0, () => { setSlots(4, -1); bBtn.classList.add("ready"); }],
-    [4.4, () => press(bBtn, 300)],
-    [4.7, () => { tabB.classList.add("done"); tabA.classList.add("met"); setDevices(2, true); }],
-    [5.35, () => flag("merge", true)],
-    // 3: the model, and its split
-    [STEPS[2], () => { scene("split"); }],
-    [6.9, () => model.classList.add("split")],
-    // 4: chat
-    [STEPS[3], () => { scene("chat"); }],
-    [12.35, () => { measure(); chatComposer.classList.add("hot"); }],
-    [13.4, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); a1.textContent = ""; toBottom(); }],
-    // 5: Code: the tab switches itself
+    [1.9, () => setSlots(0, 0)],
+    [2.08, () => setSlots(1, 1)], [2.26, () => setSlots(2, 2)], [2.44, () => setSlots(3, 3)],
+    [2.62, () => { setSlots(4, -1); bBtn.classList.add("ready"); }],
+    [2.9, () => press(bBtn, 260)],
+    [3.15, () => { tabB.classList.add("done"); tabA.classList.add("met"); setDevices(2, true); }],
+    [3.7, () => flag("merge", true)],
+    // 3: the room holds enough for the model; Download model
+    [DL, () => scene("split")],
+    [5.65, () => dlBtn.classList.add("hover")],
+    [6.05, () => { dlBtn.classList.remove("hover"); press(dlBtn, 240); }],
+    // 4: each device fetches its own half
+    [SPLIT, () => model.classList.add("dl")],
+    [SPLIT + .2, () => model.classList.add("split")],
+    // 5: chat
+    [CH, () => scene("chat")],
+    [CH + .45, () => { measure(); chatComposer.classList.add("hot"); }],
+    [CH + 1.4, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); a1.textContent = ""; toBottom(); }],
+    // 6: Code: the tab switches itself
     [C, () => { press(modes, 300); mode("code"); }],
-    [C + .3, () => scene("code")],
-    [C + .7, () => codeComposer.classList.add("hot")],
-    [C + 2.0, () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q"); }],
-    [C + 2.3, () => reveal(tool("c-s1"), .06)],
-    // 6: it writes three files and serves them
-    [C + 2.9, () => liveStart("index.html", "index.html", C + 2.9, C + 3.6)],
-    [C + 3.75, () => { liveEnd(); tool("c-t0"); }],
-    [C + 3.95, () => liveStart("style.css", "style.css", C + 3.95, C + 4.5)],
-    [C + 4.65, () => { liveEnd(); tool("c-t1"); }],
-    [C + 4.85, () => liveStart("game.js", "game.js", C + 4.85, C + 7.4)],
-    [C + 7.55, () => { liveEnd(); tool("c-t2"); }],
-    [C + 7.8, () => { setRun("c-t3", true); tool("c-t3"); }],
-    [C + 8.3, () => { setRun("c-t3", false); openPreview(); }],
-    [C + 8.6, reload],
-    [C + 8.8, () => { app.classList.remove("blank"); runGame(10); }],
-    [C + 9.2, () => reveal(tool("c-s2"), .06)],
-    // 7: a change, an edit, a reload
-    [C + 10.9, () => flag("app-on", false)],
-    [C + 11.1, () => codeComposer.classList.add("hot")],
-    [C + 12.8, () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q2"); }],
-    [C + 13.1, () => liveStart("game.js", "edit", C + 13.1, C + 13.8)],
-    [C + 13.95, () => { liveEnd(); fileState("game.js", "mod"); tool("c-t4"); }],
-    [C + 14.3, () => { flag("app-on", true); reload(); app.classList.add("blank"); }],
-    [C + 14.65, () => { v2(); app.classList.remove("blank"); }],
-    [C + 15.0, () => reveal(tool("c-s3"), .06)],
+    [c(.2), () => scene("code")],
+    [c(.4), () => codeComposer.classList.add("hot")],
+    [c(1.3), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q"); }],
+    [c(1.5), () => reveal(tool("c-s1"), .035)],
+    // 7: it writes three files and serves them
+    [c(1.75), () => liveStart("index.html", "index.html", c(1.75), c(2.2))],
+    [c(2.3), () => { liveEnd(); tool("c-t0"); }],
+    [c(2.4), () => liveStart("style.css", "style.css", c(2.4), c(2.75))],
+    [c(2.85), () => { liveEnd(); tool("c-t1"); }],
+    [c(2.95), () => liveStart("game.js", "game.js", c(2.95), c(4.5))],
+    [c(4.6), () => { liveEnd(); tool("c-t2"); }],
+    [c(4.75), () => { setRun("c-t3", true); tool("c-t3"); }],
+    [c(5.1), () => { setRun("c-t3", false); openPreview(); }],
+    [c(5.3), reload],
+    [c(5.45), () => { app.classList.remove("blank"); runGame(10); }],
+    [c(5.7), () => reveal(tool("c-s2"), .035)],
+    // 8: a change, an edit, a reload
+    [c(6.9), () => flag("app-on", false)],
+    [c(7.05), () => codeComposer.classList.add("hot")],
+    [c(8.25), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q2"); }],
+    [c(8.45), () => liveStart("game.js", "edit", c(8.45), c(8.9))],
+    [c(9.0), () => { liveEnd(); fileState("game.js", "mod"); tool("c-t4"); }],
+    [c(9.25), () => { flag("app-on", true); reload(); app.classList.add("blank"); }],
+    [c(9.5), () => { v2(); app.classList.remove("blank"); }],
+    [c(9.75), () => reveal(tool("c-s3"), .035)],
   ];
   EVENTS.sort((a, b) => a[0] - b[0]);
 
   const frame = t => {
-    if (t > 6.0 && t < 7.8) fill(0);
-    if (t >= 7.8 && t <= 10.4) fill(Math.min(20, Math.ceil((t - 7.8) / 2.4 * 20)));
-    if (t > 12.45 && t < 13.4) typeInto(chatTyped, Q1, 12.5, 13.2, t);
-    if (t >= STEPS[3]) flow(t);
-    if (t > C + .7 && t < C + 2.0) typeInto(codeTyped, PROMPT, C + .85, C + 1.8, t);
-    if (t > C + 11.1 && t < C + 12.8) typeInto(codeTyped, PROMPT2, C + 11.25, C + 12.6, t);
+    if (t > DL && t < FILL0) fill(0);
+    if (t >= FILL0 && t <= FILL1 + .1) fill(Math.min(20, Math.ceil((t - FILL0) / (FILL1 - FILL0) * 20)));
+    if (t > CH + .5 && t < CH + 1.4) typeInto(chatTyped, Q1, CH + .55, CH + 1.15, t);
+    if (t >= CH) flow(t);
+    if (t > c(.4) && t < c(1.3)) typeInto(codeTyped, PROMPT, c(.5), c(1.12), t);
+    if (t > c(7.05) && t < c(8.25)) typeInto(codeTyped, PROMPT2, c(7.15), c(8.05), t);
     if (writing) {
       const [a, b, n] = writing;
       liveTo(Math.max(0, Math.min(n, Math.ceil((t - a) / (b - a) * n))));
@@ -307,7 +314,7 @@
     tabA.classList.remove("done", "met"); tabB.classList.remove("done"); letters(0);
     setSlots(0, -1); bBtn.classList.remove("ready", "press"); aGo.classList.remove("press");
     setDevices(0); chips.forEach(c => c.classList.remove("in"));
-    model.classList.remove("split"); filled = -1; fill(0); geo = null;
+    model.classList.remove("split", "dl"); dlBtn.classList.remove("hover", "press"); filled = -1; fill(0); geo = null;
     words = -1; flowing = true; flow(0);
     demo.querySelectorAll("[data-at]").forEach(el => el.classList.add("pending"));
     chatTyped.textContent = ""; chatComposer.classList.remove("hot");
@@ -325,7 +332,7 @@
     streams = []; writing = null; tl.done = true; tl.started = true; tl.t = END; tl.fired = EVENTS.length;
     scene("code"); mode("code"); flag("merge", true); flag("served", true); flag("app-on", true);
     tabA.classList.add("done", "met"); tabB.classList.add("done"); letters(4); setSlots(4, -1);
-    setDevices(2); model.classList.add("split"); fill(20);
+    setDevices(2); model.classList.add("dl", "split"); fill(20);
     words = -1; flowing = true; flow(END);
     demo.querySelectorAll("[data-at]").forEach(el => el.classList.remove("pending", "enter"));
     saysText.forEach((txt, el) => { const s = el.querySelector(".say"); if (s) { s.textContent = txt; s.classList.remove("cursor"); } });
@@ -367,7 +374,7 @@
   const goStep = k => {
     if (RM) {
       if (k >= STEPS.length - 1) { tl.final(); return; }
-      const ends = [2.4, 5.3, 11.0, A1 + .5, C + 2.6, C + 10.6];
+      const ends = [1.6, 3.6, 6.0, CH - .3, A1 + .5, c(1.6), c(6.6)];
       seek(ends[k], true); tl.done = true; flow(A1 + 1); paintBar(STEPS[k]); return;
     }
     seek(STEPS[k]);
@@ -375,7 +382,7 @@
   dotBtns.forEach((b, i) => b.addEventListener("click", () => goStep(i)));
   $("replay").addEventListener("click", () => goStep(0));
   mChat.addEventListener("click", () => { if (demo.dataset.mode !== "chat" || tl.done) goStep(0); });
-  mCode.addEventListener("click", () => { if (demo.dataset.mode !== "code" || tl.done) goStep(4); });
+  mCode.addEventListener("click", () => { if (demo.dataset.mode !== "code" || tl.done) goStep(5); });
   modes.addEventListener("keydown", e => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
