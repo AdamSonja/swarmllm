@@ -1,6 +1,6 @@
-# Multi-device decode: parallelism choices, hop latency, and the other SwarmLLM
+# Multi-device decode: parallelism choices, hop latency, and enapt/SwarmLLM
 
-Researched 2026-09-26. Every number is tagged **[M]** (measured, by us or by the cited source on stated hardware) or **[C]** (claimed in a paper abstract or a README, not re-checked). Our own measurements come from `docs/bench-log.md`: GB10, Qwen 3.8 27B Q4_0, one machine emulating the devices over loopback. This note builds on `network-scheduler.md`, `decode-overhead-and-wire.md` and `exact-forward-pass-ideas.md` and does not repeat them.
+Researched 2026-09-26. Every number is tagged **[M]** (measured, by us or by the cited source on stated hardware) or **[C]** (claimed in a paper abstract or a README, not re-checked). Our own measurements come from `docs/bench-log.md`: GB10, Qwen 3.8 27B Q4_0, one machine emulating the devices over loopback. This note builds on `archive/research/network-scheduler.md`, `archive/research/decode-overhead-and-wire.md` and `archive/research/exact-forward-pass-ideas.md` and does not repeat them.
 
 ## 0. The short version
 
@@ -75,7 +75,7 @@ The same math applies to EP: 80 syncs against about 8 ms of expert compute per t
 | **Fewer hops** (smallest set of devices that fits) | removes D directly | ours: 3 devices 10.4 vs 16 devices 3.8–4.7 tok/s **[M, loopback]** | **Yes** |
 | **Cheaper hops** (GPU-side pack, one readback, encode-ahead) | cuts the ~15 ms fixed cost per hop | encode-ahead −7.45 ms/token **[M]**; enapt's split costs ~47 ms/token on localhost **[M]** | **Yes** (bytes only) |
 
-**Exactness caveat to settle before claiming "bit-exact vs single device" in a room.** `docs/kernel-plan-2.md` notes that the f16 wire breaks split-vs-solo bit-exactness, because a single device never rounds the residual stream to f16 at the split points. Either keep an f32 wire mode for the golden test, or define the contract as "identical to solo *with the same split points rounded*". Speculative vs plain equality holds either way.
+**Exactness caveat to settle before claiming "bit-exact vs single device" in a room.** `docs/archive/kernel-plan-2.md` notes that the f16 wire breaks split-vs-solo bit-exactness, because a single device never rounds the residual stream to f16 at the split points. Either keep an f32 wire mode for the golden test, or define the contract as "identical to solo *with the same split points rounded*". Speculative vs plain equality holds either way.
 
 ---
 

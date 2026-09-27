@@ -1,7 +1,7 @@
 # Handoff: SwarmLLM → "Tabby" (working name)
 
 Branch `tabby-new-idea`: everything from the Claude Code session in one place, for picking up in
-another session. The full conversation is in [chat-export.md](chat-export.md); the loop logs are
+another session. The full conversation was in `chat-export.md`, removed from the tree (it was a raw chat transcript; git history has it); the loop logs are
 [kernels-loop.md](kernels-loop.md) and [tabby-loop.md](tabby-loop.md).
 
 ## The idea
@@ -40,7 +40,7 @@ already own. Private (code never leaves the devices), no API bill, nothing to in
 
 ## What is built (all on this branch)
 
-Details: [../tabby-kernel.md](../tabby-kernel.md), research: [../research/](../research/).
+Details: [../../long-context-and-sessions.md](../../long-context-and-sessions.md), research: [../../research/](../../research/).
 
 Engine (WebGPU, `engine/qwen35.js`, `engine/wgsl/*`):
 - Multi-device gibberish fixes (dense ROWS=8 half-dispatch, worker DeltaNet reset, spec flag past
@@ -96,5 +96,5 @@ No GPU needed: headless Chromium with SwiftShader WebGPU.
    batch by expert, SSD spill of cold experts.
 3. Build the Tabby app page on the harness: pick a folder, agent chat, diff approval, sessions.
 4. Designs written, not built: pipelined speculative windows across devices, batched
-   multi-session decode ([../research/tabby-next-2026-09.md](../research/tabby-next-2026-09.md)).
+   multi-session decode ([../../research/tabby-next-2026-09.md](../../research/tabby-next-2026-09.md)).
 5. Pick the name; decide new repo vs rename; deprecate SwarmLLM.
