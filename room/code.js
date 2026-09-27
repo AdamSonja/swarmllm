@@ -342,7 +342,7 @@ export async function initCode(api, { mock = null } = {}) {
   async function run() {
     const box = $("code-prompt"), text = box.value.trim();
     if (!text || running || !isHost()) return;
-    if (!api.ready()) { localNote("the model is not loaded yet: pick a model in the sidebar and press start", true); return; }
+    if (!api.ready()) { localNote("the model is not loaded yet: pick a model in Chat and press Start", true); return; }
     if (EVAL != null && /^\/eval\b/.test(text)) { box.value = ""; grow(); return runEval(text.slice(5).trim() || EVAL); }
     running = true;
     ui.running(true);
@@ -497,7 +497,7 @@ export async function initCode(api, { mock = null } = {}) {
       if (!project && !hist.length) {
         ui.placeholder(api.ready()
           ? "<b>Code mode</b>: the room's model writes a web app, serves it on a port and fixes its own errors.<br>Try “build a tetris game”."
-          : "<b>Code mode</b> runs on the room's model.<br>Pick a model in the sidebar and press start, then ask for something to build.");
+          : "<b>Code mode</b> runs on the room's model.<br>Pick a model in Chat and press Start, then ask for something to build.");
       }
       setTimeout(() => $("code-prompt").focus(), 0);
     } else if (!$("code-log").children.length) ui.placeholder("the host hasn't started the agent yet<br>what it does shows up here, live");
