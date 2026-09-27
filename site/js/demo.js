@@ -1,5 +1,6 @@
-/* The demo window: Chat | Code tabs, two short story timelines with a one-line caption per beat,
-   a playable Tetris, and the closing logo that assembles from three devices.
+/* The demo window: one story in six steps (start a room, join it, the model fits, chat, build,
+   play), a step bar under it that says where we are and jumps to any step, a playable Tetris,
+   and the closing logo that assembles from three devices.
    The HTML holds the finished state (readable without JS). This script rewinds and replays it. */
 (() => {
   "use strict";
@@ -21,180 +22,129 @@
   const win = $("win");
   if (!win || !window.PooledTetris) return;
   const restart = (el, cls) => { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); };
+  const scene = s => { win.dataset.scene = s; };
+  const flag = (cls, on) => win.classList.toggle(cls, on);
 
-  /* ---------- caption: one line per beat ---------- */
-  const capT = $("capT");
-  const showCap = (text, anim) => {
-    if (capT.textContent === text) return;
-    capT.textContent = text;
-    if (anim && !RM) restart(capT, "in");
-  };
-
-  /* ---------- tiny timeline engine ---------- */
-  function Timeline(root, { events, end, reset, final, frame, lastCap }) {
-    const says = [...root.querySelectorAll(".say")].map(el => ({ el, text: el.textContent, html: el.innerHTML }));
-    const tl = { t: 0, fired: 0, streams: [], done: false, started: false, cap: lastCap, lastCap };
-    const restore = s => { s.el.innerHTML = s.html; s.el.classList.remove("cursor"); };
-    tl.caption = text => { tl.cap = text; if (TL[tab] === tl) showCap(text, true); };
-    tl.show = k => {
-      const el = root.querySelector(`[data-at="${k}"]`); if (!el) return null;
-      el.classList.remove("pending"); restart(el, "enter"); return el;
-    };
-    tl.stream = (el, rate, onDone) => {
-      const s = says.find(x => x.el === el || el.contains(x.el)); if (!s) return null;
-      s.el.textContent = ""; s.el.classList.add("cursor");
-      const st = { s, words: s.text.split(" "), t0: tl.t, rate, onDone };
-      tl.streams.push(st); return st;
-    };
-    tl.reset = () => {
-      tl.t = 0; tl.fired = 0; tl.streams = []; tl.done = false;
-      root.querySelectorAll("[data-at]").forEach(el => el.classList.add("pending"));
-      says.forEach(restore);
-      reset();
-    };
-    tl.final = () => {
-      tl.streams = []; tl.done = true; tl.started = true; tl.cap = lastCap;
-      root.querySelectorAll("[data-at]").forEach(el => el.classList.remove("pending", "enter"));
-      says.forEach(restore);
-      final();
-      if (TL[tab] === tl) showCap(lastCap);
-    };
-    tl.advance = dt => {
-      tl.t += dt;
-      while (tl.fired < events.length && events[tl.fired][0] <= tl.t) { events[tl.fired][1](); tl.fired++; }
-      tl.streams = tl.streams.filter(st => {
-        const n = Math.min(st.words.length, Math.floor((tl.t - st.t0) / st.rate));
-        if (n >= st.words.length) { restore(st.s); st.onDone && st.onDone(); frame("text"); return false; }
-        const txt = st.words.slice(0, n).join(" ");
-        if (st.s.el.textContent !== txt) { st.s.el.textContent = txt; frame("text"); }
-        return true;
+  /* ---------- steps and the bar under the window ---------- */
+  const T5 = 24.8;
+  const STEPS = [0, 4.0, 8.4, 15.2, T5, T5 + 8.6];
+  const END = T5 + 10.2;
+  const dotBtns = [...win.querySelectorAll(".sb-dots button")];
+  const CAPS = dotBtns.map(b => b.querySelector(".lbl").textContent);
+  const sbN = $("sbN"), sbT = $("sbT");
+  let shownStep = -1;
+  const stepAt = t => { let k = 0; STEPS.forEach((s, i) => { if (t >= s - 1e-6) k = i; }); return k; };
+  const paintBar = (t, animate) => {
+    const k = stepAt(t);
+    if (k !== shownStep) {
+      shownStep = k;
+      sbN.textContent = `${k + 1}/${STEPS.length}`;
+      sbT.textContent = CAPS[k];
+      if (animate && !RM) restart(sbT, "in");
+      dotBtns.forEach((b, i) => {
+        b.classList.toggle("done", i < k); b.classList.toggle("cur", i === k);
+        if (i === k) b.setAttribute("aria-current", "step"); else b.removeAttribute("aria-current");
       });
-      frame("tick", tl.t);
-      if (tl.t >= end && !tl.streams.length && tl.fired >= events.length) tl.done = true;
-    };
-    return tl;
-  }
-  const typeInto = (el, text, t0, t1, t) => {
-    const n = Math.max(0, Math.min(text.length, Math.ceil((t - t0) / (t1 - t0) * text.length)));
-    if (el.textContent.length !== n) el.textContent = text.slice(0, n);
+    }
+    const span = (STEPS[k + 1] ?? END) - STEPS[k];
+    const p = RM ? 100 : Math.max(0, Math.min(100, (t - STEPS[k]) / span * 100));
+    dotBtns[k].style.setProperty("--p", p.toFixed(1) + "%");
   };
+  dotBtns.forEach((b, i) => b.setAttribute("aria-label", `Step ${i + 1} of ${STEPS.length}: ${CAPS[i]}`));
 
-  /* ---------- CHAT: devices join until the model fits, it loads across them, they talk ---------- */
-  const pc = $("p-chat"), msgs = $("msgs"), devs = [...pc.querySelectorAll(".dev")];
+  /* ---------- 1, 2: start, join ---------- */
+  const jStart = $("jStart"), jJoin = $("jJoin"), jGo = $("jGo"), jBtn = $("jBtn"), jWire = win.querySelector(".jwire");
+  const codeL = [...jStart.querySelectorAll(".jcode span")], slots = [...jJoin.querySelectorAll(".slots i")];
+  const CODE = "NEST";
+  const setSlots = (n, cur) => slots.forEach((s, i) => { s.textContent = i < n ? CODE[i] : ""; s.classList.toggle("cur", i === cur); });
+
+  /* ---------- devices, the pool, the layers ---------- */
+  const chips = [...$("chips").children], rows = [...$("prow").children];
   const GB = [10, 12, 2], SCALE = 26, NEED = 22.5;
-  const meter = $("meter"), mst = $("mst"), gbs = [...pc.querySelectorAll(".js-gb")], cnt = $("cnt"), chatEl = pc.querySelector(".chat");
-  const stage = on => { chatEl.classList.toggle("boot", on); chatEl.classList.toggle("run", !on); };
-  const model = $("model"), mstat = $("mstat"), cells = [...$("strip").children];
-  const owner = cells.map(c => +c.className.slice(1));      // c0 / c1 / c2: whose layers
-  const chatTyped = $("chatTyped"), chatComposer = $("chatComposer"), chatWho = $("chatWho");
-  const Q1 = "what is pooled?", Q2 = "can it write code?";
-  const toBottom = () => { msgs.scrollTop = msgs.scrollHeight; };
+  const meter = $("meter"), mst = $("mst"), gbs = [...win.querySelectorAll(".js-gb")];
+  const model = $("model"), mstat = $("mstat");
+  const strips = [...win.querySelectorAll(".strip")].map(s => [...s.children]);
+  const cells = strips.flat();
+  const owner = strips[0].map(c => +c.className.slice(1));   // c0 / c1 / c2: whose layers
+  const LAYERS = [0, 1, 2].map(d => owner.filter(o => o === d).length);
+  const layerTx = rows.map(r => r.querySelector(".pl"));
   const setPool = n => {
-    devs.forEach((d, i) => d.classList.toggle("out", i >= n));
+    chips.forEach((c, i) => c.classList.toggle("out", i >= n));
+    rows.forEach((r, i) => r.classList.toggle("out", i >= n));
     GB.forEach((g, i) => { $("seg" + i).style.width = i < n ? (g / SCALE * 100) + "%" : "0%"; });
     const sum = GB.slice(0, n).reduce((a, b) => a + b, 0);
     gbs.forEach(g => { g.textContent = sum + " GB"; });
     meter.classList.toggle("ok", sum >= NEED);
     mst.textContent = !n ? "Waiting for devices" : sum >= NEED ? "Enough to run it" : (NEED - sum).toFixed(1) + " GB short";
-    cnt.textContent = n ? (n === 1 ? "1 device" : n + " devices") : "";
   };
+  const arrive = i => { setPool(i + 1); restart(chips[i], "in"); restart(rows[i], "in"); if (GB.slice(0, i + 1).reduce((a, b) => a + b, 0) >= NEED) restart(meter, "hit"); };
   let filled = -1;
   const fill = k => {
     if (k === filled) return;
-    cells.forEach((c, i) => {
+    strips.forEach(st => st.forEach((c, i) => {
       const on = i < k;
       c.className = on ? "c" + owner[i] : "";
       if (on && i >= filled && filled >= 0) c.classList.add("f");
-    });
+    }));
     filled = k;
-    model.classList.toggle("loaded", k >= cells.length);
-    mstat.textContent = k <= 0 ? "waiting" : k < cells.length ? `loading ${k} of 40 layers` : "40 layers, split 3 ways";
+    model.classList.toggle("loaded", k >= 40);
+    mstat.textContent = k <= 0 ? "waiting for 22.5 GB" : k < 40 ? `loading ${k} of 40` : "40 layers, split 3 ways";
+    layerTx.forEach((el, d) => {
+      const n = owner.slice(0, Math.max(0, k)).filter(o => o === d).length;
+      el.textContent = k <= 0 ? "" : n === LAYERS[d] ? `${n} layers` : `${n} / ${LAYERS[d]}`;
+    });
   };
-  // a word travels Maya's layers, then Sam's, then Leo's; the token appears when it reaches the end
-  let pulse = null, hot = -1;
+  // a word travels the MacBook's layers, then the desktop's, then the phone's
+  let hot = -1;
   const setHot = i => {
     if (i === hot) return;
-    cells.forEach((c, j) => c.classList.toggle("hot", i >= 0 && Math.abs(j - i) <= 1));
-    devs.forEach((d, j) => d.classList.toggle("tok", i >= 0 && owner[i] === j));
+    cells.forEach((c, j) => { const x = j % 40; c.classList.toggle("hot", i >= 0 && Math.abs(x - i) <= 1); });
+    chips.forEach((c, j) => c.classList.toggle("tok", i >= 0 && owner[i] === j));
     hot = i;
   };
-  const typer = (who, cls) => { chatWho.textContent = who; chatWho.className = "av typer " + cls; chatComposer.classList.add("hot"); };
+
+  /* ---------- tiny timeline engine ---------- */
+  const says = [...win.querySelectorAll(".say")].map(el => ({ el, text: el.textContent }));
+  const restore = s => { s.el.textContent = s.text; s.el.classList.remove("cursor"); };
+  const tl = { t: 0, fired: 0, streams: [], done: false, started: false };
+  const show = k => {
+    const el = win.querySelector(`[data-at="${k}"]`); if (!el) return null;
+    el.classList.remove("pending"); restart(el, "enter"); return el;
+  };
+  const stream = (el, rate, onDone) => {
+    const s = says.find(x => x.el === el || el.contains(x.el)); if (!s) return null;
+    s.el.textContent = ""; s.el.classList.add("cursor");
+    const st = { s, words: s.text.split(" "), t0: tl.t, rate, onDone };
+    tl.streams.push(st); return st;
+  };
+  const typeInto = (el, text, t0, t1, t) => {
+    const n = Math.max(0, Math.min(text.length, Math.ceil((t - t0) / (t1 - t0) * text.length)));
+    if (el.textContent.length !== n) el.textContent = text.slice(0, n);
+  };
+
+  /* ---------- 4: chat ---------- */
+  const msgs = $("msgs"), chatTyped = $("chatTyped"), chatComposer = $("chatComposer"), chatWho = $("chatWho");
+  const Q1 = "what is pooled?", Q2 = "can it write code?";
+  const toBottom = () => { msgs.scrollTop = msgs.scrollHeight; };
+  const typer = icon => { chatWho.querySelector("use").setAttribute("href", icon); chatComposer.classList.add("hot"); };
   const sent = () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); };
-  const join = i => { setPool(i + 1); restart(devs[i], "in"); if (GB.slice(0, i + 1).reduce((a, b) => a + b, 0) >= NEED) restart(meter, "hit"); };
-  const answer = k => {
-    const li = chat.show(k); li.classList.add("live-share");
-    pulse = chat.stream(li, .2, () => { li.classList.remove("live-share"); pulse = null; setHot(-1); });
+  let pulse = null;
+  const answer = (k, rate) => {
+    const li = show(k); li.classList.add("live-share"); flag("pulsing", true);
+    pulse = stream(li, rate, () => { li.classList.remove("live-share"); pulse = null; setHot(-1); flag("pulsing", false); });
     toBottom();
   };
-  let seeking = false, handedOff = false;
-  const handOff = () => { if (seeking || handedOff || tab !== "chat") return; handedOff = true; setTimeout(() => select("code"), 0); };
-  const LOAD0 = 6.3, LOAD1 = 7.6;
 
-  const chat = Timeline(pc, {
-    end: 16.2, lastCap: "Three devices, one model, one conversation",
-    events: [
-      [0, () => chat.caption("Maya opens a room")],
-      [.4, () => join(0)],
-      [2.4, () => chat.caption("Sam joins from his PC")],
-      [2.6, () => join(1)],
-      [4.5, () => chat.caption("Leo joins from his phone")],
-      [4.7, () => join(2)],
-      [6.1, () => chat.caption("The model loads across all three")],
-      [8.8, () => { stage(false); chat.show("rdy"); toBottom(); }],
-      [9.2, () => { chat.caption("Leo asks a question"); typer("L", "a3"); }],
-      [10.1, () => { sent(); chat.show("q1"); toBottom(); }],
-      [10.4, () => { chat.caption("Every word flows through all three devices"); answer("a1"); }],
-      [12.9, () => { chat.caption("Maya asks if it can code"); typer("M", "a1"); }],
-      [13.9, () => { sent(); chat.show("q2"); toBottom(); }],
-      [14.1, () => answer("a2")],
-      [16.4, handOff],
-    ],
-    frame(kind, t) {
-      if (kind === "text") return toBottom();
-      if (t > LOAD0 && t < LOAD1 + .2) fill(Math.min(40, Math.ceil((t - LOAD0) / (LOAD1 - LOAD0) * 40)));
-      if (t > 9.2 && t < 10.1) typeInto(chatTyped, Q1, 9.3, 9.95, t);
-      if (t > 12.9 && t < 13.9) typeInto(chatTyped, Q2, 13.0, 13.75, t);
-      if (pulse) setHot(Math.floor(((t - pulse.t0) % pulse.rate) / pulse.rate * 40));
-    },
-    reset() {
-      setPool(0); fill(0); setHot(-1); pulse = null; sent(); stage(true); chatEl.classList.remove("run");
-      pc.querySelectorAll(".live-share").forEach(el => el.classList.remove("live-share"));
-      devs.forEach(d => d.classList.remove("in")); meter.classList.remove("hit");
-      msgs.scrollTop = 0;
-    },
-    final() {
-      setPool(3); fill(40); setHot(-1); pulse = null; sent(); chatEl.classList.remove("boot", "run");
-      devs.forEach(d => d.classList.remove("in")); meter.classList.remove("hit");
-      pc.querySelectorAll(".live-share").forEach(el => el.classList.remove("live-share")); toBottom();
-    }
-  });
-
-  /* ---------- CODE: they are all there; Maya asks, code streams, it runs, everyone sees it ---------- */
-  const pk = $("p-code"), steps = $("steps"), files = [...pk.querySelectorAll("[data-f]")];
-  const pres = [...pk.querySelectorAll(".pres li")], ust0 = $("ust0");
-  const wcard = $("wcard"), wPre = $("wPre"), wN = $("wN"), wNm = wcard.querySelector(".nm");
-  const LINES = wPre.textContent.split("\n"), wf = wcard.querySelector(".wf .t");
-  const DONE = "written on Maya's, Sam's and Leo's devices", LIVE = "running on Maya's, Sam's and Leo's devices";
-  const peers = [...pk.querySelectorAll(".peer")], ghosts = peers.map(p => p.querySelector(".ghost")), mirs = peers.map(p => p.querySelector(".mir"));
+  /* ---------- 5, 6: build, play ---------- */
+  const steps = $("steps"), files = [...win.querySelectorAll("[data-f]")];
+  const wPre = $("wPre"), wN = $("wN"), wTn = files[1].querySelector(".tn");
+  const LINES = wPre.textContent.split("\n");
   const browser = $("browser"), app = $("app"), brLoad = $("brLoad"), game = $("game"), play = $("play"), paused = $("paused");
   const overT = $("overT"), overScore = $("overScore");
   const codeTyped = $("codeTyped"), codeComposer = $("codeComposer");
   const PROMPT = "build me a tetris game";
   const stepsBottom = () => { steps.scrollTop = steps.scrollHeight; };
   const fmt = n => n.toLocaleString("en-US");
-
-  // Sam's and Leo's screens mirror the game (each peer runs the preview itself in the real room)
-  const mirror = src => {
-    peers.forEach((p, i) => {
-      if (!p.classList.contains("on")) return;
-      const c = mirs[i], r = c.getBoundingClientRect(); if (!r.width) return;
-      const d = Math.min(devicePixelRatio || 1, 2), w = Math.round(r.width * d), h = Math.round(r.height * d);
-      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
-      const x = c.getContext("2d"), s = Math.min(w / src.width, h / src.height);
-      x.fillStyle = "#0B0F1F"; x.fillRect(0, 0, w, h);
-      x.drawImage(src, (w - src.width * s) / 2, (h - src.height * s) / 2, src.width * s, src.height * s);
-    });
-  };
   const tet = window.PooledTetris($("tetris"), {
     seed: 11, tick: 60,
     onScore: (s, l) => { $("score").textContent = fmt(s); $("lines").textContent = l; overScore.textContent = fmt(s); },
@@ -203,151 +153,183 @@
       paused.hidden = st !== "paused";
       overT.hidden = st !== "over";
       play.textContent = st === "over" ? "Play again" : "Play";
-    },
-    onDraw: mirror
+    }
   });
-
-  const presence = n => pres.forEach((li, i) => li.classList.toggle("out", i >= n));
-  const arrive = i => { presence(i + 1); restart(pres[i], "in"); peers[i - 1] && peerState(i - 1, "in"); };
-  const peerState = (i, st) => {
-    const p = peers[i];
-    p.classList.toggle("wait", st === "out");
-    p.classList.toggle("on", st === "live");
-    if (st === "live") restart(p, "hit");
-  };
-  const ghostLine = line => ghosts.forEach(g => {
-    const i = document.createElement("i");
-    i.style.width = line.trim() ? Math.min(100, 12 + line.length * 2.4) + "%" : "0";
-    if (!line.trim()) i.style.background = "none";
-    g.append(i);
-    while (g.children.length > 24) g.firstChild.remove();
-  });
-  const clearGhosts = () => ghosts.forEach(g => { g.textContent = ""; });
-  let shown = -1;
+  const pfs = [...win.querySelectorAll("[data-pf]")], pfN = pfs[1] && pfs[1].querySelector(".n");
+  let shown = -1, writing = false;
   const writeTo = k => {
     if (k === shown) return;
     if (k < shown || shown < 0) { wPre.textContent = ""; shown = 0; }
     for (let i = shown; i < k; i++) {
       const sp = document.createElement("span"); sp.textContent = LINES[i];
       wPre.querySelectorAll(".nw").forEach(e => e.classList.remove("nw"));
-      sp.className = "nw"; wPre.append(sp); ghostLine(LINES[i]);
+      sp.className = "nw"; wPre.append(sp);
     }
-    while (wPre.children.length > 12) wPre.firstChild.remove();
-    shown = k; wN.textContent = k + (k === 1 ? " line" : " lines");
+    while (wPre.children.length > (innerWidth <= 760 ? 9 : 11)) wPre.firstChild.remove();
+    wPre.style.setProperty("--ln0", String(Math.max(0, k - wPre.children.length)));
+    shown = k; wN.textContent = "+" + k;
+    if (pfN) pfN.textContent = String(Math.max(k, 1));
   };
   const file = (i, state) => {
+    const pf = pfs[i];
+    if (pf) {
+      pf.classList.toggle("pending", state === "hide");
+      pf.classList.toggle("busy", state === "busy");
+      if (state === "busy") restart(pf, "new");
+    }
     const li = files[i];
     li.classList.toggle("pending", state === "hide");
     li.classList.toggle("busy", state === "busy");
     if (state === "busy") restart(li, "new");
   };
-  const openBrowser = () => { browser.classList.remove("shut"); restart(brLoad, "go"); };
+  const openBrowser = () => { browser.classList.remove("shut"); restart(brLoad, "go"); flag("app-on", true); };
   const showApp = () => {
     app.classList.remove("blank");
     if (!tet.human) { tet.auto(11); tet.warm(14); }
     if (!RM || tet.human) tet.start(); else tet.draw();
   };
-  const W0 = 4.4, W1 = 7.4;
+  const W0 = T5 + 2.8, W1 = T5 + 6.0;
 
-  const code = Timeline(pk, {
-    end: 12.4, lastCap: "Built together, seen on every device",
-    events: [
-      [0, () => code.caption("Everyone is in the room")],
-      [.2, () => arrive(0)],
-      [.8, () => { arrive(1); code.show("c-w1"); ghostLine("  Sam is watching"); stepsBottom(); }],
-      [1.5, () => { arrive(2); code.show("c-w2"); ghostLine("  Leo is watching on his phone"); stepsBottom(); }],
-      [2.5, () => { code.caption("Maya asks for a game"); codeComposer.classList.add("hot"); ust0.textContent = "typing"; pres[0].classList.add("act"); }],
-      [3.5, () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); code.show("c-q"); ghostLine(""); ghostLine("Maya: build me a tetris game"); ust0.textContent = "host"; pres[0].classList.remove("act"); stepsBottom(); }],
-      [3.7, () => { code.stream(code.show("c-s1"), .06); ghostLine("Building a canvas Tetris."); ghostLine(""); stepsBottom(); }],
-      [4.2, () => { code.caption("The model writes it on all three devices"); code.show("c-w"); wcard.classList.add("streaming"); stepsBottom(); }],
-      [7.6, () => { wcard.classList.remove("streaming"); wcard.classList.add("fold"); wNm.textContent = "wrote"; wf.textContent = DONE; code.show("c-files"); file(0, "busy"); stepsBottom(); }],
-      [7.75, () => { file(0, "done"); file(1, "busy"); }],
-      [7.9, () => { file(1, "done"); file(2, "busy"); }],
-      [8.05, () => { file(2, "done"); file(3, "busy"); stepsBottom(); }],
-      [8.6, () => { code.caption("It runs"); file(3, "done"); openBrowser(); }],
-      [8.9, () => showApp()],
-      [10.0, () => { code.caption("Sam and Leo see it on their own devices"); peerState(0, "live"); }],
-      [10.4, () => peerState(1, "live")],
-      [12.2, () => code.caption("Your turn. Press Play.")],
-    ],
-    frame(kind, t) {
-      if (kind === "text") return stepsBottom();
-      if (t > 2.5 && t < 3.5) typeInto(codeTyped, PROMPT, 2.6, 3.35, t);
-      if (t > W0 && t < W1 + .2) { writeTo(Math.min(LINES.length, Math.ceil((t - W0) / (W1 - W0) * LINES.length))); stepsBottom(); }
-    },
-    reset() {
-      codeTyped.textContent = ""; codeComposer.classList.remove("hot");
-      presence(0); pres.forEach(li => li.classList.remove("in", "act")); ust0.textContent = "host";
-      peers.forEach((_, i) => peerState(i, "out")); clearGhosts();
-      shown = -1; writeTo(0); wcard.classList.remove("streaming", "fold"); wNm.textContent = "writing"; wf.textContent = LIVE;
-      files.forEach((_, i) => file(i, "hide"));
-      browser.classList.add("shut"); app.classList.add("blank"); brLoad.classList.remove("go");
-      if (!tet.human) { tet.stop(); tet.auto(11); }
-      steps.scrollTop = 0;
-    },
-    final() {
-      codeTyped.textContent = ""; codeComposer.classList.remove("hot");
-      presence(3); pres.forEach(li => li.classList.remove("in", "act")); ust0.textContent = "host";
-      clearGhosts();
-      shown = -1; writeTo(LINES.length); wcard.classList.remove("streaming"); wcard.classList.add("fold"); wNm.textContent = "wrote"; wf.textContent = DONE;
-      files.forEach((_, i) => file(i, "done"));
-      browser.classList.remove("shut"); app.classList.remove("blank");
-      peers.forEach((_, i) => peerState(i, "live")); peers.forEach(p => p.classList.remove("hit"));
-      if (!tet.human) { tet.auto(11); tet.warm(18); }
-      if (!RM) tet.start(); else tet.draw();
-      stepsBottom();
+  const EVENTS = [
+    // 1: start a room on the MacBook
+    [.9, () => jGo.classList.add("press")],
+    [1.2, () => { jGo.classList.remove("press"); jStart.classList.add("done"); }],
+    [1.35, () => { codeL[0].classList.remove("off"); restart(codeL[0], "lit"); }],
+    [1.5, () => { codeL[1].classList.remove("off"); restart(codeL[1], "lit"); flag("has-room", true); arrive(0); }],
+    [1.65, () => { codeL[2].classList.remove("off"); restart(codeL[2], "lit"); }],
+    [1.8, () => { codeL[3].classList.remove("off"); restart(codeL[3], "lit"); }],
+    [2.3, () => jStart.classList.remove("linkless")],
+    // 2: the desktop types the code
+    [STEPS[1], () => { jJoin.classList.add("on"); setSlots(0, 0); }],
+    [4.4, () => setSlots(1, 1)], [4.75, () => setSlots(2, 2)], [5.1, () => setSlots(3, 3)],
+    [5.45, () => { setSlots(4, -1); jBtn.classList.add("ready"); }],
+    [6.1, () => jBtn.classList.add("press")],
+    [6.4, () => { jBtn.classList.remove("press"); jJoin.classList.add("done"); jWire.classList.add("on"); arrive(1); }],
+    // 3: the phone joins, the pool crosses the line, the layers load
+    [STEPS[2], () => { scene("pool"); fill(0); }],
+    [9.8, () => arrive(2)],
+    // 4: chat
+    [STEPS[3], () => { scene("chat"); show("rdy"); toBottom(); }],
+    [15.8, () => typer("#i-phone")],
+    [16.9, () => { sent(); show("q1"); toBottom(); }],
+    [17.2, () => answer("a1", .19)],
+    [20.8, () => typer("#i-laptop")],
+    [21.8, () => { sent(); show("q2"); toBottom(); }],
+    [22.0, () => answer("a2", .16)],
+    // 5: build
+    [T5, () => { scene("build"); codeComposer.classList.add("hot"); }],
+    [T5 + 1.3, () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); show("c-q"); stepsBottom(); }],
+    [T5 + 1.6, () => { stream(show("c-s1"), .07); stepsBottom(); }],
+    [T5 + 2.3, () => { show("c-t"); file(0, "busy"); stepsBottom(); }],
+    [T5 + 2.7, () => { file(0, "done"); file(1, "busy"); wTn.textContent = "writing"; writing = true; flag("pulsing", true); stepsBottom(); }],
+    [W1 + .2, () => { file(1, "done"); wTn.textContent = "write_file"; writing = false; setHot(-1); flag("pulsing", false); file(2, "busy"); stepsBottom(); }],
+    [W1 + .5, () => { file(2, "done"); file(3, "busy"); stepsBottom(); }],
+    [W1 + 1.0, () => { file(3, "done"); openBrowser(); }],
+    [W1 + 1.3, showApp],
+    // 6: your turn
+    [STEPS[5], () => flag("turn", true)],
+  ];
+
+  const frame = t => {
+    if (t > 11.0 && t < 13.6) fill(Math.min(40, Math.ceil((t - 11.0) / 2.4 * 40)));
+    if (t > 15.8 && t < 16.9) typeInto(chatTyped, Q1, 15.95, 16.7, t);
+    if (t > 20.8 && t < 21.8) typeInto(chatTyped, Q2, 20.95, 21.6, t);
+    if (t > T5 && t < T5 + 1.3) typeInto(codeTyped, PROMPT, T5 + .15, T5 + 1.1, t);
+    if (pulse) setHot(Math.floor(((t - pulse.t0) % pulse.rate) / pulse.rate * 40));
+    if (writing) {
+      if (t > W0) { writeTo(Math.min(LINES.length, Math.ceil((t - W0) / (W1 - W0) * LINES.length))); stepsBottom(); }
+      setHot(Math.floor(((t - W0) % .1) / .1 * 40));
     }
-  });
+  };
+
+  tl.reset = () => {
+    tl.t = 0; tl.fired = 0; tl.streams = []; tl.done = false; pulse = null; writing = false;
+    scene("join"); ["has-room", "app-on", "turn", "pulsing"].forEach(c => flag(c, false));
+    jStart.classList.add("on", "linkless"); jStart.classList.remove("done"); jGo.classList.remove("press");
+    codeL.forEach(s => s.classList.add("off"));
+    jJoin.classList.remove("on", "done"); setSlots(0, -1); jBtn.classList.remove("ready", "press"); jWire.classList.remove("on");
+    setPool(0); chips.forEach(c => c.classList.remove("in")); rows.forEach(r => r.classList.remove("in")); meter.classList.remove("hit");
+    filled = -1; fill(0); setHot(-1);
+    win.querySelectorAll("[data-at]").forEach(el => el.classList.add("pending"));
+    win.querySelectorAll(".live-share").forEach(el => el.classList.remove("live-share"));
+    says.forEach(restore); sent(); msgs.scrollTop = 0;
+    codeTyped.textContent = ""; codeComposer.classList.remove("hot");
+    shown = -1; writeTo(0); wTn.textContent = "write_file";
+    files.forEach((_, i) => file(i, "hide"));
+    browser.classList.add("shut"); app.classList.add("blank"); brLoad.classList.remove("go");
+    if (!tet.human) { tet.stop(); tet.auto(11); }
+    steps.scrollTop = 0;
+    paintBar(0, true);
+  };
+  tl.final = () => {
+    tl.streams = []; tl.done = true; tl.started = true; tl.t = END; tl.fired = EVENTS.length; pulse = null; writing = false;
+    scene("build"); flag("has-room", true); flag("app-on", true); flag("turn", false); flag("pulsing", false);
+    jStart.classList.add("on", "done"); jStart.classList.remove("linkless"); codeL.forEach(s => s.classList.remove("off"));
+    jJoin.classList.add("on", "done"); setSlots(4, -1); jWire.classList.add("on");
+    setPool(3); fill(40); setHot(-1);
+    win.querySelectorAll("[data-at]").forEach(el => el.classList.remove("pending", "enter"));
+    win.querySelectorAll(".live-share").forEach(el => el.classList.remove("live-share"));
+    says.forEach(restore); sent(); codeTyped.textContent = ""; codeComposer.classList.remove("hot");
+    shown = -1; writeTo(LINES.length); wTn.textContent = "write_file";
+    files.forEach((_, i) => file(i, "done"));
+    browser.classList.remove("shut"); app.classList.remove("blank");
+    if (!tet.human) { tet.auto(11); tet.warm(18); }
+    if (!RM) tet.start(); else tet.draw();
+    toBottom(); stepsBottom();
+    paintBar(END);
+  };
+  tl.advance = dt => {
+    tl.t += dt;
+    while (tl.fired < EVENTS.length && EVENTS[tl.fired][0] <= tl.t) { EVENTS[tl.fired][1](); tl.fired++; }
+    tl.streams = tl.streams.filter(st => {
+      const n = Math.min(st.words.length, Math.floor((tl.t - st.t0) / st.rate));
+      if (n >= st.words.length) { restore(st.s); st.onDone && st.onDone(); toBottom(); stepsBottom(); return false; }
+      const txt = st.words.slice(0, n).join(" ");
+      if (st.s.el.textContent !== txt) { st.s.el.textContent = txt; toBottom(); stepsBottom(); }
+      return true;
+    });
+    frame(tl.t);
+    paintBar(tl.t, true);
+    if (tl.t >= END && !tl.streams.length && tl.fired >= EVENTS.length) tl.done = true;
+  };
 
   /* ---------- driver: one rAF, only while the window is on screen and the page is visible ---------- */
-  const TL = { chat, code };
-  let tab = "chat", raf = 0, last = 0, visible = false, frozen = false;
-  const cur = () => TL[tab];
-  const needs = () => !frozen && visible && !document.hidden && cur().started && !cur().done;
-  const syncEnded = () => win.classList.toggle("ended", cur().done);
+  let raf = 0, last = 0, visible = false, frozen = false;
+  const needs = () => !frozen && visible && !document.hidden && tl.started && !tl.done;
   function loop(now) {
     const dt = last ? Math.min(.1, (now - last) / 1000) : .016; last = now;
-    cur().advance(dt); syncEnded();
+    tl.advance(dt);
     raf = needs() ? requestAnimationFrame(loop) : 0;
   }
   const wake = () => { if (needs() && !raf) { last = 0; raf = requestAnimationFrame(loop); } };
-  const begin = name => { const tl = TL[name]; if (!tl.started) { tl.started = true; if (RM) tl.final(); else tl.reset(); } syncEnded(); wake(); };
+  const halt = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } };
+  const begin = () => { if (!tl.started) { tl.started = true; if (RM) tl.final(); else tl.reset(); } wake(); };
 
-  /* ---------- tabs ---------- */
-  const tabs = [...win.querySelectorAll('[role="tab"]')];
-  const select = (name, focus) => {
-    if (name === tab) { if (visible) begin(name); return; }
-    if (tab === "code" && tet.human && !tet.over && !tet.paused) tet.pause(true);
-    tab = name; win.dataset.tab = name;
-    tabs.forEach(b => { const on = b.id === "tab-" + name; b.setAttribute("aria-selected", String(on)); b.tabIndex = on ? 0 : -1; if (on && focus) b.focus(); });
-    if (raf) { cancelAnimationFrame(raf); raf = 0; }
-    requestAnimationFrame(() => { if (name === "code") { tet.draw(); stepsBottom(); } else toBottom(); });
-    showCap(TL[name].cap || TL[name].lastCap);
-    begin(name); wake();
+  // jump to step k (0-based). With reduced motion: that step, finished, and no motion.
+  const seek = (s, freeze) => {
+    halt(); tl.started = true; frozen = !!freeze;
+    if (tet.human) tet.auto(11);
+    tl.reset();
+    while (tl.t < s - 1e-6) tl.advance(Math.min(1 / 30, s - tl.t));
+    tet.draw(); wake();
   };
-  tabs.forEach((b, i) => {
-    b.addEventListener("click", () => { handedOff = true; select(b.id.slice(4)); });
-    b.addEventListener("keydown", e => {
-      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-      e.preventDefault(); handedOff = true; select(tabs[(i + 1) % 2].id.slice(4), true);
-    });
-  });
+  const goStep = k => {
+    if (RM) {
+      if (k >= STEPS.length - 1) { tl.final(); return; }
+      seek(STEPS[k + 1] - .35, true); tl.done = true; return;
+    }
+    seek(STEPS[k]);
+  };
+  dotBtns.forEach((b, i) => b.addEventListener("click", () => goStep(i)));
+  $("replay").addEventListener("click", () => goStep(0));
   document.addEventListener("click", e => {
-    const a = e.target.closest && e.target.closest("[data-go]"); if (!a) return;
-    if (a.closest(".demo")) e.preventDefault();
-    handedOff = true; select(a.dataset.go);
-  });
-  $("replay").addEventListener("click", () => {
-    const tl = cur(); tl.started = true;
-    if (raf) { cancelAnimationFrame(raf); raf = 0; }
-    if (RM) { tl.final(); syncEnded(); return; }
-    if (tab === "code" && tet.human) { tet.auto(11); }
-    tl.reset(); syncEnded(); wake();
+    const a = e.target.closest && e.target.closest("a[data-step]"); if (!a) return;
+    goStep(+a.dataset.step - 1);
   });
 
   /* ---------- the game: keys are captured only while it has focus ---------- */
   const KEYMAP = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "rot", ArrowDown: "down", " ": "drop", Spacebar: "drop", x: "rot", z: "rot" };
-  const takeOver = () => tet.play();
+  const takeOver = () => { flag("turn", false); tet.play(); };
   play.addEventListener("click", e => { e.stopPropagation(); game.focus({ preventScroll: true }); takeOver(); });
   game.addEventListener("click", () => {
     if (!tet.human || tet.over) { game.focus({ preventScroll: true }); takeOver(); }
@@ -379,22 +361,17 @@
   /* ---------- start when 30% visible ---------- */
   new IntersectionObserver(es => {
     visible = es[0].isIntersecting;
-    if (visible) begin(tab);
+    if (visible) begin();
     wake();
   }, { threshold: .3 }).observe(win);
   document.addEventListener("visibilitychange", wake);
 
-  if (RM) { chat.final(); code.final(); chat.started = code.started = true; }
-  else { chat.reset(); code.reset(); chat.cap = "Maya opens a room"; showCap(chat.cap); }
+  if (RM) tl.final(); else tl.reset();
 
   // tests and screenshots: jump to a moment
   window.__demo = {
-    seek(name, s, freeze) {
-      seeking = true; frozen = !!freeze; select(name); const tl = TL[name];
-      if (raf) { cancelAnimationFrame(raf); raf = 0; }
-      tl.started = true; tl.reset(); while (tl.t < s) tl.advance(1 / 30);
-      tet.draw(); syncEnded(); wake();
-    },
-    set frozen(v) { frozen = v; wake(); }, get t() { return cur().t; }, get tab() { return tab; }, tet
+    seek(s, freeze) { seek(s, freeze); },
+    step: goStep,
+    set frozen(v) { frozen = v; wake(); }, get t() { return tl.t; }, STEPS, END, tet
   };
 })();
