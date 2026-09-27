@@ -773,10 +773,12 @@ function computeState() {
   const spanMax = Object.values(by).reduce((t, r) => { const m = /(\d+)\D*$/.exec(String(r)); return m ? Math.max(t, +m[1] + 1) : t; }, 0);
   const online = $("ai-panel").classList.contains("online");
   const loading = $("ai-panel").classList.contains("loading");
+  const mineDeal = /^(\d+)\D+(\d+)$/.exec(String(by[myName] || ""));   // "0-19": layers 1-20
   return {
     code: roomCode, devices: 1 + members.size, role: ai.role,
     model: shortName(ai.model || $("ai-model").value),
-    lo: ai.range ? ai.range[0] : null, hi: ai.range ? ai.range[1] : null,
+    // this device's layers: its engine's range once loaded, before that the deal the download card shows
+    lo: ai.range ? ai.range[0] : mineDeal ? +mineDeal[1] : null, hi: ai.range ? ai.range[1] : mineDeal ? +mineDeal[2] + 1 : null,
     total: ai.cfg?.num_hidden_layers || spanMax || 0,
     phase: online ? "serving" : loading ? "loading" : "idle",
     pct: ai.myPct ?? (ai.prog || {})[myName] ?? null,

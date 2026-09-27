@@ -280,7 +280,8 @@
       const pct = pcts[k], done = pct >= 100;
       rw.classList.toggle("done", done);
       rw.querySelector(".fill").style.width = pct + "%";
-      rw.querySelector(".pct").innerHTML = done ? `<span class="lw">layers </span>${LC_RANGE[k]}` : pct + "%";
+      rw.querySelector(".pct").textContent = done ? "ready" : pct + "%";
+      rw.querySelector(".lr").innerHTML = (done ? "" : '<span class="lw">downloading </span>') + "layers " + LC_RANGE[k];   // as the room: the layers under the name
       chips[k].querySelector(".cst").textContent = done || gb == null ? "" : pct + "%";
     });
     // before the bytes flow the room says what this device is doing; then the bytes, the total and the time left
