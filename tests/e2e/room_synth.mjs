@@ -132,6 +132,13 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
     p.on("console", (m) => { if ((m.type() === "error" || m.type() === "warning") && !/Could not connect to peer/.test(m.text())) errs[n].push(`${m.type()}: ${m.text().slice(0, 240)}`); });
     p.on("pageerror", (e) => errs[n].push("pageerror: " + String(e).slice(0, 240)));
   }
+  // Room settings are segmented controls over hidden selects (the settings sheet), and the model
+  // picker is a ladder over a select: set the select and fire its change, the way a click there does
+  const setSelect = (p, id, value) => p.evaluate(([id, value]) => {
+    const s = document.getElementById(id);
+    if (![...s.options].some((o) => o.value === value)) throw new Error(`#${id} has no option ${value}`);
+    s.value = value; s.dispatchEvent(new Event("change", { bubbles: true }));
+  }, [id, value]);
   const status = (p) => p.evaluate(() => [document.getElementById("ai-status")?.textContent, document.getElementById("ldg-sub")?.textContent].join(" | "));
   const pledges = pledgesFor(nDev);
   const out = { label, devices: nDev, rounds: [], errors: errs };
@@ -158,15 +165,13 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
     if (nDev > 1) await tabs.host.waitForTimeout(2000);   // stripe connections
     if (GREEDY) {   // the host's sampling preset "exact" = argmax (room/sampling.js)
       const has = await tabs.host.evaluate(() => [...(document.getElementById("ai-sampling")?.options || [])].some((o) => o.value === "exact"));
-      await tabs.host.evaluate(() => { const d = document.getElementById("host-controls"); if (d) d.open = true; });
-      if (has) await tabs.host.selectOption("#ai-sampling", "exact");
+      if (has) await setSelect(tabs.host, "ai-sampling", "exact");
       else if (!flag("greedy-hack")) throw new Error("no #ai-sampling 'exact' preset in this room build: rerun with --greedy-hack");
     }
-    await tabs.host.selectOption("#ai-model", MODEL_KEY);
+    await setSelect(tabs.host, "ai-model", MODEL_KEY);
     await tabs.host.waitForFunction(() => !document.getElementById("ai-start").disabled, null, { timeout: 20000 });
     const tLoad = Date.now();
-    await tabs.host.evaluate(() => { const d = document.getElementById("host-controls"); if (d) d.open = true; });
-    if (arg("split")) await tabs.host.selectOption("#ai-split", arg("split"));
+    if (arg("split")) await setSelect(tabs.host, "ai-split", arg("split"));
     await tabs.host.click("#ai-start");
     log(`[${label}] start pressed`);
     const poll = setInterval(async () => { for (const [n, p] of Object.entries(tabs)) { try { log(`[${label}] ${n}: ${(await status(p)).slice(0, 140)}`); } catch {} } }, 15000);
@@ -237,7 +242,7 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
       // carries on: the next question re-prefills it on the new split)
       if (arg("redeal-after") !== undefined && +arg("redeal-after") === r && r + 1 < ROUNDS) {
         const req0 = stats.requests || 0;
-        if (arg("redeal-split")) await tabs.host.selectOption("#ai-split", arg("redeal-split"));
+        if (arg("redeal-split")) await setSelect(tabs.host, "ai-split", arg("redeal-split"));
         await tabs.host.evaluate(() => { const b = document.getElementById("ai-redeal"); b.hidden = false; b.click(); });
         await tabs.host.waitForFunction(() => /cluster online/.test(document.getElementById("ai-status").textContent), null, { timeout: TIMEOUT });
         const split = await tabs.host.evaluate(() => [...document.querySelectorAll("#chat-log div")].map((d) => d.textContent).filter((t) => /layer split/.test(t)).pop());
@@ -252,7 +257,6 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
         await tabs.host.waitForSelector("#resume-btn:not([hidden])", { timeout: 30000 });
         await tabs.host.click("#resume-btn");
         await tabs.host.waitForFunction(() => /cluster online/.test(document.getElementById("ai-status").textContent), null, { timeout: TIMEOUT });
-        await tabs.host.evaluate(() => { const d = document.getElementById("host-controls"); if (d) d.open = true; });
         for (const p of Object.values(tabs).slice(1)) await p.waitForFunction(() => document.getElementById("ai-row").style.display === "flex", null, { timeout: 60000 });
         log(`[${label}] host reloaded and resumed after round ${r} in ${((Date.now() - t0) / 1000).toFixed(1)}s: ${await tabs.host.textContent("#ai-status")}`);
       }
@@ -262,15 +266,14 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
       }
     }
     if (flag("code")) await codeCheck(tabs, out, label);
-    // --social: a guest reacts to the last answer and types; the host sees the count and the note
+    // --social: a guest sees the copy button under the last answer, and types; the host sees the note
     if (flag("social") && names[1]) {
       const g = tabs[names[1]];
-      await g.click("#ai-output .m.bot:last-of-type .reacts button:nth-child(2)");
-      await tabs.host.waitForFunction(() => document.querySelector("#ai-output .m.bot:last-of-type .reacts button:nth-child(2) b")?.textContent === "1", null, { timeout: 10000 });
+      if (!(await g.isVisible("#ai-output .m.bot:last-of-type .copy-ans"))) throw new Error("no copy button under the guest's last answer");
       await g.type("#ai-prompt", "hmm");
       await tabs.host.waitForFunction(() => /is typing/.test(document.getElementById("typing-note").textContent), null, { timeout: 10000 });
       const hostSees = await tabs.host.textContent("#typing-note");
-      log(`[${label}] social: reaction count reached the host; host sees "${hostSees}"`);
+      log(`[${label}] social: the guest has a copy button; host sees "${hostSees}"`);
       await g.fill("#ai-prompt", "");
     }
     // --screenshot PREFIX: the host's and the first guest's whole page after the last round
@@ -282,7 +285,7 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
     }
     // --card PATH: open the room card and save a screenshot of it
     if (arg("card")) {
-      await tabs.host.click("#room-menu > summary");   // the room card lives in the room menu
+      await tabs.host.click("#room-menu > summary");   // the room card lives in Room settings, under Room
       await tabs.host.click("#card-btn");
       await tabs.host.locator("#card-canvas").screenshot({ path: arg("card") });
       log(`[${label}] room card saved to ${arg("card")}`);
