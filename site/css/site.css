@@ -118,6 +118,16 @@ ol,ul{list-style:none}
 .demo[data-scene="split"] .chip:has(.cst:not(:empty)) .cg{display:none}
 .chip.out{display:none}
 .chip.in{animation:chipin .5s var(--ease)}
+/* joined: the room's presence toast (p2p.html .toast.presence), a white pill with the device's dot */
+.toasts{position:absolute;right:16px;bottom:16px;z-index:6;display:flex;flex-direction:column;align-items:flex-end;gap:8px;pointer-events:none}
+.toast{display:none;align-items:center;gap:9px;padding:9px 14px 9px 12px;border-radius:var(--r-pill);background:var(--white);color:var(--ink);font:400 var(--t-md)/1.3 var(--sans);white-space:nowrap;box-shadow:0 0 0 1px var(--rule),0 10px 30px -12px rgba(20,22,29,.25)}
+.toast::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--sw);box-shadow:0 0 0 3px color-mix(in srgb,var(--sw) 22%,transparent)}
+.toast [data-name]{text-transform:lowercase}
+.toast.on{display:flex;animation:toastin .45s var(--ease) both}
+.toast.out{display:flex;animation:toastout .4s ease-in both}
+@keyframes toastin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes toastout{to{opacity:0;transform:translateY(4px)}}
+html:not(.js) .toasts{display:none}
 @keyframes chipin{from{opacity:0;transform:translateX(-6px) scale(.96)}}
 .chip.tok{border-color:var(--sw);box-shadow:0 0 0 3px var(--blue-soft)}
 .hd-sum{flex:none;margin-left:auto;font:400 var(--t-sm)/1 var(--mono);color:var(--ink-3);white-space:nowrap}
@@ -195,9 +205,9 @@ ol,ul{list-style:none}
 
 /* ---------- 3, 4: the room's model card (as in the room: p2p.html #ai-panel) ---------- */
 .model{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;justify-content:center;
-  transition:opacity .5s var(--ease),visibility 0s .5s,background-color .6s,border-color .6s,height .9s var(--glide);border-bottom:1px solid transparent}
+  transition:opacity .5s var(--ease),visibility 0s .5s,background-color .6s,border-color .6s;border-bottom:1px solid transparent}
 .js .model{opacity:0;visibility:hidden}
-.js .demo:is([data-scene="pool"],[data-scene="split"],[data-scene="chat"],[data-scene="code"]) .model{opacity:1;visibility:visible;transition:opacity .5s var(--ease) .2s,visibility 0s,background-color .6s,border-color .6s,height .9s var(--glide)}
+.js .demo:is([data-scene="pool"],[data-scene="split"],[data-scene="chat"],[data-scene="code"]) .model{opacity:1;visibility:visible;transition:opacity .5s var(--ease) .2s,visibility 0s,background-color .6s,border-color .6s}
 .card{position:absolute;left:50%;top:50%;display:flex;width:min(820px,calc(100% - 48px));background:var(--white);border:1px solid var(--rule);border-radius:16px;overflow:hidden;
   box-shadow:0 1px 2px rgba(20,22,29,.04),0 12px 24px -12px rgba(20,22,29,.10),0 40px 80px -40px rgba(20,22,29,.22);transform:translate(-50%,-50%);transition:opacity .35s var(--ease),transform .45s var(--ease),visibility 0s}
 .js .model.dl .card{opacity:0;visibility:hidden;transform:translate(-50%,-50%) scale(.97);transition:opacity .3s var(--ease),transform .4s var(--ease),visibility 0s .4s}
@@ -272,13 +282,16 @@ html:not(.js) .card{display:none}
 .band{position:relative;display:flex;flex-direction:column;padding:0 56px;transition:opacity .5s var(--ease) .1s,transform .7s var(--glide),padding .9s var(--glide)}
 .js .model:not(.dl) .band{opacity:0;transform:translateY(8px);pointer-events:none}
 /* downloading: the room's load card (p2p.html #load-card) stands in for the band until the chat opens */
-.js .demo[data-scene="split"] .band{opacity:0;transform:translateY(8px);pointer-events:none;transition:none}
-.ldc{position:absolute;left:50%;top:50%;width:min(560px,calc(100% - 32px));padding:24px 24px 20px;background:var(--white);border:1px solid var(--rule);border-radius:16px;
+/* while downloading, the band waits unseen at the top at its chat size, so the chat can fade it in where it stays */
+.demo[data-scene="split"] .model{justify-content:flex-start}
+.js .demo[data-scene="split"] .band{opacity:0;transform:none;pointer-events:none;transition:none}
+.ldc{position:absolute;left:50%;top:calc(var(--body-h) / 2);width:min(560px,calc(100% - 32px));padding:24px 24px 20px;background:var(--white);border:1px solid var(--rule);border-radius:16px;
   box-shadow:0 1px 2px rgba(20,22,29,.04),0 12px 24px -12px rgba(20,22,29,.10),0 40px 80px -40px rgba(20,22,29,.22);transform:translate(-50%,-50%);
   opacity:0;visibility:hidden;transition:opacity .3s var(--ease),visibility 0s .3s}
 .js .demo[data-scene="split"] .ldc{opacity:1;visibility:visible;transition:opacity .35s var(--ease) .15s,visibility 0s}
 .js .demo[data-scene="split"] .model.dl .ldc{animation:ldcin .45s var(--ease) .15s backwards}
 @keyframes ldcin{from{opacity:0;transform:translate(-50%,calc(-50% + 8px))}}
+.demo[data-scene="chat"] .ldc{transform:translate(-50%,-50%)}
 html:not(.js) .ldc{display:none}
 .lc-head{display:flex;align-items:center;gap:16px}
 .lc-head .dl{flex:none;width:40px;height:40px}
@@ -360,33 +373,33 @@ html:not(.js) .ldc{display:none}
 
 /* chat: the layers become the band across the top, the way the room shows them */
 .demo:is([data-scene="chat"],[data-scene="code"]) .model{bottom:auto;height:var(--band);justify-content:flex-start;background:var(--bg-2);border-bottom-color:var(--rule-2)}
-.demo:is([data-scene="chat"],[data-scene="code"]) .band{padding:12px 40px 0}
-.demo:is([data-scene="chat"],[data-scene="code"]) .bd-h{flex-direction:row;gap:10px;height:24px;margin-bottom:8px;text-align:left}
-.demo:is([data-scene="chat"],[data-scene="code"]) .bd-n{font:500 var(--t-base)/1.2 var(--sans);letter-spacing:-.01em}
-.demo:is([data-scene="chat"],[data-scene="code"]) .bd-live{display:inline-flex}
-.demo:is([data-scene="chat"],[data-scene="code"]) .bd-s{display:none}
-.demo:is([data-scene="chat"],[data-scene="code"]) .rows{gap:5px}
-.demo:is([data-scene="chat"],[data-scene="code"]) .row{grid-template-columns:minmax(0,230px) minmax(0,1fr)}
-.demo:is([data-scene="chat"],[data-scene="code"]) .hl{flex-wrap:nowrap;font-size:var(--t-sm)}
-.demo:is([data-scene="chat"],[data-scene="code"]) .hs{flex:none;width:18ch;margin-left:auto;padding-left:6px;justify-content:flex-start}   /* one column: "layers" starts at the same place on every row */
-.demo[data-scene="chat"] .hg{display:none}
-.demo:is([data-scene="chat"],[data-scene="code"]) .cells{height:12px;gap:2px}
-.demo:is([data-scene="chat"],[data-scene="code"]) .cells i{border-radius:2px}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .band{padding:12px 40px 0}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-h{flex-direction:row;gap:10px;height:24px;margin-bottom:8px;text-align:left}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-n{font:500 var(--t-base)/1.2 var(--sans);letter-spacing:-.01em}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-live{display:inline-flex}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-s{display:none}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .rows{gap:5px}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .row{grid-template-columns:minmax(0,230px) minmax(0,1fr)}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .hl{flex-wrap:nowrap;font-size:var(--t-sm)}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .hs{flex:none;width:18ch;margin-left:auto;padding-left:6px;justify-content:flex-start}   /* one column: "layers" starts at the same place on every row */
+.demo:is([data-scene="split"],[data-scene="chat"]) .hg{display:none}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .cells{height:12px;gap:2px}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .cells i{border-radius:2px}
 .lk-l{display:none}
 /* the room's numbers over the band (p2p.html .sm-stats) and its fold toggle */
 .lms,.bd-stats,.bd-tog,.bd-mini{display:none}
-.demo:is([data-scene="chat"],[data-scene="code"]) .lms{display:inline;min-width:5ch;text-align:right;color:var(--blue-text)}
-.demo:is([data-scene="chat"],[data-scene="code"]) .bd-stats{display:flex;gap:4px;margin-left:auto;min-width:0;white-space:nowrap}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .lms{display:inline;min-width:5ch;text-align:right;color:var(--blue-text)}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-stats{display:flex;gap:4px;margin-left:auto;min-width:0;white-space:nowrap}
 .bd-stats>span{display:flex;align-items:baseline;gap:5px;height:26px;padding:0 9px;font:400 var(--t-sm)/26px var(--sans);color:var(--ink-3)}
 .bd-stats>span+span{box-shadow:-1px 0 0 var(--rule-2)}
 .bd-stats b{font:500 var(--t-md)/26px var(--mono);color:var(--ink);font-variant-numeric:tabular-nums}
-.demo:is([data-scene="chat"],[data-scene="code"]) .bd-tog{display:grid;place-items:center;flex:none;width:28px;height:28px;border-radius:var(--r-sm);color:var(--ink-3)}
+.demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-tog{display:grid;place-items:center;flex:none;width:28px;height:28px;border-radius:var(--r-sm);color:var(--ink-3)}
 .s-code{top:var(--band)!important}   /* Code keeps the chat band: nothing changes size on the switch */
 
 /* ---------- 5: chat, under the band ---------- */
 .s-chat{top:var(--band)!important;display:flex;flex-direction:column}
 /* the conversation sits in the middle of the stage, not at the bottom of a tall empty one */
-.msgs{flex:1;min-height:0;overflow:hidden;padding:max(24px,8%) 48px 6px;display:flex;flex-direction:column;justify-content:safe center;gap:14px}
+.msgs{flex:1;min-height:0;overflow:hidden;padding:max(24px,8%) 48px 6px;display:flex;flex-direction:column;justify-content:flex-start;gap:14px}   /* top first, like the room: nothing re-centres as messages arrive */
 .msgs>*{flex:none}
 .who{display:block;margin-bottom:4px;font-size:var(--t-sm);font-weight:500;color:var(--ink-3)}
 .q,.a{display:flex;flex-direction:column;align-items:flex-start;max-width:min(80%,680px)}
@@ -707,13 +720,13 @@ html:not(.js) .sb-dots i{display:none}
   .cells{gap:1.5px;height:24px}
   .cells i{border-radius:2px}
   /* a phone folds the band, as the room does: the name, Writing, the strip of layers */
-  .demo:is([data-scene="chat"],[data-scene="code"]) .band{padding:8px 8px 0 12px}
-  .demo:is([data-scene="chat"],[data-scene="code"]) .bd-h{height:28px;margin:0}
-  .demo:is([data-scene="chat"],[data-scene="code"]) :is(.bd-s,.rows){display:none}
-  .demo:is([data-scene="chat"],[data-scene="code"]) .bd-mini{display:flex;flex:1 1 0;min-width:40px;height:16px;gap:1.5px}
-  .demo:is([data-scene="chat"],[data-scene="code"]) .bd-stats{display:none}
-  .demo:is([data-scene="chat"],[data-scene="code"]) .bd-tog svg{transform:rotate(180deg)}
-  .demo:is([data-scene="chat"],[data-scene="code"]) .bd-n{font-size:var(--t-base)}
+  .demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .band{padding:8px 8px 0 12px}
+  .demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-h{height:28px;margin:0}
+  .demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) :is(.bd-s,.rows){display:none}
+  .demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-mini{display:flex;flex:1 1 0;min-width:40px;height:16px;gap:1.5px}
+  .demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-stats{display:none}
+  .demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-tog svg{transform:rotate(180deg)}
+  .demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .bd-n{font-size:var(--t-base)}
   .msgs{padding:12px 12px 6px}
   .q,.a{max-width:92%}
   .q p,.a p{font-size:var(--t-base);padding:8px 12px}
@@ -741,8 +754,8 @@ html:not(.js) .sb-dots i{display:none}
   .files{width:156px}
   .ag-m{display:none}
   .band{padding:0 28px}
-  .demo:is([data-scene="chat"],[data-scene="code"]) .band{padding:12px 22px 0}
-  .demo:is([data-scene="chat"],[data-scene="code"]) .lk-l{right:22px}
+  .demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .band{padding:12px 22px 0}
+  .demo:is([data-scene="split"],[data-scene="chat"],[data-scene="code"]) .lk-l{right:22px}
   .msgs{padding:14px 24px 6px}
   .composer{margin:6px 22px 14px}
   .ctools{margin:8px 22px 0}
@@ -772,6 +785,7 @@ html:not(.js) .sb-dots i{display:none}
   .chip::before{margin-right:0}
   .hd-sum{margin-left:0;font-size:var(--t-xs)}
   .hd-k{display:none}
+  .toasts{left:16px;right:16px;align-items:center}
   .hd-code{margin-right:0}
   .hd-inv{display:none}
   .hd-me{width:30px;height:30px}

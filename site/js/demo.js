@@ -37,7 +37,7 @@
     const b = ANI.slice().sort(() => Math.random() - .5);
     NAMES = [0, 1, 2].map(i => b[i]);
     demo.querySelectorAll("[data-name]").forEach(el => { el.textContent = NAMES[+el.dataset.name]; });
-    ANSWER = `Pooled splits one big model across these 3 devices, so together they run a model none of them could alone. It can chat, or write code.`;
+    ANSWER = `Pooled splits big models across these 3 devices, so together they run models none of them could run alone. It can chat, or write code.`;
     WORDS = ANSWER.split(" "); timeWords();
   };
 
@@ -329,7 +329,8 @@
   let words = -1, flowing = false;
   const aLi = a1.parentNode;
   const flow = t => {
-    aLi.classList.toggle("streaming", t >= A0 && t < A1); aLi.classList.toggle("done", t >= A1);
+    aLi.classList.toggle("streaming", t >= A0 && t < A1);
+    if ((t >= A1) !== aLi.classList.contains("done")) { aLi.classList.toggle("done", t >= A1); toBottom(); }
     const wait = t >= A0 && t < A1 && t < WT[1];
     if (wait !== aLi.classList.contains("wait")) { aLi.classList.toggle("wait", wait); toBottom(); }
     if (t < A0 || t >= A1) {
@@ -348,10 +349,26 @@
     setHot(p.i); tok(p.d);
   };
 
+  // Code: while the agent streams (a file, a line of its answer) a token passes through every layer, pass after pass,
+  // the same glow as in the chat (the room's band sweeps on every pass in Code too)
+  const PASS = .42;
+  let coding = false;
+  const codeFlow = (t, on) => {
+    if (!on) { if (coding) { coding = false; pkt.classList.remove("on"); band.classList.remove("hop"); setHot(-1); tok(-1); } return; }
+    coding = true;
+    bdTok.textContent = WORDS.length + Math.floor((t - C) / PASS);
+    const p = trip(((t - C) / PASS) % 1);
+    pkt.style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px)`;
+    pkt.classList.toggle("on", !p.end);
+    band.classList.toggle("hop", !!p.hop);
+    setHot(p.i); tok(p.d);
+  };
+
   /* ---------- chat ---------- */
   const msgs = $("msgs"), chatTyped = $("chatTyped"), chatComposer = $("chatComposer");
   const Q1 = "what is Pooled?";
-  const toBottom = () => { msgs.scrollTop = msgs.scrollHeight; };
+  // the chat follows its last line, gliding (a jump when seeking, or with reduced motion)
+  const toBottom = () => { const top = msgs.scrollHeight - msgs.clientHeight; if (Math.abs(top - msgs.scrollTop) < 1) return; if (RM || frozen) msgs.scrollTop = top; else msgs.scrollTo({ top, behavior: "smooth" }); };
   const typeInto = (el, text, t0, t1, t) => {
     const n = Math.max(0, Math.min(text.length, Math.ceil((t - t0) / (t1 - t0) * text.length)));
     if (el.textContent.length !== n) el.textContent = text.slice(0, n);
@@ -505,20 +522,25 @@
   ].sort((a, b) => a[0] - b[0]);
   let EV = EVENTS();
 
+  const toastB = $("toastB"), toastC = $("toastC");
   const frame = t => {
-    flag("inviting", t >= S1 && t < S3);   // Invite shows only while devices are joining (steps 2 and 3)
+    flag("inviting", t >= S1 && t < S3);
+    // "heron joined", "lynx joined": the room's toast, for a few seconds after each device comes in
+    [[toastB, S1 + 1.65], [toastC, JOIN3]].forEach(([el, t0]) => {
+      const st = t >= t0 && t < t0 + 3.2 ? "on" : t >= t0 + 3.2 && t < t0 + 3.6 ? "out" : "";
+      if (el.dataset.st !== st) { el.dataset.st = st; el.classList.remove("on", "out"); if (st) el.classList.add(st); }
+    });   // Invite shows only while devices are joining (steps 2 and 3)
     if (t >= DL) loadAt(t);
     if (t > CH + .3 && t < CH + .95) typeInto(chatTyped, Q1, CH + .35, CH + .8, t);
     if (t >= CH) flow(t);
     // Code: the room's band says Writing while the agent writes
-    if (t >= C) { const on = !!writing || streams.length > 0; if (on !== band.classList.contains("writing")) { band.classList.toggle("writing", on); bdLive.textContent = on ? "Writing" : "Ready"; } }
+    if (t >= C) { const on = !!writing || streams.length > 0; if (on !== band.classList.contains("writing")) { band.classList.toggle("writing", on); bdLive.textContent = on ? "Writing" : "Ready"; } codeFlow(t, on); }
     if (t > c(.55) && t < c(ASK)) typeInto(codeTyped, A.prompt, c(.65), c(1.85), t);
     if (t > c(CHANGE) && t < c(CHANGE + 1.25)) typeInto(codeTyped, A.prompt2, c(CHANGE + .1), c(CHANGE + 1.1), t);
     if (writing) {
       const [a, b, n] = writing;
       liveTo(Math.max(0, Math.min(n, Math.ceil((t - a) / (b - a) * n))));
       fileState(writing[3], "w", writing[4] === "edit" ? null : Math.round(writing[5] * liveShown / Math.max(1, writing[2])));
-      tok(Math.floor(t * 7) % 3);
       logBottom();
     }
     streams = streams.filter(s => {
@@ -541,7 +563,7 @@
     lent = [0, 0, 0]; joining = -1; card.dataset.face = "pool";
     rungHover(-1); rungSelect(-1); rungs.forEach(li => li.classList.remove("unlock")); startBtn.classList.remove("hover", "press");
     model.classList.remove("dl"); rowsEl.classList.remove("dealt"); filled = [-1, -1, -1]; mdKey = ""; loadAt(0); geo = null;
-    words = -1; flowing = true; flow(0);
+    words = -1; flowing = true; coding = false; flow(0);
     demo.querySelectorAll("[data-at]").forEach(el => el.classList.add("pending"));
     chatTyped.textContent = ""; chatComposer.classList.remove("hot");
     codeTyped.textContent = ""; codeComposer.classList.remove("hot");
@@ -561,7 +583,7 @@
     tabA.classList.add("done", "met"); tabB.classList.add("done"); tabB.classList.remove("idle"); letters(4); setSlots(4, -1);
     setDevices(3); joining = -1; lent = LEND.slice(); rungHover(-1); rungSelect(2); card.dataset.face = "pick";
     model.classList.add("dl"); rowsEl.classList.add("dealt"); loadAt(FILL1 + 1);
-    words = -1; flowing = true; flow(END);
+    words = -1; flowing = true; coding = false; flow(END);
     demo.querySelectorAll("[data-at]").forEach(el => el.classList.remove("pending", "enter"));
     saysText.forEach((txt, el) => { const s = el.querySelector(".say"); if (s) { s.textContent = txt; s.classList.remove("cursor"); } });
     chatTyped.textContent = ""; codeTyped.textContent = ""; chatComposer.classList.remove("hot"); codeComposer.classList.remove("hot");
