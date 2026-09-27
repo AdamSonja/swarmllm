@@ -6,7 +6,9 @@
 // Everything that came from the model or the preview is untrusted text: it goes in with
 // textContent, and model prose through mdChat (room/markdown.js), which escapes first.
 import { mdChat } from "./markdown.js";
-import { working, markSVG } from "./working.js";
+// a namespace import: a tab loaded before a deploy keeps the old working.js in memory, and a named
+// import of something newer would fail to link (Safari: "Importing binding name ... is not found")
+import * as W from "./working.js";
 
 const $ = (id) => document.getElementById(id);
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -201,7 +203,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     log.querySelector(".cm-working")?.remove();
     if (!on || !runAt) return;
     const w = h("div", "cm-working");
-    w.append(working({ since: runAt, label: "the agent is working" }));
+    w.append(W.working({ since: runAt, label: "the agent is working" }));
     add(w);
   }
 
@@ -283,7 +285,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     function build() {
       el = h("div", "ew"); el.setAttribute("role", "status");
       const box = h("div", "ew-box");
-      box.innerHTML = markSVG(40);
+      box.innerHTML = W.markSVG ? W.markSVG(40) : "";
       box.append(h("span", "ew-t", ""));
       el.append(box);
     }

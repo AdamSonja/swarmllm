@@ -2885,7 +2885,19 @@ function codeOnData(from, d) {
 let simReady = false;
 // initCode returns { show(mode) }; the Chat tab is handled by code.js once it is loaded
 document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code") && $("mode-code").getAttribute("aria-selected") !== "true") window.pooledSparkle?.($("mode-code")); }, true);   // switching to Code sparkles (site/js/sparkle.js); capture: before the tab flips
-document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code")) loadCode().then((c) => c?.show?.("code")).catch((err) => toast("Code mode failed to load: " + err.message)); });
+// A tab opened before a deploy has the old modules in memory; Code mode's newer files can then fail to
+// link against them. Say so plainly: a host reloads (it goes straight back into its room), a guest is asked to.
+const staleModule = (err) => err instanceof SyntaxError || /binding name|export named|does not provide an export|not found in module|Failed to fetch dynamically imported module|error loading dynamically imported module/i.test(err?.message || "");
+function codeLoadFailed(err) {
+  if (staleModule(err)) {
+    let tried = false; try { tried = sessionStorage.getItem("pooled-stale-reload") === "1"; sessionStorage.setItem("pooled-stale-reload", "1"); } catch {}
+    if (isHost && !tried) { toast("Pooled was just updated: reloading to open Code…"); setTimeout(() => location.reload(), 900); return; }
+    toast("Pooled was just updated. Reload this page to open Code.");
+    return;
+  }
+  toast("Code mode failed to load: " + err.message);
+}
+document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code")) loadCode().then((c) => { try { sessionStorage.removeItem("pooled-stale-reload"); } catch {} c?.show?.("code"); }).catch(codeLoadFailed); });
 
 const roomApi = {
   myId: () => peer?.id,
