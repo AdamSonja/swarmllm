@@ -64,10 +64,12 @@ try {
     draftVocab: opt("draftvocab", 0), draftVocabAuto: opt("dvauto", 1) !== 0, ...(q.has("batchcols") ? { batchCols: +q.get("batchcols"), coopRowsB: +q.get("batchcols") >= 16 ? 1 : 4 } : {}),
     draftChain: q.get("draftchain") !== "0", specFuse: q.get("specfuse") !== "0",
     moeFuse: q.get("moefuse") !== "0", moeDnRows: +(q.get("moednrows") || 1),
+    // ?moegroup=U: expert-grouped prefill in U-token ubatches (a multiple of batchcols; U <= the prompt length to take effect), ?moegroupuc=8, ?moegrouptiled=0: the exact (slower) grouped kernels
+    moeGroupPrefill: opt("moegroup", 0), moeGroupUC: opt("moegroupuc", 8), moeGroupTiled: opt("moegrouptiled", 1) !== 0,
     moeKernel: MOEK, ...(q.has("attnptile") ? { attnPrefillTile: q.get("attnptile") !== "0" } : {}), ...(q.has("attnptk") ? { attnPrefillTK: +q.get("attnptk") } : {}) });   // ?attnptile=0: attn_flash for prefill instead of the tiled prefill attention (default: on for dense, off for MoE), &attnptk=N its tile; ?moefuse=0: unfused MoE (A/B); ?moe=legacy|default|JSON: unfused expert GEMV layout
   eng.mtpBatchRefill = opt("mtprefill", 1) !== 0; eng.mtpPreDraft = opt("predraft", 1) !== 0;
   log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s${G.entryCache ? " (pre-converted tensors from serve.mjs)" : ""}, mtp ${!!eng.mtp}, adapter ${ad.info?.vendor}, draftVocab ${eng.draftVocab || "off"}, refill ${eng.mtpBatchRefill ? "batched" : "per-row"}, predraft ${eng.mtpPreDraft}`);
-  log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}, fuseProj ${eng.fuseProj}, moeFuse ${!!eng.moeFuse} R ${eng.moe?.R}, moeKernel ${JSON.stringify(eng.moeK)}, attnPrefillTile ${eng.attnPrefillTile}${eng.attnPTCfg ? " TK " + eng.attnPTCfg.TK : ""}`);
+  log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}, fuseProj ${eng.fuseProj}, moeFuse ${!!eng.moeFuse} R ${eng.moe?.R}, moeKernel ${JSON.stringify(eng.moeK)}, attnPrefillTile ${eng.attnPrefillTile}, moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC} tiled ${!!eng.moeGrpTiled}` : ""}${eng.attnPTCfg ? " TK " + eng.attnPTCfg.TK : ""}`);
   const V = tok.vocab, chat = (s) => [V["<|im_start|>"], ...tok.encode("user\n" + s), V["<|im_end|>"], ...tok.encode("\n"), V["<|im_start|>"], ...tok.encode("assistant\n"), V["<think>"], ...tok.encode("\n\n"), V["</think>"], ...tok.encode("\n\n")];
   const out = [];
   for (const [i, prompt] of ["Write the Python code for two sum. Code only.", "Explain what a hash map is in two sentences."].entries()) {

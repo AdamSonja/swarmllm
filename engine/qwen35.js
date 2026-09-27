@@ -10,6 +10,7 @@ import { coopWGSL, probeUnpack } from "./wgsl/coop.js";
 import { WGSL2 } from "./wgsl/qwen35.js";
 import { moeWGSL, moeFusedWGSL, moeKernelConfig } from "./wgsl/moe.js";
 import { attnTileWGSL, attnTileConfig } from "./wgsl/attn_tile.js";
+import { moeGroupWGSL, moeGroupSizes, dnGroupRows, tiledGroupWGSL, tileRows } from "./wgsl/moe_group.js";
 import { f16ToF32 } from "./gguf.js";
 
 
@@ -128,7 +129,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, attnPrefillTile, attnPrefillSplits = 32, attnPrefillTK = 0, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, attnPrefillTile, attnPrefillSplits = 32, attnPrefillTK = 0, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true, moeGroupPrefill = 0, moeGroupUC = 8, moeGroupTiled = true }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -290,12 +291,45 @@ export class Qwen35Engine {
     this._gemmSplits = [...new Set(this._gemmShapes.values())];
     this._gemmPairs = [...new Set([...this._gemmShapes].map(([k, S]) => `${k.split("x")[1]}:${S}`))].map((x) => x.split(":").map(Number));
     this.gemm = this.gemmOn;   // runtime kill switch: engine.gemm = false reproduces the GEMV path
+    // Expert-grouped MoE prefill (engine/wgsl/moe_group.js, _prefillGrouped; candidate D of
+    // docs/research/prefill-profile-2026-09.md). moeGroupPrefill = U > 0: prompt prefill runs in
+    // layer-major ubatches of U tokens (a multiple of batchCols, at least two passes), the last one cut to the
+    // remaining whole passes (if at least two); under two passes' worth goes the ordinary way. Each layer's
+    // attention / DeltaNet part runs as the usual batchCols-wide passes; the MoE FFN of all U tokens is
+    // sorted by expert and each chosen expert's rows are streamed once per chunk of up to moeGroupUC
+    // (column, slot) pairs instead of once per pair. moeGroupTiled (the default when moeGroupPrefill is set)
+    // runs real per-expert tiles: experts 3x faster, MoE prefill +23..38% on the GB10, but its logits drift
+    // from the per-pass path (1.7e-2 at 700 tokens, argmax/greedy equal), over the 2e-3 prefill tolerance, so
+    // moeGroupPrefill stays off by default. moeGroupTiled: false keeps the per-pair arithmetic (bit-identical
+    // to the per-pass path, but slower than it at every UC; kept only as a reference).
+    // engine.moeGroup = false at runtime restores the per-pass path.
+    // Decode, speculative verify and the prompt tail (under 2 * batchCols tokens) never use it.
+    this.moeGrpU = 0; this.moeGrpUC = 0;
+    {
+      const gU = Math.floor(+moeGroupPrefill) || 0, UC = Math.floor(+moeGroupUC) || 8, R = dnGroupRows(UC);
+      const why = gU <= 0 ? null : !this.moeFuse ? "needs the fused MoE FFN (moeFuse)" : !this.flash ? "needs flash attention"
+        : gU % batchCols || gU < 2 * batchCols ? `ubatch ${gU} is not a multiple of batchCols ${batchCols} (at least 2 passes)`
+        : ![1, 2, 4, 8, 16].includes(UC) ? `moeGroupUC ${UC} is not 1, 2, 4, 8 or 16`
+        : moeGroupTiled && UC > 8 ? `moeGroupUC ${UC}: the tiled kernels take at most 8`
+        : !moeGroupTiled && UC * R * 64 * 4 > Math.min(16384, device.limits.maxComputeWorkgroupStorageSize) - 16 ? `moeGroupUC ${UC} x ${R} down rows exceed workgroup memory`
+        : gU * (this.moe.K + 1) * dim * 4 > device.limits.maxStorageBufferBindingSize ? `ubatch ${gU} expert outputs exceed the storage-binding limit`
+        : gU > device.limits.maxComputeWorkgroupsPerDimension
+          || moeGroupSizes({ U: gU, K: this.moe.K, nExp: this.moe.nExp, UC }).maxChunks > device.limits.maxComputeWorkgroupsPerDimension
+          ? `ubatch ${gU} exceeds the dispatch limit (an over-limit indirect dispatch would silently do nothing)` : "";
+      if (why) console.warn(`moeGroupPrefill ${gU} off: ${why}`);
+      else if (why === "") { this.moeGrpU = gU; this.moeGrpUC = UC; this.moeGrpTiled = !!moeGroupTiled; }
+    }
+    this.moeGroup = this.moeGrpU > 0;   // runtime kill switch
 
     // ---- pipelines with explicit layouts ----
     const unpack = await probeUnpack(device);
     const mod = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, coopRows, 64, batchCols, coopRowsB, unpack)
       + (this.moe ? moeWGSL(this.moeK) : "")
       + (this.moeFuse ? moeFusedWGSL({ K: this.moe.K, R: this.moe.R, gu: this.moe.guPairs.map((p) => p.split("_")), dn: this.moe.dnPairs.map((p) => p.split("_")) }) : "")
+      + (this.moeGrpU && this.moeGrpTiled ? tiledGroupWGSL({ K: this.moe.K, UC: this.moeGrpUC, U: this.moeGrpU, nExp: this.moe.nExp,
+        gu: this.moe.guPairs.map((p) => p.split("_")), dn: this.moe.dnPairs.map((p) => p.split("_")) }) : "")
+      + (this.moeGrpU && !this.moeGrpTiled ? moeGroupWGSL({ K: this.moe.K, R: dnGroupRows(this.moeGrpUC), UC: this.moeGrpUC, U: this.moeGrpU, nExp: this.moe.nExp,
+        gu: this.moe.guPairs.map((p) => p.split("_")), dn: this.moe.dnPairs.map((p) => p.split("_")) }) : "")
       + (this.gemmOn ? gemmWGSL({ N: batchCols, pairs: this._gemmPairs, pairs8: this._gemm8Pairs, UNPACK: unpack }) : "") + WGSL2 });
     const C = GPUShaderStage.COMPUTE;
     const layout0 = device.createBindGroupLayout({
@@ -349,6 +383,12 @@ export class Qwen35Engine {
       G1.moe_route = ["ro", "rw", "rw", "u"];
       for (const p of this.moe.guPairs) G1["moe_gus_" + p] = ["ro", "ro", "ro", "ro", "ro", "rw", "ro", "ro", "u"];
       for (const p of this.moe.dnPairs) G1["moe_dnc_" + p] = ["ro", "ro", "ro", "rw", "ro", "ro", "ro", "ro", "u"];
+    }
+    if (this.moeGrpU) {
+      G1.moe_gsort = ["ro", "rw", "rw", "u"];
+      G1.moe_combw = ["rw", "ro", "ro", "u"];
+      for (const p of this.moe.guPairs) G1["moe_gusg_" + p] = ["ro", "ro", "ro", "ro", "ro", "rw", "ro", "ro", "u"];
+      for (const p of this.moe.dnPairs) G1["moe_dng_" + p] = ["ro", "ro", "ro", "rw", "ro", "ro", "ro", "u"];
     }
     // narrower twins: a verify or tail pass with w live columns pays for w, not batchCols
     for (const W of [8, 4]) if (batchCols > W) Object.assign(G1, {
@@ -558,6 +598,7 @@ export class Qwen35Engine {
         R.shPack = packGU(L.shGate, L.shUp);
         R.ffnDown = up(L.shDown);
         R.gusPipe = `moe_gus_${R.expGate.kind}_${L.shGate.kind}`; R.dncPipe = `moe_dnc_${R.expDown.kind}_${R.ffnDown.kind}`;
+        R.gusgPipe = R.gusPipe.replace("moe_gus_", "moe_gusg_"); R.dngPipe = R.dncPipe.replace("moe_dnc_", "moe_dng_");
         R.moeU = (xs, dOut, dIn, ys, pk) => [dOut, dIn, sDim, nExp, xs, ys, norm, 1, pk ? pk.oUq : 0, pk ? pk.oGs : 0, pk ? pk.oUs : 0, 0];
         const U = (a) => this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM);
         R.mvRouter = mv(R.router, this.xn, MB.logits, nExp + 1, dim);
@@ -929,6 +970,13 @@ export class Qwen35Engine {
     pass.setBindGroup(1, bg);
     if (wgs > 32768) pass.dispatchWorkgroups(32768, Math.ceil(wgs / 32768)); else pass.dispatchWorkgroups(wgs);   // > 65535 per dimension is silently dropped
   }
+  _dInd(pass, name, bg, buf, off) {   // indirect launch (workgroup counts written by an earlier dispatch)
+    if (this.skip && this.skip.has(name)) return;
+    pass.setPipeline(this.pipes[name]);
+    pass.setBindGroup(0, (this._common || this.bgCommonFor)[name]);
+    pass.setBindGroup(1, bg);
+    pass.dispatchWorkgroupsIndirect(buf, off);
+  }
   _dxyz(pass, name, bg, x, y, z) {
     if (this.skip && this.skip.has(name)) return;   // profiling aid (bench_breakdown)
     pass.setPipeline(this.pipes[name]);
@@ -1131,7 +1179,7 @@ export class Qwen35Engine {
   _dMC(pass, name, bg, threads, wg, ny, nz = 1) {
     if (this.skip && this.skip.has(name)) return;   // profiling aid (bench_breakdown)
     pass.setPipeline(this.pipes[name]);
-    pass.setBindGroup(0, this.bgCommonB[0][name]);
+    pass.setBindGroup(0, (this._g0 || this.bgCommonB[0])[name]);   // _g0: a grouped-prefill sub-pass's frame
     pass.setBindGroup(1, bg);
     pass.dispatchWorkgroups(Math.ceil(threads / wg), ny, nz);
   }
@@ -1272,6 +1320,26 @@ export class Qwen35Engine {
         mH: dev.createBuffer({ size: NC * K * ei * 4, usage: S }), mY: dev.createBuffer({ size: NC * K * D.dim * 4, usage: S }) });
       if (this.moeFuse) B.mHF = dev.createBuffer({ size: NC * this.moe.KS * this.moe.hs * 4, usage: S });
     }
+    // expert-grouped prefill (_prefillGrouped): the ubatch's residual / normed input / routing (copied out of
+    // the pass buffers after each sub-pass), its expert activations and outputs, the chunk list, the indirect
+    // launch sizes, and one frame uniform (+ group-0 bind groups) per sub-pass
+    if (this.moeGrpU && !this.gB) {
+      const U = this.moeGrpU, { K, KS, hs, nExp } = this.moe, UC = this.moeGrpUC, R = dnGroupRows(UC), sz = moeGroupSizes({ U, K, nExp, UC });
+      const nb = (n) => dev.createBuffer({ size: n, usage: S });
+      const gB = this.gB = { U, nSub: U / NC, sz,
+        XW: nb(U * B.x.stride), XNW: nb(U * B.xn.stride), sel: nb(U * KS * 4), selw: nb(U * KS * 4),
+        H: nb(U * KS * hs * 4), Y: nb(U * KS * D.dim * 4), grp: nb(sz.words * 4),
+        ind: dev.createBuffer({ size: 32, usage: S | GPUBufferUsage.INDIRECT }),
+        frames: Array.from({ length: U / NC }, () => dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })) };
+      gB.common = gB.frames.map((f) => Object.fromEntries(colPipes.map((name) => [name, this._bg2g0(this.pipes[name], [{ buffer: this.cfgBuf }, { buffer: f }])])));
+      const u32 = (a) => ({ buffer: this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM) });
+      // the sort's uniform { pairs, nExp, gate/up x groups, down x groups }: pairs is rewritten per ubatch (width W <= U)
+      gB.sortU = dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      gB.sortArgs = this.moeGrpTiled ? [nExp, Math.ceil(hs / tileRows("gu")), Math.ceil(D.dim / tileRows("dn"))] : [nExp, Math.ceil(hs / 4), Math.ceil(D.dim / R)]; gB.sortW = 0;
+      gB.bgSort = this._bg2res(this.pipes.moe_gsort, [{ buffer: gB.sel }, { buffer: gB.grp }, { buffer: gB.ind }, { buffer: gB.sortU }]);
+      gB.bgComb = this._bg2res(this.pipes.moe_combw, [{ buffer: gB.XW }, { buffer: gB.Y }, { buffer: gB.selw },
+        u32([D.dim, 0, 0, nExp, B.x.stride / 4, 0, 0, 0, 0, 0, 0, 0])]);
+    }
     if (this.flash) this.faUB = this._buf(new Uint32Array([B.q.stride / 4, B.attnOut.stride / 4, this.faSplit, this.faSplits]), GPUBufferUsage.UNIFORM);
     const mcU = (n, s0 = 0, s1 = 0, s2 = 0) => {
       const k = n + "," + s0 + "," + s1 + "," + s2;
@@ -1365,6 +1433,13 @@ export class Qwen35Engine {
           whole(B.xn), { buffer: B.mHF }, { buffer: B.mSel }, { buffer: L.shPack.buf }, U(L.moeU(st(B.xn), ei, D.dim, hs, L.shPack))]);
         mc.dnc = this._bg2res(this.pipes[L.dncPipe], [{ buffer: L.expDown.qs }, { buffer: L.expDown.sc }, { buffer: B.mHF }, whole(B.x),
           { buffer: B.mSel }, { buffer: B.mSelw }, { buffer: L.ffnDown.qs }, { buffer: L.ffnDown.sc }, U(L.moeU(st(B.x), D.dim, ei, hs))]);
+        if (this.gB) {   // grouped prefill: the same weights and uniforms, over the ubatch buffers and the chunk list
+          const gB = this.gB;
+          mc.gusG = this._bg2res(this.pipes[L.gusgPipe], [{ buffer: L.expGate.qs }, { buffer: L.expGate.sc }, { buffer: L.expUp.qs }, { buffer: L.expUp.sc },
+            { buffer: gB.XNW }, { buffer: gB.H }, { buffer: gB.grp }, { buffer: L.shPack.buf }, U(L.moeU(st(B.xn), ei, D.dim, hs, L.shPack))]);
+          mc.dngG = this._bg2res(this.pipes[L.dngPipe], [{ buffer: L.expDown.qs }, { buffer: L.expDown.sc }, { buffer: gB.H }, { buffer: gB.Y },
+            { buffer: gB.grp }, { buffer: L.ffnDown.qs }, { buffer: L.ffnDown.sc }, U(L.moeU(st(B.x), D.dim, ei, hs))]);
+        }
       } else if (L.moe) {
         const { nExp, K, inter: ei, norm } = this.moe;
         const U = (a) => ({ buffer: this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM) });
@@ -1430,7 +1505,8 @@ export class Qwen35Engine {
   // dispatch over the live columns. snapshotDN (set through frame.snap) makes
   // the recurrent kernels save their state after each non-final column so a
   // rejected speculative suffix can be rolled back.
-  _encodeLayerBatch(enc, i, basePos, nCols = this.NC, snapshotDN = false) {
+  // routeOnly (grouped prefill, fused MoE layers): stop after moe_route; _prefillGrouped runs the experts
+  _encodeLayerBatch(enc, i, basePos, nCols = this.NC, snapshotDN = false, routeOnly = false) {
     const D = this.dims, L = i < this.layers.length ? this.layers[i] : this.mtpLayer, LB = this.layerB[i], B = this.B, M = LB.mc;
     const G = this.gemmOn && this.gemm !== false && nCols === this.NC;   // full-width pass: GEMM needs transposed activations
     if (L.isFull) {
@@ -1517,6 +1593,7 @@ export class Qwen35Engine {
         const { KS, hs, R } = this.moe;
         this._dop(p, LB.router, nCols);
         this._dMC(p, "moe_route", M.route, nCols * 256, 256, 1);
+        if (routeOnly) { p.end(); return; }
         this._dMC(p, L.gusPipe, M.gus, Math.ceil(hs / 4) * 64, 64, nCols * KS);
         this._dMC(p, L.dncPipe, M.dnc, Math.ceil(D.dim / R) * 64, 64, nCols);
         p.end();
@@ -2062,6 +2139,71 @@ export class Qwen35Engine {
     this.device.queue.submit([enc.finish()]);
   }
 
+  // One layer-major ubatch of W prompt tokens ids[i0 .. i0 + W - 1] at this.pos (W a multiple of NC, at most
+  // moeGrpU; moeGroupPrefill, see engine/wgsl/moe_group.js). Per layer: the W / NC sub-passes run the layer
+  // exactly as a prefill pass does (_encodeLayerBatch, each with its own frame uniform), stopping after
+  // moe_route on fused MoE layers; their residual, normed input and routing are copied into the ubatch
+  // buffers; then one sort + grouped gate/up + grouped down + combine covers the MoE FFN of all W tokens.
+  // The draft (MTP) cache is filled per sub-pass afterwards, from the final hiddens, as prefillTokens does
+  // after each pass.
+  async _prefillGrouped(ids, i0, W = this.gB.U) {
+    const gB = this.gB, NC = this.NC, B = this.B, D = this.dims, q = this.device.queue, basePos = this.pos, nSub = W / NC;
+    if (W % NC || W > gB.U || W < NC) throw new Error(`_prefillGrouped: width ${W} (NC ${NC}, ubatch ${gB.U})`);
+    const xs = NC * B.x.stride, xns = NC * B.xn.stride, ss = NC * this.moe.KS * 4;
+    if (gB.sortW !== W) { q.writeBuffer(gB.sortU, 0, new Uint32Array([W * this.moe.KS, ...gB.sortArgs])); gB.sortW = W; }
+    for (let s = 0; s < nSub; s++) q.writeBuffer(gB.frames[s], 0, new Uint32Array([basePos + s * NC, basePos + s * NC + 1, NC, 0]));
+    for (let c = 0; c < W; c++) q.writeBuffer(gB.XW, c * B.x.stride, this._embedRowF32(ids[i0 + c]));
+    const enc = this.device.createCommandEncoder();
+    try {
+      for (let l = 0; l < this.layers.length; l++) {
+        const L = this.layers[l], grp = !!L.fused;
+        for (let s = 0; s < nSub; s++) {
+          enc.copyBufferToBuffer(gB.XW, s * xs, B.x.buf, 0, xs);
+          this._g0 = gB.common[s];
+          this._encodeLayerBatch(enc, l, basePos + s * NC, NC, false, grp);
+          this._g0 = null;
+          enc.copyBufferToBuffer(B.x.buf, 0, gB.XW, s * xs, xs);
+          if (grp) {
+            enc.copyBufferToBuffer(B.xn.buf, 0, gB.XNW, s * xns, xns);
+            enc.copyBufferToBuffer(B.mSel, 0, gB.sel, s * ss, ss);
+            enc.copyBufferToBuffer(B.mSelw, 0, gB.selw, s * ss, ss);
+          }
+        }
+        if (grp) {
+          const M = this.layerB[l].mc, p = enc.beginComputePass();
+          this._dxyz(p, "moe_gsort", gB.bgSort, 1, 1, 1);
+          this._dInd(p, L.gusgPipe, M.gusG, gB.ind, 0);
+          this._dInd(p, L.dngPipe, M.dngG, gB.ind, 12);
+          this._dxyz(p, "moe_combw", gB.bgComb, Math.ceil(D.dim / 64), W, 1);
+          p.end();
+        }
+      }
+    } finally { this._g0 = null; }
+    enc.copyBufferToBuffer(gB.XW, (W - 1) * B.x.stride, this.x, 0, D.dim * 4);
+    if (this._grpDone) await this._grpDone;   // at most two ubatches in flight
+    q.submit([enc.finish()]);
+    this._grpDone = q.onSubmittedWorkDone();
+    if (this.mtp && this.mtpFill !== false) for (let s = 0; s < nSub; s++) {
+      const e2 = this.device.createCommandEncoder();
+      e2.copyBufferToBuffer(gB.XW, s * xs, B.x.buf, 0, xs);
+      q.submit([e2.finish()]);
+      const i = i0 + s * NC, pos = basePos + s * NC;
+      if (this.mtpBatchFill !== false) this._mtpFillBatch(ids, i, pos, NC);
+      else for (let c = 0; c < NC; c++) if (i + c + 1 < ids.length) await this.mtpRun(c, ids[i + c + 1], pos + c + 1, false);
+    }
+    this.pos += W;
+  }
+
+  // What the last grouped MoE layer saw: { pairs, uniqueRouted (distinct routed experts), chunks }. For logs and
+  // validation; it reads the indirect-args buffer back, so call it between prefills, not in a hot loop.
+  async moeGroupStats() {
+    if (!this.gB) return null;
+    const st = this.device.createBuffer({ size: 32, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = this.device.createCommandEncoder(); enc.copyBufferToBuffer(this.gB.ind, 0, st, 0, 32); this.device.queue.submit([enc.finish()]);
+    await st.mapAsync(GPUMapMode.READ); const a = new Uint32Array(st.getMappedRange().slice(0)); st.unmap(); st.destroy();
+    return { pairs: a[7], uniqueRouted: a[6], chunks: a[1] };
+  }
+
   async prefillTokens(ids) {
     if (!this.B) this._initBatch();
     this._pre = null;
@@ -2069,6 +2211,15 @@ export class Qwen35Engine {
     this._snapNow = null;   // not a verify: nothing to keep for replay
     let i = 0, sinceSync = 0;
     const NC = this.NC;
+    // expert-grouped ubatches first: full ones of U tokens, then one of the remaining whole passes (at least two);
+    // the rest (under 2 * NC tokens) goes through the passes below
+    if (this.gB && this.moeGroup !== false) {
+      while (ids.length - i >= 2 * NC) {
+        const W = Math.min(this.gB.U, Math.floor((ids.length - i) / NC) * NC);
+        await this._prefillGrouped(ids, i, W); i += W;
+      }
+      this._grpDone = null;
+    }
     while (ids.length - i >= NC) {
       const basePos = this.pos;
       for (let c = 0; c < NC; c++) {

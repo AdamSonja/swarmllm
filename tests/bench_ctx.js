@@ -2,6 +2,7 @@
 // speculative) with 1k .. 32k+ tokens already in the cache. Also checks that speculative decoding
 // stays identical to plain at every fill and that no logit goes NaN.
 //   MODEL=moe|27b  CTX=<maxSeq, default the room default>  FILLS=1024,4096,16384,32000  TOKENS=32
+//   MOEGROUP=U (MoE: expert-grouped prefill in U-token ubatches, a multiple of 16; 0 = off)  MOEGROUP_UC=8
 //   cd tests && MODEL=moe deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights bench_ctx.js
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { makeTokenizer, argmax } from "../engine/engine.js";
@@ -32,7 +33,9 @@ console.log(`${MODEL}: maxSeq ${MAXSEQ}, KV cache ${(kvPerPos * MAXSEQ / 2 ** 30
 const tok = makeTokenizer(tokenizerFromGGUF(m));
 let t0 = performance.now();
 const weights = await qwen35Weights(G, (i) => readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
-const eng = await Qwen35Engine.create({ device, meta: m, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: MAXSEQ, batchCols: 16, coopRowsB: 1 });
+const eng = await Qwen35Engine.create({ device, meta: m, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: MAXSEQ, batchCols: 16, coopRowsB: 1,
+  moeGroupPrefill: +env("MOEGROUP", 0), moeGroupUC: +env("MOEGROUP_UC", 8), moeGroupTiled: env("MOEGROUP_TILED", "1") === "1" });
+console.log(`moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC} tiled ${!!eng.moeGrpTiled}` : ""}`);
 console.log(`loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s, mtp ${!!eng.mtp}, attnPrefillTile ${eng.attnPrefillTile}${eng.attnPTCfg ? ` (TK ${eng.attnPTCfg.TK}, ${eng.attnPTCfg.CW} columns per workgroup)` : ""}`);
 
 // a long, realistic coding context: this repo's own source, tokenized until there is enough

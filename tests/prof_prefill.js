@@ -13,6 +13,8 @@
 // submits and syncs: wall - kernel sum is the overhead.
 //
 //   MODEL=moe|27b  LENS=512,4096,16384  SAMPLES=32 (instrumented passes per segment)  MTP_FILL=1
+//   MOEGROUP=U (MoE: expert-grouped prefill in U-token ubatches; LENS must be multiples of U; the instrumented
+//   run then samples whole ubatches instead of passes)  MOEGROUP_UC=8
 //   cd tests && MODEL=27b deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights prof_prefill.js
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { makeTokenizer } from "../engine/engine.js";
@@ -43,7 +45,9 @@ const hasMtp = Object.keys(G.tensors).some((k) => k.startsWith(`blk.${nBlk - 1}.
 const tok = makeTokenizer(tokenizerFromGGUF(m));
 let t0 = performance.now();
 const weights = await qwen35Weights(G, (i) => model.readAt(i.byteOffset, i.byteLength), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: hasMtp });
-const eng = await Qwen35Engine.create({ device, meta: m, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: MAXSEQ, batchCols: NC, coopRowsB: 1 });
+const eng = await Qwen35Engine.create({ device, meta: m, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: MAXSEQ, batchCols: NC, coopRowsB: 1,
+  moeGroupPrefill: +env("MOEGROUP", 0), moeGroupUC: +env("MOEGROUP_UC", 8), moeGroupTiled: env("MOEGROUP_TILED", "0") === "1" });
+console.log(`moeGroupPrefill ${eng.moeGrpU || "off"}${eng.moeGrpU ? ` UC ${eng.moeGrpUC}` : ""}`);
 eng.mtpFill = env("MTP_FILL", "1") !== "0";
 const D = eng.dims;
 console.log(`${MODEL}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s · layers ${L} (${eng.layers.filter((x) => x.isFull).length} full attn) · dims ${JSON.stringify(D)}`);
@@ -117,8 +121,9 @@ const pipeCat = (p) => {
   if (/^(kv_store|attn_flash|attn_combine|attn_scores|attn_softmax|attn_out)/.test(p)) return "attn_core";
   if (/^(attn_glue|sigmoid_mul|qsplit|head_norm|rope_part)/.test(p)) return "attn_glue";
   if (/^moe_route|^moe_router/.test(p)) return "moe_router";
-  if (/^moe_gus|^moe_gu_/.test(p)) return "moe_experts_gu";
-  if (/^moe_dnc|^moe_dn_|^moe_combine/.test(p)) return "moe_experts_down";
+  if (p === "moe_gsort") return "moe_group_sort";
+  if (/^moe_gus|^moe_gu_/.test(p)) return "moe_experts_gu";   // (moe_gusg: grouped)
+  if (/^moe_dnc|^moe_dn_|^moe_dng|^moe_combine|^moe_combw/.test(p)) return "moe_experts_down";
   if (/^(rmsnorm|add_res|silu_mul)/.test(p)) return "norms_glue";
   if (p === "gemm_xpose") return "glue";
   return "other";
@@ -165,6 +170,13 @@ device.createCommandEncoder = (d) => {
         else { cat = pipeCat(pn); name = pn; }
         recs[recs.length - 1].list.push({ i, cat, name, pn, info: !inMtp && info && !/^gemm_red/.test(pn) ? info : null });
       },
+      dispatchWorkgroupsIndirect(buf, off) {   // grouped MoE prefill: sizes written on the GPU
+        const i = nextQ();
+        const p = ob({ timestampWrites: { querySet: qs, beginningOfPassWriteIndex: i, endOfPassWriteIndex: i + 1 } });
+        p.setPipeline(pipe); for (const k in bgs) p.setBindGroup(+k, bgs[k]); p.dispatchWorkgroupsIndirect(buf, off); p.end();
+        const pn = pname.get(pipe) || "?";
+        recs[recs.length - 1].list.push({ i, cat: inMtp ? "mtp" : pipeCat(pn), name: inMtp ? "mtp:" + pn : pn, pn, info: null });
+      },
       end() {},
     };
   };
@@ -206,9 +218,11 @@ await eng.prefillTokens(ids.slice(0, NC)); eng.reset();
   let pos = 0;
   for (const len of LENS) {
     segKey = len;
-    const nPass = (len - pos) / NC, stride = Math.max(1, Math.floor(nPass / SAMPLES));
+    const UB = eng.moeGrpU && eng.moeGroup !== false ? eng.moeGrpU : NC;   // grouped: sample whole ubatches
+    if ((len - pos) % UB) throw new Error(`segment ${pos}..${len} is not a multiple of ${UB}`);
+    const nPass = (len - pos) / UB, stride = Math.max(1, Math.floor(nPass / SAMPLES));
     // sample passes at uniform stride, the middle pass of every block of `stride`
-    const want = new Set(); for (let p = Math.floor(stride / 2); p < nPass; p += stride) want.add(pos + p * NC);
+    const want = new Set(); for (let p = Math.floor(stride / 2); p < nPass; p += stride) want.add(pos + p * UB);
     const nSampled = want.size;
     weight = nPass / nSampled;
     // prefillTokens encodes each full pass at eng.pos == basePos (trunk, then MTP fill): toggle there
@@ -221,9 +235,14 @@ await eng.prefillTokens(ids.slice(0, NC)); eng.reset();
       }
       return hookFrame(buf, off, data, ...r);
     };
+    const origPG = eng._prefillGrouped;
+    if (UB !== NC) {   // a grouped ubatch starts at eng.pos (trunk and its MTP fills inside); the frame hook stays off
+      device.queue.writeBuffer = hookFrame;
+      eng._prefillGrouped = async (...a) => { sampleOn = want.has(eng.pos); try { return await origPG.apply(eng, a); } finally { sampleOn = false; } };
+    }
     const t = performance.now();
     await eng.prefillTokens(ids.slice(pos, len));
-    device.queue.writeBuffer = hookFrame; sampleOn = false;
+    device.queue.writeBuffer = hookFrame; sampleOn = false; eng._prefillGrouped = origPG;
     await Promise.all(reads.splice(0));
     console.log(`instrumented segment ..${len}: ${nSampled}/${nPass} passes sampled (x${weight.toFixed(2)}), ${((performance.now() - t) / 1000).toFixed(1)} s`);
     pos = len;
