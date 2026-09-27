@@ -1,5 +1,5 @@
 /* Tetris for the Code demo (the game the agent "wrote"). Plays itself until the visitor takes over.
-   PooledTetris(canvas, { seed, tick, onScore, onState }) */
+   PooledTetris(canvas, { seed, tick, onScore, onState, onDraw }) */
 (() => {
   "use strict";
   const COLS = 10, ROWS = 20;
@@ -136,6 +136,7 @@
       if (over) {
         ctx.fillStyle = "rgba(11,15,31,.72)"; ctx.fillRect(0, 0, W, H);
       }
+      if (opts.onDraw) opts.onDraw(canvas);
     }
     function frame(now) {
       const dt = last ? Math.min(100, now - last) : 16; last = now;

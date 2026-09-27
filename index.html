@@ -23,7 +23,6 @@
   <symbol id="i-phone" viewBox="0 0 16 16"><rect x="4.5" y="1.5" width="7" height="13" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 12.2h2" stroke="currentColor" stroke-width="1.3"/></symbol>
   <symbol id="i-send" viewBox="0 0 14 14"><path d="M7 12V2M2.5 6.5 7 2l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
 </svg>
-</svg>
 
 <a class="skip" href="#main">Skip to content</a>
 
@@ -59,6 +58,7 @@
           <button type="button" role="tab" id="tab-code" aria-controls="p-code" aria-selected="false" tabindex="-1">Code</button>
           <span class="seg-pill" aria-hidden="true"></span>
         </div>
+        <p class="cap" id="cap" aria-live="polite"><span id="capT">Three devices, one model</span></p>
 
         <div class="box">
           <button class="replay" id="replay" type="button" aria-label="Replay the demo" title="Replay"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v3h3"/></svg></button>
@@ -72,13 +72,22 @@
                 <li class="dev"><b class="av a2" aria-hidden="true">S</b><span class="dn"><strong>Sam</strong><span><svg width="13" height="13" aria-hidden="true"><use href="#i-desk"/></svg>Desktop PC</span></span><span class="gb">12 GB</span></li>
                 <li class="dev"><b class="av a3" aria-hidden="true">L</b><span class="dn"><strong>Leo</strong><span><svg width="13" height="13" aria-hidden="true"><use href="#i-phone"/></svg>Phone</span></span><span class="gb">2 GB</span></li>
               </ul>
-              <div class="pool ok" id="pool">
-                <div class="bar" aria-hidden="true"><i class="s0" id="seg0"></i><i class="s1" id="seg1"></i><i class="s2" id="seg2"></i></div>
-                <p><strong id="poolGb">24 GB</strong><span class="sep" aria-hidden="true">&middot;</span><span class="st" id="mstatT">Ready</span></p>
-              </div>
+              <p class="asum"><strong class="js-gb">24 GB</strong> pooled</p>
             </aside>
 
             <div class="chat">
+              <div class="load" id="load">
+                <div class="meter ok" id="meter">
+                  <p class="lt">The model needs <strong>22.5 GB</strong></p>
+                  <p class="big"><strong class="js-gb">24 GB</strong> pooled<span class="ms" id="mst">Enough to run it</span></p>
+                  <div class="bar" aria-hidden="true"><i class="s0" id="seg0"></i><i class="s1" id="seg1"></i><i class="s2" id="seg2"></i><b class="need"></b></div>
+                </div>
+                <div class="model loaded" id="model">
+                  <p class="mh"><span class="mn">Qwen 3.6 35B MoE</span><span id="mstat">40 layers, split 3 ways</span></p>
+                  <div class="strip" id="strip" aria-hidden="true"><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c2"></i><i class="c2"></i><i class="c2"></i></div>
+                  <p class="leg"><span><i class="c0"></i>Maya 17 layers</span><span><i class="c1"></i>Sam 20</span><span><i class="c2"></i>Leo 3</span></p>
+                </div>
+              </div>
               <ol class="msgs" id="msgs">
                 <li class="sys" data-at="rdy"><svg class="mark" width="12" height="12" aria-hidden="true"><use href="#i-mark"/></svg>Model ready on 3 devices</li>
                 <li class="m" data-at="q1"><b class="av a3" aria-hidden="true">L</b><div><span class="nm">Leo</span><p>what is pooled?</p></div></li>
@@ -98,23 +107,63 @@
           <div class="panel p-code" id="p-code" role="tabpanel" aria-labelledby="tab-code">
             <div class="agent">
               <div class="agent-h">
-                <span class="stack" aria-hidden="true"><b class="av a1" title="Maya, MacBook Air">M</b><b class="av a2" title="Sam, Desktop PC">S</b><b class="av a3" title="Leo, Phone">L</b></span>
-                <span class="who-t">otter-42 <span>&middot; 3 devices</span></span>
+                <span class="who-t"><span class="live" aria-hidden="true"></span>otter-42</span>
                 <span class="tag">agent preview</span>
               </div>
+              <ul class="pres" aria-label="People in the room">
+                <li data-u="0"><b class="av a1" aria-hidden="true">M</b><span><strong>Maya</strong><em><svg width="12" height="12" aria-hidden="true"><use href="#i-laptop"/></svg><span id="ust0">host</span></em></span></li>
+                <li data-u="1"><b class="av a2" aria-hidden="true">S</b><span><strong>Sam</strong><em><svg width="12" height="12" aria-hidden="true"><use href="#i-desk"/></svg>watching</em></span></li>
+                <li data-u="2"><b class="av a3" aria-hidden="true">L</b><span><strong>Leo</strong><em><svg width="12" height="12" aria-hidden="true"><use href="#i-phone"/></svg>watching</em></span></li>
+              </ul>
               <ol class="steps" id="steps">
+                <li class="sys" data-at="c-w1"><b class="dot a2" aria-hidden="true"></b>Sam is watching</li>
+                <li class="sys" data-at="c-w2"><b class="dot a3" aria-hidden="true"></b>Leo is watching on his phone</li>
                 <li class="m" data-at="c-q"><b class="av a1" aria-hidden="true">M</b><div><span class="nm">Maya</span><p>build me a tetris game</p></div></li>
                 <li class="say-row" data-at="c-s1"><p class="say">Building a canvas Tetris.</p></li>
+                <li class="wcard fold" data-at="c-w" id="wcard">
+                  <p class="wh"><span class="nm">wrote</span><code>game.js</code><span class="n" id="wN">32 lines</span></p>
+                  <pre id="wPre">const COLS = 10, ROWS = 20;
+let board = grid(ROWS, COLS);
+let piece = spawn(), score = 0;
+
+function spawn() {
+  const k = "IJLOSTZ"[rand(7)];
+  return { k, x: 3, y: 0, r: 0 };
+}
+
+function fits(p) {
+  return cells(p).every(([x, y]) =>
+    x >= 0 &amp;&amp; x &lt; COLS &amp;&amp; y &lt; ROWS &amp;&amp; !board[y]?.[x]);
+}
+
+function clearLines() {
+  for (let y = ROWS - 1; y &gt;= 0; y--) {
+    if (board[y].every(Boolean)) {
+      board.splice(y, 1);
+      board.unshift(Array(COLS).fill(0));
+      score += 100; y++;
+    }
+  }
+}
+
+function loop(t) {
+  if (t - last &gt; speed) drop();
+  draw(board, piece);
+  requestAnimationFrame(loop);
+}
+
+addEventListener("keydown", e =&gt; move(e.key));
+requestAnimationFrame(loop);</pre>
+                  <p class="wf"><span class="wd" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></span><span class="t">written on Maya's, Sam's and Leo's devices</span></p>
+                </li>
                 <li class="files" data-at="c-files">
                   <ul>
-                    <li data-f="0"><b class="av a1 fa" title="Written by Maya's MacBook" aria-hidden="true">M</b><code>index.html</code><span class="n">+18</span></li>
-                    <li data-f="1"><b class="av a2 fa" title="Written by Sam's PC" aria-hidden="true">S</b><code>src/game.js</code><span class="n">+96</span></li>
-                    <li data-f="2"><b class="av a3 fa" title="Written by Leo's phone" aria-hidden="true">L</b><code>src/board.js</code><span class="n">+64</span></li>
-                    <li data-f="3"><b class="av a1 fa" title="Written by Maya's MacBook" aria-hidden="true">M</b><code>src/style.css</code><span class="n">+22</span></li>
-                    <li data-f="4" class="run"><span class="tk" aria-hidden="true"></span><code>$ npm run dev</code><span class="n ok">localhost:5173</span></li>
+                    <li data-f="0"><span class="fi" aria-hidden="true"></span><code>index.html</code><span class="n">+12</span></li>
+                    <li data-f="1"><span class="fi" aria-hidden="true"></span><code>game.js</code><span class="n">+32</span></li>
+                    <li data-f="2"><span class="fi" aria-hidden="true"></span><code>style.css</code><span class="n">+9</span></li>
+                    <li data-f="3" class="run"><span class="tk" aria-hidden="true"></span><code>$ npm run dev</code><span class="n ok">localhost:5173</span></li>
                   </ul>
                 </li>
-                <li class="fsum" data-at="c-sum"><span class="wd" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></span><code>4 files · npm run dev</code><span class="n ok">:5173</span></li>
               </ol>
               <div class="composer" id="codeComposer" aria-hidden="true">
                 <b class="av a1 typer">M</b>
@@ -126,9 +175,11 @@
             <div class="work">
               <div class="browser" id="browser">
                 <div class="br-bar">
+                  <span class="br-who" aria-hidden="true"><b class="av a1">M</b></span>
                   <span class="url"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="2" y="4.5" width="6" height="4.5" rx="1"/><path d="M3.5 4.5V3a1.5 1.5 0 0 1 3 0v1.5"/></svg>localhost:5173</span>
                   <span class="br-load" aria-hidden="true"><i id="brLoad"></i></span>
                 </div>
+                <p class="br-empty" aria-hidden="true">Nothing running yet</p>
                 <div class="app" id="app">
                   <p class="stats"><span>Score <b id="score">0</b></span><span>Lines <b id="lines">0</b></span></p>
                   <div class="game" id="game" tabindex="0" role="application" aria-label="Tetris. Press Enter to play. Arrow keys move, up rotates, down drops, space hard-drops, Escape leaves the game.">
@@ -150,6 +201,18 @@
                   </div>
                 </div>
               </div>
+
+              <div class="peers" id="peers" aria-label="The same game on Sam's and Leo's devices">
+                <figure class="peer desk" data-p="0">
+                  <div class="scr"><div class="ghost" aria-hidden="true"></div><canvas class="mir" aria-hidden="true"></canvas></div>
+                  <span class="stand" aria-hidden="true"></span>
+                  <figcaption><b class="av a2" aria-hidden="true">S</b>Sam's PC</figcaption>
+                </figure>
+                <figure class="peer phone" data-p="1">
+                  <div class="scr"><div class="ghost" aria-hidden="true"></div><canvas class="mir" aria-hidden="true"></canvas></div>
+                  <figcaption><b class="av a3" aria-hidden="true">L</b>Leo's phone</figcaption>
+                </figure>
+              </div>
             </div>
           </div>
         </div>
@@ -157,15 +220,40 @@
     </div>
   </section>
 
-  <section class="closer">
-    <a class="btn btn-blue" href="/room">Open a room <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 8 8 2M3.5 2H8v4.5"/></svg></a>
+  <section class="closer" id="closer" aria-labelledby="closer-h">
+    <div class="wrap">
+      <svg class="gather" id="gather" viewBox="0 0 360 172" aria-hidden="true">
+        <g class="devs-i">
+          <g class="di" transform="translate(28 128)"><use href="#i-laptop" width="30" height="30"/></g>
+          <g class="di" transform="translate(165 132)"><use href="#i-desk" width="30" height="30"/></g>
+          <g class="di" transform="translate(302 128)"><use href="#i-phone" width="30" height="30"/></g>
+          <text x="43" y="168">Maya</text><text x="180" y="168">Sam</text><text x="317" y="168">Leo</text>
+        </g>
+        <g class="logo" transform="translate(143.2 8) scale(3.2)">
+          <circle class="g0" cx="3.4" cy="3.4" r="1.8" style="--x:-34.7px;--y:38.8px"/>
+          <circle class="g3" cx="3.4" cy="10.2" r="1.99" style="--x:-34.7px;--y:32.0px"/>
+          <circle class="g6" cx="3.4" cy="18.5" r="2.38" style="--x:-34.7px;--y:23.7px"/>
+          <circle class="g1" cx="10.2" cy="3.4" r="1.99" style="--x:1.3px;--y:40.0px"/>
+          <circle class="g4" cx="10.2" cy="10.2" r="2.38" style="--x:1.3px;--y:33.2px"/>
+          <circle class="g7" cx="10.2" cy="18.5" r="2.94" style="--x:1.3px;--y:24.9px"/>
+          <circle class="g2" cx="18.5" cy="3.4" r="2.38" style="--x:35.8px;--y:38.8px"/>
+          <circle class="g5" cx="18.5" cy="10.2" r="2.94" style="--x:35.8px;--y:32.0px"/>
+          <circle class="g8" cx="18.5" cy="18.5" r="3.9"/>
+        </g>
+      </svg>
+      <h2 id="closer-h">Your devices are already a supercomputer. <span>Introduce them.</span></h2>
+      <div class="ctas">
+        <a class="btn btn-blue" href="/room">Open a room <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 8 8 2M3.5 2H8v4.5"/></svg></a>
+        <a class="btn btn-line" href="https://github.com/Nehanth/swarmllm"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .67.42l1.88 3.8 4.2.61a.75.75 0 0 1 .42 1.28l-3.04 2.96.72 4.18a.75.75 0 0 1-1.09.79L8 12.33l-3.76 1.98a.75.75 0 0 1-1.09-.79l.72-4.18L.83 6.38a.75.75 0 0 1 .42-1.28l4.2-.61L7.33.67A.75.75 0 0 1 8 .25z"/></svg>Star on GitHub</a>
+      </div>
+    </div>
   </section>
 </main>
 
 <footer class="footer">
   <div class="wrap foot-in">
     <span class="brand small"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#i-mark"/></svg><span>pooled<span class="tld">.sh</span></span></span>
-    <span class="fl"><a href="https://github.com/Nehanth/swarmllm">GitHub</a><span>MIT</span></span>
+    <span class="fl"><a href="https://github.com/Nehanth/swarmllm">GitHub</a><span>MIT</span><span>Formerly SwarmLLM</span></span>
   </div>
 </footer>
 
