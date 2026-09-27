@@ -1,6 +1,6 @@
 # 25 · Cross-network quick wins: draft cache, frame chunking, prefill acks, per-hop telemetry
 
-**Phase:** now · **Status:** planned · _P1 · design: [docs/research/network-scheduler.md](../docs/research/network-scheduler.md) §2, [decode-overhead-and-wire.md](../docs/research/decode-overhead-and-wire.md) §2_
+**Phase:** speed · **Status:** draft cache fill, frame slicing, pipelined prefill and per-hop telemetry landed · open: real cross-network numbers · _P1 · design: [docs/archive/research/network-scheduler.md](../docs/archive/research/network-scheduler.md) §2, [decode-overhead-and-wire.md](../docs/archive/research/decode-overhead-and-wire.md) §2_
 
 ## Why
 

@@ -1,6 +1,6 @@
-# 04 · `npx swarmllm serve`: an OpenAI-compatible local endpoint
+# 04 · `npx pooled serve`: an OpenAI-compatible local endpoint
 
-**Phase:** next · **Status:** planned
+**Phase:** later · **Status:** planned · the npm name `pooled` has not been checked yet; the command name follows whatever name we get
 
 ## Why
 Every local-AI tool (Continue.dev, Open WebUI, LangChain, LiteLLM) speaks the OpenAI chat API to a `localhost` URL. One base-URL swap makes all of them use the room's model. A browser tab cannot accept inbound HTTP, so a small bridge is required.
