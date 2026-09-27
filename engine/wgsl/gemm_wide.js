@@ -27,7 +27,8 @@ import { wgslToJs } from "./moe.js";
 export const WIDE_TILE_DEFAULT = Object.freeze({ BM: 64, BN: 64, TM: 4, TN: 4 });
 
 // Resolve a tile config against a workgroup-memory budget (bytes). KB (quant blocks per K stage)
-// is the largest of 2, 1 that fits unless given. Throws on shapes the generator cannot emit.
+// defaults to 1: on GB10 the 64x64 tile runs the 27B prefill at 90 tok/s with KB 1 vs 77 with KB 2
+// (occupancy; tests/bench_wide_tiles.js). KB 2 stays available when asked for and it fits. Throws on shapes the generator cannot emit.
 export function wideTileConfig(opt = {}, wgMem = 16384) {
   const c = { ...WIDE_TILE_DEFAULT, ...(opt || {}) };
   const { BM, BN, TM, TN } = c;
@@ -38,7 +39,7 @@ export function wideTileConfig(opt = {}, wgMem = 16384) {
   c.T = (BM / TM) * (BN / TN);
   if (c.T > 256 || c.T < 32) throw new Error(`prefillTile: ${c.T} threads per workgroup (need 32..256)`);
   const bytes = (KB) => 4 * 32 * KB * (BM + BN);
-  if (c.KB == null) c.KB = [2, 1].find((KB) => bytes(KB) <= wgMem) ?? 0;
+  if (c.KB == null) c.KB = 1;
   if (!(c.KB === 1 || c.KB === 2) || bytes(c.KB) > wgMem) throw new Error(`prefillTile: ${BM}x${BN} tile needs ${bytes(1)} B of workgroup memory (limit ${wgMem})`);
   c.KS = 32 * c.KB; c.smem = bytes(c.KB);
   return Object.freeze(c);

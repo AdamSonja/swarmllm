@@ -79,15 +79,15 @@ function check(fmt, acc, c, { dOut, dIn, N }) {
 }
 
 Deno.test("wide gemm: default tile, Q4_0 / Q8_0, = and +=, KB 1 and 2, clamped row tail", () => {
-  for (const wgMem of [16384, 32768]) {
-    const c = wideTileConfig({}, wgMem);
-    if (c.KB !== (wgMem >= 32768 ? 2 : 1)) throw new Error(`KB ${c.KB} for ${wgMem} B`);
+  for (const [wgMem, KB] of [[16384, undefined], [32768, undefined], [32768, 2]]) {
+    const c = wideTileConfig(KB ? { KB } : {}, wgMem);
+    if (c.KB !== (KB ?? 1)) throw new Error(`KB ${c.KB} for ${wgMem} B`);
     for (const fmt of ["q4", "q8"]) for (const acc of [false, true]) check(fmt, acc, c, { dOut: 72, dIn: 128, N: 128 });
   }
 });
 
 Deno.test("wide gemm: tile shape sweep", () => {
-  const shapes = [{ BM: 128, BN: 64, TM: 8, TN: 4 }, { BM: 64, BN: 128, TM: 4, TN: 8 }, { BM: 32, BN: 32, TM: 4, TN: 4 },
+  const shapes = [{ BM: 128, BN: 64, TM: 8, TN: 4, KB: 2 }, { BM: 64, BN: 128, TM: 4, TN: 8, KB: 2 }, { BM: 32, BN: 32, TM: 4, TN: 4 },
     { BM: 128, BN: 128, TM: 8, TN: 8, KB: 1 }, { BM: 32, BN: 64, TM: 4, TN: 8 }];
   let n = 0;
   for (const s of shapes) {

@@ -67,7 +67,7 @@ for (const n of LENS) {
     if (!same) fail++;
   }
   console.log(line);
-  if (n === Math.min(...LENS)) {   // both prefill paths against one token at a time
+  if (n === Math.min(...LENS) || env("SEQ_ALL", "") === "1") {   // both prefill paths against one token at a time (SEQ_ALL=1: every length)
     eng.reset(); eng.prefillWide = false; if (eng.mtp) eng.mtpFill = false;
     let lg = null; for (const id of ids) lg = await eng.forwardToken(id);
     const seq = Float32Array.from(lg);
