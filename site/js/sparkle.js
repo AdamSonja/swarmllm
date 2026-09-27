@@ -14,10 +14,10 @@
     + "[data-twinkle][aria-selected=\"true\"]>.pooled-tw{opacity:1}"
     + ".pooled-tw svg{position:absolute;animation:pooledtw 1.9s ease-in-out infinite}"
     + "@keyframes pooledtw{0%,100%{opacity:0;transform:scale(.3) rotate(0)}50%{opacity:1;transform:scale(1) rotate(45deg)}}"
-    // hovering the tab before it is chosen: it turns black like the chosen tab (white word, stars twinkling),
-    // a smooth fade, no border or glow
+    // hovering the tab before it is chosen: a half-dark wash (white word, stars twinkling), a hint of the black it
+    // turns when chosen, so sweeping the pointer across the switch looks natural; a smooth fade, no border or glow
     + "[data-twinkle]{transition:background-color .28s cubic-bezier(.2,.7,.2,1),color .28s cubic-bezier(.2,.7,.2,1)}"
-    + ":is(#mode-bar,.modes) [data-twinkle]:not([aria-selected=\"true\"]):hover,[data-twinkle]:not([aria-selected=\"true\"]):hover{background:#0B0D14;color:#fff;box-shadow:none}"
+    + ":is(#mode-bar,.modes) [data-twinkle]:not([aria-selected=\"true\"]):hover,[data-twinkle]:not([aria-selected=\"true\"]):hover{background:rgba(11,13,20,.45);color:#fff;box-shadow:none}"
     + "[data-twinkle]:not([aria-selected=\"true\"]):hover>.pooled-tw{opacity:1}"
     + "@media (prefers-reduced-motion:reduce){.pooled-tw svg{animation:none;opacity:.8}}";
   function twinkles(el) {
