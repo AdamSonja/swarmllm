@@ -4,7 +4,7 @@
 // stopped (tests/e2e/sessions_synth.mjs).
 //
 // In a room, every device runs the same manager with the same calls in the same order (the
-// host drives it), so the devices' slots and files stay in step; see docs/tabby-kernel.md.
+// host drives it), so the devices' slots and files stay in step; see docs/long-context-and-sessions.md.
 import { StateCache } from "./statecache.js";
 
 export class Sessions {

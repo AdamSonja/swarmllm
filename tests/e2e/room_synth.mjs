@@ -280,12 +280,12 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
       if (names[1]) { await tabs[names[1]].setViewportSize({ width: 390, height: 844 }); await tabs[names[1]].screenshot({ path: arg("screenshot") + "-guest.png" }); }
       log(`[${label}] screenshots: ${arg("screenshot")}-host.png, -guest.png`);
     }
-    // --card PATH: open the swarm card and save a screenshot of it
+    // --card PATH: open the room card and save a screenshot of it
     if (arg("card")) {
       await tabs.host.click("#room-menu > summary");   // the room card lives in the room menu
       await tabs.host.click("#card-btn");
       await tabs.host.locator("#card-canvas").screenshot({ path: arg("card") });
-      log(`[${label}] swarm card saved to ${arg("card")}`);
+      log(`[${label}] room card saved to ${arg("card")}`);
       await tabs.host.click("#card-close");
     }
     // --regen: press Regenerate after the last round; with greedy sampling the answer must repeat
