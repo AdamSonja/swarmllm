@@ -228,14 +228,13 @@ try {
       window.__live.max = Math.max(window.__live.max, n); if (p && !window.__live.paths.includes(p)) window.__live.paths.push(p);
     } }).observe(document.getElementById("code-log"), { childList: true, subtree: true, characterData: true }); };
   await host.evaluate(watchLive); await peer.evaluate(watchLive);
-  // the edit window over the preview (room/code-ui.js editWin): a file written again once the app is served
-  const watchEw = () => { window.__ew = { paths: [], max: 0, hl: false }; new MutationObserver(() => {
+  // the edit overlay over the preview (room/code-ui.js editWin): a file written again once the app is served
+  const watchEw = () => { window.__ew = { texts: [], code: false }; new MutationObserver(() => {
     const el = document.querySelector("#pv-frame-wrap .ew:not(.out)");
     if (!el) return;
-    const p = el.querySelector(".ew-bar b")?.textContent, code = el.querySelector(".ew-code");
-    if (p && !window.__ew.paths.includes(p)) window.__ew.paths.push(p);
-    window.__ew.max = Math.max(window.__ew.max, code.textContent.split("\n").length);
-    if (code.querySelector("[class^='t-']")) window.__ew.hl = true;
+    const t = el.querySelector(".ew-t")?.textContent;
+    if (t && !window.__ew.texts.includes(t)) window.__ew.texts.push(t);
+    if (el.querySelector("pre, code")) window.__ew.code = true;
   }).observe(document.getElementById("pv-frame-wrap"), { childList: true, subtree: true, characterData: true }); };
   await host.evaluate(watchEw); await peer.evaluate(watchEw);
   // the working line (room/working.js) shows while the room waits for the model's first output
@@ -271,7 +270,7 @@ try {
   {
     await host.waitForTimeout(3000);   // it closes a moment after the reload
     const E = await host.evaluate(() => ({ ...window.__ew, left: document.querySelectorAll("#pv-frame-wrap .ew").length }));
-    check("host: the edit to game.js streamed into a highlighted window over the preview, which then closed", E.paths.join() === "game.js" && E.max >= 1 && E.hl && E.left === 0, JSON.stringify(E));
+    check("host: editing game.js frosted the preview with an 'Editing game.js' pill (no code), which then lifted", E.texts.includes("Editing game.js") && !E.code && E.left === 0, JSON.stringify(E));
   }
 
   // ---- host asserts

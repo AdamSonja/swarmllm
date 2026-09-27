@@ -147,7 +147,9 @@
   }
   timeWords();
   const c = x => C + x;                               // steps 6 to 8
-  const rate = t => SLOWS.some(([a, b]) => t >= a && t < b) ? SPEED / SLOW : SPEED;
+  // the Code part (the switch to Code until the changed app is on screen) plays at half speed: twice as long
+  const CODE_RATE = .5;
+  const rate = t => (t >= C && t < GAME ? CODE_RATE : 1) * (SLOWS.some(([a, b]) => t >= a && t < b) ? SPEED / SLOW : SPEED);
 
   /* ---------- the caption bar ---------- */
   const dotBtns = [...demo.querySelectorAll(".sb-dots button")];
