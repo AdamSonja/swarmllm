@@ -13,7 +13,8 @@ import { codeUI } from "./code-ui.js";
 import { Agent, briefCall } from "../harness/agent.js";
 import { codingTools } from "../harness/codetools.js";
 import { PreviewServer } from "../harness/preview.js";
-import { previewTools, PROMPT_HIDDEN } from "../harness/preview-tools.js";
+import { previewTools } from "../harness/preview-tools.js";
+import { runJsTool } from "../harness/run-js.js";
 import { mountPreview, openPreviewTab } from "../harness/preview-frame.js";
 import { PreviewPublisher, PreviewSubscriber } from "../harness/preview-sync.js";
 import { lineDiff } from "../harness/diff.js";
@@ -162,7 +163,7 @@ export async function initCode(api, { mock = null } = {}) {
     closeProject();
     project = p;
     server = new PreviewServer(p.ws);
-    tools = [...codingTools(p.ws, { server }), ...previewTools(server)].filter((t) => !PROMPT_HIDDEN.has(t.name));
+    tools = [...codingTools(p.ws, { server }), ...previewTools(server), runJsTool(server)];
     publisher = new PreviewPublisher(server, { send: api.send, broadcast: api.broadcast, channel: api.channel });
     server.onUpdate(portUpdate);
     const saved = await loadSession(p.id).catch(() => null);

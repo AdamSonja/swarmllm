@@ -10,25 +10,28 @@ export function tokenTexts(tok) {
   return (id) => (texts[id] ??= tok.decode([id]));
 }
 
-// Wrap a sampler with the tool-name constraint. setText(t) tells it the answer so far (call it
-// after each emitted token); within one speculative step every sampled column is appended to it
-// in order, so each verified position is masked against the text before it, and accepted tokens
-// always satisfy the constraint. Without tools it is the base sampler.
-export function constrainedSampler(base, tools, { tokenText, vocabSize, style = "xml" }) {
-  if (!tools?.length) return { sample: base, setText() {}, constraint: null };
-  const C = new ToolCallConstraint(tools, { vocabSize, tokenText, style });
-  let text = "", pend = "";
-  return {
+// Wrap a sampler with the tool-call constraint (harness/constrain.js). setText(t) tells it the
+// answer so far (call it after each emitted token); within one speculative step every sampled
+// column is appended to it in order, so each verified position is masked against the text before
+// it, and accepted tokens always satisfy the constraint. `forced` counts positions where the
+// model's own top token was not allowed (reset by setText("")): a healthy model forces ~0 per call,
+// garbage logits (a misbehaving engine) force most tokens. Without tools it is the base sampler.
+export function constrainedSampler(base, tools, { tokenText, vocabSize, style = "xml", stops = [], thinking = false }) {
+  if (!tools?.length) return { sample: base, setText() {}, constraint: null, forced: 0 };
+  const C = new ToolCallConstraint(tools, { vocabSize, tokenText, style, stops, thinking });
+  const w = {
+    forced: 0,
     sample(lg) {
-      C.text = text + pend;
       C.mask(lg);
+      if (C.forced) w.forced++;
       const t = base(lg);
-      pend += tokenText(t);
+      C.push(tokenText(t));
       return t;
     },
-    setText(t) { text = t; pend = ""; },
+    setText(t) { if (!t) w.forced = 0; C.setText(t); },
     constraint: C,
   };
+  return w;
 }
 
 // Streaming decode: push(id) -> the new text, holding back while the tail is an incomplete UTF-8

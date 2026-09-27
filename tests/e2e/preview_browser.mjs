@@ -13,6 +13,7 @@ async function setup() {
   const { previewTools } = await import("/harness/preview-tools.js");
   const { codingTools } = await import("/harness/codetools.js");
   const { mountPreview } = await import("/harness/preview-frame.js");
+  const { runJsTool } = await import("/harness/run-js.js");
   const c = new OffscreenCanvas(4, 4), g = c.getContext("2d");
   g.fillStyle = "#0f0"; g.fillRect(0, 0, 4, 4);
   const png = new Uint8Array(await (await c.convertToBlob({ type: "image/png" })).arrayBuffer());
@@ -39,7 +40,7 @@ setTimeout(() => {
   }));
   await ws.writeBytes("img/sprite.png", png);
   const server = new PreviewServer(ws);
-  const T = Object.fromEntries([...codingTools(ws, { server }), ...previewTools(server)].map((t) => [t.name, t]));
+  const T = Object.fromEntries([...codingTools(ws, { server }), ...previewTools(server), runJsTool(server)].map((t) => [t.name, t]));
   const el = document.createElement("div");
   el.style.cssText = "width:400px;height:300px";
   document.body.append(el);
@@ -177,7 +178,7 @@ try {
     for (let i = 0; i < 60 && !logs.some((t) => /preview stopped/.test(t)); i++) await new Promise((r) => setTimeout(r, 100));
     const out = { mode: v.mode, src, logs };
     v.destroy();
-    window.__T.stop_serve.run({ port: 5175 });
+    window.__server.stop(5175);
     return out;
   });
   check("local mode: a blob: document", local.mode === "local" && local.src === "blob:", JSON.stringify(local));
@@ -205,8 +206,37 @@ try {
   check("an infinite loop is detected; the room page kept running", hang.states.includes("hung") && hang.ticks >= hang.ms / 250 && !hang.frame, JSON.stringify(hang));
   check("the hang is in preview_logs and the pane offers to run it again", /preview hung \(infinite loop\?\)/.test(hang.logs) && /run :5176 again/.test(hang.gate || ""), JSON.stringify(hang));
 
-  const stop = await page.evaluate(() => window.__T.stop_serve.run({ port: 5173 }));
-  check("stop_serve", stop === "stopped :5173" && (await page.evaluate(() => !window.__view.loaded)), stop);
+  // run_js: a hidden frame of its own, through the relay; the visible preview is untouched
+  const rj = await page.evaluate(async () => {
+    const T = window.__T, frames = document.querySelectorAll("iframe").length;
+    await window.__ws.write("lib/tetris.js", "export function clear(rows) {\n  return rows.filter((r) => !r.every(Boolean));\n}\nexport function bad() {\n  throw new Error('no board');\n}\n");
+    await new Promise((r) => setTimeout(r, 1500));   // the visible preview reloads for the new file
+    const logs = window.__logs.length;
+    const out = {};
+    out.value = await T.run_js.run({ code: "import { clear } from './lib/tetris.js';\nconsole.log(clear([[1, 1], [0, 1]]).length);" });
+    out.dom = await T.run_js.run({ code: "await new Promise((r) => setTimeout(r, 200));\nconsole.log(document.getElementById('board').width, window.__level.rows);", page: "index.html" });
+    out.thrown = await T.run_js.run({ code: "import { bad } from './lib/tetris.js';\nbad();" });
+    const t0 = performance.now();
+    let ticks = 0;
+    const iv = setInterval(() => ticks++, 100);
+    out.loop = await T.run_js.run({ code: "for (;;) {}" });
+    clearInterval(iv);
+    out.loopMs = Math.round(performance.now() - t0); out.ticks = ticks;
+    out.frames = document.querySelectorAll("iframe").length - frames;
+    out.visibleLogs = window.__logs.length - logs; out.newLogs = window.__logs.slice(logs).map((e) => e.text);
+    return out;
+  });
+  console.log("--- run_js\n" + [rj.value, rj.dom, rj.thrown, rj.loop].join("\n") + "\n---");
+  check("run_js: a project function's value", /^ok in \d+ ms\n\[[\d.]+s\] log __run\.js:2:\d+ 1$/.test(rj.value), rj.value);
+  check("run_js: page loads first, the snippet sees its DOM and state", /^(ok|error) in \d+ ms/.test(rj.dom) && /log __run\.js:2:\d+ 120 20/.test(rj.dom), rj.dom);
+  check("run_js: a throw is reported with its file:line", /^error in \d+ ms/.test(rj.thrown) && /Error: no board/.test(rj.thrown) && /error lib\/tetris\.js:5:\d+ Error: no board/.test(rj.thrown), rj.thrown);
+  check("run_js: an infinite loop times out, the room page keeps running", /^timed out after 3 s/.test(rj.loop) && rj.loopMs < 6000 && rj.ticks >= rj.loopMs / 250, JSON.stringify(rj));
+  // (the relay is one site, so one process: the loop also hangs the visible preview, which is then
+  // stopped by its watchdog like any hang and runs again on the next edit)
+  check("run_js: its frames are gone, nothing of it in the visible preview's logs", rj.frames === 0 && rj.newLogs.every((t) => /^preview hung/.test(t)), `frames ${rj.frames} logs ${JSON.stringify(rj.newLogs)}`);
+
+  const stopped = await page.evaluate(async () => { window.__server.stop(5173); await new Promise((r) => setTimeout(r, 50)); return !window.__view.loaded; });
+  check("stopping the port clears the preview", stopped);
   check("no errors in the room page", !pageErrors.length, pageErrors.join("\n"));
   code = results.every(Boolean) ? 0 : 1;
   console.log(`\n${results.filter(Boolean).length}/${results.length} checks passed`);

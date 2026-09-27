@@ -1,4 +1,5 @@
-// serve / preview_logs / stop_serve: the agent's side of the preview server
+// serve / preview_logs: the agent's side of the preview server (run_js is in run-js.js; ports are
+// stopped from the UI, the agent has no stop_serve: docs/design/harness-light.md A.2)
 // (docs/design/harness-app.md C.2). serve answers with what the page did in its first 500 ms,
 // so the common "write, serve, see the error" loop needs no separate preview_logs step.
 import { DEFAULT_PORT } from "./preview.js";
@@ -18,7 +19,7 @@ export function logLine(e) {
   return `[${secs(e.t)}] ${e.level} ${where(e)}${text}`;
 }
 // consecutive identical entries fold into one line with ×N
-function fold(lines) {
+export function fold(lines) {
   const out = [];
   for (const e of lines) {
     const k = e.level + "\u0000" + e.src + e.line + "\u0000" + e.text, p = out[out.length - 1];
@@ -27,10 +28,6 @@ function fold(lines) {
   }
   return out.map(({ e, n }) => ({ e, n, text: logLine(e) + (n > 1 ? ` ×${n}` : "") }));
 }
-
-// Code mode leaves stop_serve out of the model's tool block (the UI's close button stops a port);
-// it stays here for tests and the UI.
-export const PROMPT_HIDDEN = new Set(["stop_serve"]);
 
 export function previewTools(server) {
   const portOf = (p) => (p == null || p === "" ? DEFAULT_PORT : Number(p));
@@ -92,15 +89,6 @@ export function previewTools(server) {
         if (cut) out.push(`(${cut} earlier lines, since=${Number(since) || 0}; newest shown)`);
         out.push(...rows.slice(cut).map((r) => r.text), `next: since=${next}`);
         return out.join("\n");
-      },
-    },
-    {
-      name: "stop_serve", mutates: false,
-      description: "Stop serving a preview port.",
-      parameters: { type: "object", properties: { port: { type: "integer" } }, required: ["port"] },
-      async run({ port } = {}) {
-        port = portOf(port);
-        return server.stop(port) ? `stopped :${port}` : nothing(port);
       },
     },
   ];

@@ -16,7 +16,7 @@
 // Messages from the frame are accepted only from its own window and with this mount's nonce, and
 // are treated as untrusted text (typed and capped here, shown with textContent by the UI).
 //
-//   mountPreview(el, source, port, { onLog, onStatus, autorun = true, relay = relayUrl() })
+//   mountPreview(el, source, port, { onLog, onStatus, autorun = true, relay = relayUrl(), onShow, onDone })
 //     -> { reload(), destroy(), frame, rev }
 //   onLog({ level, text, src, line, col, ms, rev })
 //   onStatus({ state: "idle"|"loading"|"ready"|"stopped"|"waiting"|"hung", rev, path })
@@ -42,7 +42,7 @@ export function relayUrl(doc = globalThis.document) {
   return null;
 }
 
-export function mountPreview(el, source, port, { onLog = () => {}, onStatus = () => {}, autorun = true, relay = undefined } = {}) {
+export function mountPreview(el, source, port, { onLog = () => {}, onStatus = () => {}, autorun = true, relay = undefined, onShow = null, onDone = null } = {}) {
   const doc = el.ownerDocument, win = doc.defaultView;
   if (relay === undefined) relay = relayUrl(doc);
   try { if (relay) new URL(relay); } catch { relay = null; }
@@ -94,11 +94,13 @@ export function mountPreview(el, source, port, { onLog = () => {}, onStatus = ()
     if (mode === "relay") {
       if (!hello) return;   // sent on hello
       frame.contentWindow?.postMessage({ pvr: "doc", html }, "*");   // the relay is sandboxed too: an opaque origin
+      onShow?.();
       return;
     }
     const old = url;
     url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
     expect = 1; frame.src = url;
+    onShow?.();
     if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
   };
   // local mode: every load we did not start is the page navigating itself somewhere
@@ -173,7 +175,8 @@ export function mountPreview(el, source, port, { onLog = () => {}, onStatus = ()
     } else if (d.t === "ready" || d.t === "idle") {
       source.frameEvent?.(port, { t: d.t, rev, ms });
       if (d.t === "ready") status("ready");
-    } else if (d.t === "nav") {
+    } else if (d.t === "done") onDone?.(d);   // run_js's snippet finished
+    else if (d.t === "nav") {
       const p = str(d.path, 300);
       const snap = source.snapshot(port);
       if (snap?.files.has(p) && /\.html?$/i.test(p)) { path = p; load(); }
