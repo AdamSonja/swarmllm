@@ -997,7 +997,7 @@ function loadCardRender() {
   rows.innerHTML = names.map((nm) => {
     const pct = Math.max(0, Math.min(100, (ai.prog || {})[nm] ?? 0));
     const l = by[nm];
-    return `<div class="lc-row${pct >= 100 ? " done" : ""}${l || !order.length ? "" : " out"}" style="--sw:${swatch(idx(nm))}"><i class="sw"></i><div class="n">${esc(String(nm))}${nm === myName ? " <small>(you)</small>" : ""}</div><div class="bar"><div class="fill" style="width:${pct}%"></div></div><div class="pct">${pct >= 100 ? (l ? "layers " + esc(humanRange(l)) : "ready") : pct + "%"}</div></div>`;
+    return `<div class="lc-row${pct >= 100 ? " done" : ""}${l || !order.length ? "" : " out"}" style="--sw:${swatch(idx(nm))}"><i class="sw"></i><div class="n">${esc(String(nm))}${nm === myName ? " <small>(you)</small>" : ""}</div><div class="bar"><div class="fill" style="width:${pct}%"></div></div><div class="pct">${pct >= 100 ? (l ? '<span class="lw">layers </span>' + esc(humanRange(l)) : "ready") : pct + "%"}</div></div>`;
   }).join("");
   // the model as a strip of layers: each device's share fills in as its download goes
   const spans = order.map((nm) => { const m = /^(\d+)\D+(\d+)$/.exec(by[nm]); return m ? { nm, lo: +m[1], hi: +m[2] + 1 } : null; }).filter(Boolean);

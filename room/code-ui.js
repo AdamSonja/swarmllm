@@ -215,7 +215,7 @@ export function codeUI({ onMode = () => {} } = {}) {
         break;
       }
       case "ai-code-live": liveCard(d); break;
-      case "ai-code-tool": toolCard(d); for (const l of log.querySelectorAll(".cm-live")) l.remove(); break;
+      case "ai-code-tool": toolCard(d); break;
       case "ai-code-note": closeText(); add(h("div", "cm-note" + (d.err ? " err" : ""), words(d.text))); break;
       case "ai-code-done": {
         for (const l of log.querySelectorAll(".cm-live")) l.remove();
@@ -233,7 +233,9 @@ export function codeUI({ onMode = () => {} } = {}) {
   function liveCard(d) {
     const k = key("l", d.mid, d.step, d.n);
     let el = find(k);
-    if (d.end) { el?.remove(); return; }
+    // the call is complete: the card stays (hidden) as the place its tool card goes, so text the
+    // model writes after the call lands under it
+    if (d.end) { if (el) { el.hidden = true; el.classList.add("ended"); } return; }
     if (!el) {
       closeText();
       el = h("div", "cm-live"); el.dataset.k = k; el.dataset.raw = "";
@@ -261,7 +263,9 @@ export function codeUI({ onMode = () => {} } = {}) {
       // the model's text before a tool call is complete once the call starts; the card takes the
       // place of the live card that showed the call being typed
       closeText();
-      el = add(h("div", "cm-tool"), log.querySelector(".cm-live"));
+      const at = log.querySelector(".cm-live");
+      el = add(h("div", "cm-tool"), at);
+      at?.remove();
       el.dataset.k = k;
       el.dataset.name = d.name || "?";
       const det = h("details"), sum = h("summary");
@@ -350,6 +354,7 @@ export function codeUI({ onMode = () => {} } = {}) {
   const drafts = new Map();   // path -> unsaved text, kept while other files are open
   let edPath = null, edBase = "", edRO = true, hlRaf = 0;
   const ta = $("ed-text"), hl = $("ed-hl"), gutter = $("ed-ln"), edBox = $("ed");
+  if (matchMedia("(max-width: 480px)").matches) $("code-prompt").placeholder = "Ask the agent to build something";
   $("ed-save").querySelector("kbd").textContent = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "\u2318S" : "Ctrl+S";
   function tree(paths) {
     const t = $("code-tree");
