@@ -69,12 +69,24 @@ await sleep(500);
 const c = $("canvas");
 ok(c, "no <canvas>");
 ok(drawn(c), "the canvas is blank after 500 ms");
+// pieces fall on a timer: the picture changes by itself within 2 s
+const g0 = shot(c);
+let fell = false;
+for (let i = 0; i < 20 && !fell; i++) { await sleep(100); fell = shot(c) !== g0; }
+ok(fell, "nothing falls by itself in 2 s");
 key("ArrowLeft"); key("ArrowUp"); await sleep(50);
-const before = shot(c);
+// Space drops the piece to the bottom: the lower half changes at once (a gravity tick moves a
+// piece that is still high up by one row, which leaves the lower half as it was)
+const low = () => { const b = document.createElement("canvas"); b.width = c.width; b.height = c.height >> 1; b.getContext("2d").drawImage(c, 0, -(c.height >> 1)); return b.toDataURL(); };
+const before = low();
 key(" "); await sleep(50);
-ok(shot(c) !== before, "Space (drop) did not change the canvas");
+ok(low() !== before, "Space (drop) did not change the lower half of the canvas");
 `,
   mock: build(files, "Built Tetris: index.html and game.js, served on :5173."),
-  // a static picture: drawn, but nothing moves or reacts
-  bad: { "game.js": joined(files)["game.js"].replace(/document\.addEventListener[\s\S]*$/, "draw();\n") },
+  bad: [
+    // a static picture: drawn, but nothing moves or reacts
+    { "game.js": joined(files)["game.js"].replace(/document\.addEventListener[\s\S]*$/, "draw();\n") },
+    // falls on a timer, but no keys
+    { "game.js": joined(files)["game.js"].replace(/document\.addEventListener[\s\S]*?\n\}\);\n/, "") },
+  ],
 };

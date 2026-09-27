@@ -44,7 +44,12 @@ Deno.test("xml: the whole call is constrained, step by step", () => {
   const v = C.allowed();
   ok(v.deny, "values are a deny list");
   ok(!maskHas(v, STOP), "no end of turn inside a value");
-  for (const w of ["<tool_call>", "</tool_call>", "<function=", "</function>", "<parameter="]) ok(!maskHas(v, VOCAB.indexOf(w)), w + " cannot appear in a value");
+  for (const w of ["<tool_call>", "</tool_call>"]) ok(!maskHas(v, VOCAB.indexOf(w)), w + " cannot appear in a value");
+  for (const w of ["<function=", "</function>", "<parameter="]) ok(maskHas(v, VOCAB.indexOf(w)), w + " is fine mid-line (docs, regexes)");
+  const nl = after("<tool_call>\n<function=read_file>\n<parameter=path>\nsrc/a.js\n").allowed();
+  for (const w of ["<function=", "</function>", "<parameter=", "<tool_call>"]) ok(!maskHas(nl, VOCAB.indexOf(w)), w + " cannot start a line of a value");
+  ok(maskHas(nl, VOCAB.indexOf("<div>")) && maskHas(nl, VOCAB.indexOf("</parameter>")), "other tags can");
+  ok(!maskHas(nl, STOP), "still no end of turn");
   for (const w of ["<div>", "</div>", "</parameter>", "\n</parameter>\n", "</parameter>\n<", "hello world", "\n</"]) ok(maskHas(v, VOCAB.indexOf(w)), w + " is fine");
   ok(maskHas(v, VOCAB.indexOf("</parameter>\n</function>\n</tool_call>")), "closing the value gives path, so the call may end in the same token");
 });
@@ -66,11 +71,11 @@ Deno.test("xml: required params gate </function>, given params are not offered a
   eq(words(C.allowed()), ["\n", "\n</"].sort(), "no params: only </function>");
 });
 
-Deno.test("xml: after </tool_call> only another call or the end of the turn", () => {
+Deno.test("xml: after </tool_call> the text is free again (a stop after a newline is not masked)", () => {
   const C = after("<tool_call>\n<function=list_dir>\n</function>\n</tool_call>");
-  eq(words(C.allowed()), ["\n", "<|im_end|>"].sort());
+  eq(C.allowed(), null);
   C.push("\n");
-  eq(words(C.allowed()), ["<", "<tool_call>"].sort());
+  eq(C.allowed(), null, "a newline then <|im_end|> or an invented <tool_response> must not force a second call");
   C.push("<tool_call>\n<function=");
   ok(C.allowed().allow.length > 1, "a second call");
 });
@@ -113,7 +118,7 @@ Deno.test("random sampling through the masks always yields valid calls (2,000 ru
       let text = `<tool_call>\n<function=${t.name}>`, ended = false;
       for (let s = 0; s < 300 && !ended; s++) {
         const m = C.allowed();
-        ok(m, "constrained all the way: " + JSON.stringify(text));
+        if (!m) { ok(text.includes("</tool_call>"), "constrained all the way: " + JSON.stringify(text)); ended = true; break; }   // free again after the call
         const ids = VOCAB.map((_, i) => i).filter((i) => maskHas(m, i));
         // favour multi-character tokens so runs finish
         const w = ids.map((i) => (VOCAB[i].length > 1 ? 6 : 1)), tot = w.reduce((a, b) => a + b, 0);
@@ -142,7 +147,7 @@ Deno.test("random sampling through the masks always yields valid calls (2,000 ru
         parsed[c.name]++;
       }
       for (const m of text.matchAll(/<function=[^>]+>([\s\S]*?)<\/function>/g)) {
-        const names = [...m[1].matchAll(/<parameter=([^>]+)>/g)].map((x) => x[1]);
+        const names = [...m[1].matchAll(/(?:^|\n)<parameter=([^>]+)>/g)].map((x) => x[1]);
         eq(names.length, new Set(names).size, "no duplicated params");
       }
     }
@@ -174,17 +179,31 @@ Deno.test("mask(): allow lists and deny lists, forced, cache shared across insta
   ok(V.cache.size <= 512, "bounded: " + V.cache.size);
 });
 
-Deno.test("constrainedSampler counts forced positions per answer", () => {
+Deno.test("constrainedSampler counts forced positions of kept tokens; garbage past the gate", () => {
   const argmax = (lg) => { let b = 0; for (let i = 1; i < lg.length; i++) if (lg[i] > lg[b]) b = i; return b; };
   const cs = constrainedSampler(argmax, tools, { tokenText: tt, vocabSize: VOCAB.length, stops: [STOP] });
   cs.setText("");
   const garbage = () => { const lg = new Float32Array(VOCAB.length).fill(0); lg[VOCAB.indexOf("hello world")] = 9; return lg; };
+  const want = (w) => { const lg = new Float32Array(VOCAB.length).fill(0); lg[VOCAB.indexOf(w)] = 9; return lg; };
   let out = "";
-  for (const w of ["<tool_call>", "\n"]) { const lg = new Float32Array(VOCAB.length).fill(0); lg[VOCAB.indexOf(w)] = 9; out += tt(cs.sample(lg)); cs.setText(out); }
+  const step = (lg) => { out += tt(cs.sample(lg)); cs.keep(1); cs.setText(out); };
+  for (const w of ["<tool_call>", "\n"]) step(want(w));
   eq(cs.forced, 0);
-  for (let k = 0; k < 5; k++) { out += tt(cs.sample(garbage())); cs.setText(out); }
+  for (let k = 0; k < 5; k++) step(garbage());
   ok(cs.forced >= 4, "garbage logits are forced: " + cs.forced + " " + JSON.stringify(out));
-  cs.setText(""); eq(cs.forced, 0, "reset per answer");
+  ok(!cs.garbage, "not yet past the gate");
+  for (let k = 0; k < 20 && !cs.garbage; k++) step(garbage());
+  ok(cs.garbage, "a call forcing most of its tokens is garbage");
+  cs.setText(""); eq(cs.forced, 0, "reset per answer"); ok(!cs.garbage);
+
+  // a speculative step: 3 columns sampled, only the first kept; the rejected ones are not counted
+  out = "<tool_call>\n";
+  cs.setText(out);
+  cs.sample(want("<function=")); cs.sample(garbage()); cs.sample(garbage());
+  cs.keep(1);
+  eq(cs.forced, 0, "forced columns after a rejected draft do not count");
+  cs.sample(garbage()); cs.keep(1);
+  eq(cs.forced, 1, "the next step's columns start fresh");
 });
 
 function mulberry(a) {

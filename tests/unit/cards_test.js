@@ -109,3 +109,35 @@ Deno.test("write_file: rewriting a long file that barely changed says so (and ea
   eq(await t.write_file.run({ path: "g.js", content: "new\n" }), "wrote g.js (1 lines, 4 B)");
   ok(!/unchanged/.test(await t.write_file.run({ path: "n.js", content: body })), "a new file has no note");
 });
+
+Deno.test("review fixes: run_js card, garbage calls, duplicates in one answer, repeats after compaction, blank lines in old", async () => {
+  eq(pickCard({ call: { name: "run_js" }, result: "error in 3 ms\nError: x" }), "runjs");
+  eq(pickCard({ call: { name: "run_js" }, result: "ok in 3 ms\n[0.1s] error x" }), null, "(ok only when nothing errored)");
+  eq(pickCard({ call: { name: "write_file", garbage: true, error: "x", open: true }, result: "error: x" }), null, "no card for the engine's garbage");
+  // an answer the adapter stopped as garbage: well-formed calls in it do not run
+  const ws = new MemoryWorkspace({ "a.js": "keep\n" });
+  const w = call("write_file", { path: "a.js", content: "zz" });
+  const G = new Agent({ generate: scripted([w, "ok"]), tools: codingTools(ws), usage: () => ({ reason: "garbage", generated: 40, prompt: 9, forced: 20 }) });
+  await G.run("go");
+  eq(await ws.read("a.js"), "keep\n");
+  ok(/not run: 20 tokens were forced/.test(G.turns[2].text) && !/hint:/.test(G.turns[2].text), G.turns[2].text);
+  // the same append twice in one answer runs once
+  const ws2 = new MemoryWorkspace({ "b.js": "1\n" });
+  const ap = call("write_file", { path: "b.js", content: "2", append: "true" });
+  const D = new Agent({ generate: scripted([ap + "\n" + ap, "ok"]), tools: codingTools(ws2) });
+  await D.run("go");
+  eq(await ws2.read("b.js"), "1\n2");
+  ok(/skipped: the same call/.test(D.turns[2].text), D.turns[2].text);
+  // a repeat whose earlier result was compacted away gets the result again
+  const ws3 = new MemoryWorkspace({ "c.js": "let c = 3;\n" }), rd = call("read_file", { path: "c.js" });
+  const E = new Agent({ generate: scripted([rd, rd, "ok"]), tools: codingTools(ws3) });
+  const gen = E.generate;
+  let n = 0;
+  E.generate = (o) => { if (n++ === 1) o.turns[2].text = "<tool_response>\n(output of read_file dropped; run it again if needed)\n</tool_response>"; return gen(o); };
+  await E.run("look");
+  ok(E.turns[4].text.includes("1|let c = 3;\n(same call as step 1; nothing changed)"), E.turns[4].text);
+  // edit_file ignoring indentation with a blank line inside old
+  const ws4 = new MemoryWorkspace({ "e.js": "function f() {\n\tlet a = 1;\n\n\treturn a;\n}\n" }), t = T(ws4);
+  eq(await t.edit_file.run({ path: "e.js", old: "  let a = 1;\n\n  return a;", new: "  let a = 2;\n\n  return a;" }), "edited e.js lines 2-4 (3 -> 3 lines, matched ignoring indentation)");
+  eq(await ws4.read("e.js"), "function f() {\n\tlet a = 2;\n\n\treturn a;\n}\n");
+});

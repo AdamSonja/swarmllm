@@ -8,12 +8,13 @@ export const CARDS = {
   format: "A call is exactly:\n<tool_call>\n<function=read_file>\n<parameter=path>\nindex.html\n</parameter>\n</function>\n</tool_call>\nOne call per <tool_call> block. Nothing after </tool_call>.",
   parts: "Write long files in parts of at most ~100 lines: write_file with the first part, then write_file with append: true for each next part, starting right after the last saved line. Never rewrite what is already saved.",
   edit: "old must be copied exactly from the file as it is now: read_file the lines around the change, copy 2-5 whole lines with their indentation, and change only those. Do not rewrite the file with write_file to fix one spot.",
+  runjs: "Fix the code the error points at, then run_js again.",
   errors: "Fix one error at a time: read_file around the reported line, fix it with edit_file. The preview reloads by itself: check preview_logs, do not serve again.",
   loop: "You already made this exact call and nothing changed since. Change something first, or finish.",
   rewrite: "Most lines were unchanged: use edit_file for small changes.",
 };
 // most urgent first: when several calls in one step earn a card, the first of these wins
-export const PRIORITY = ["loop", "format", "parts", "edit", "errors", "rewrite"];
+export const PRIORITY = ["loop", "format", "parts", "edit", "errors", "runjs", "rewrite"];
 export const MAX_PER = { errors: 1 };   // default 2 per request
 export const hint = (id) => "\nhint: " + CARDS[id];
 
@@ -24,6 +25,7 @@ const lines = (s) => (typeof s === "string" ? s.split("\n").length : 0);
 //   repeat: the call was short-circuited as a repeat
 export function pickCard({ call, result = "", repeat = false }) {
   if (repeat) return "loop";
+  if (call?.garbage) return null;   // the engine's fault, not the model's
   const name = call?.name, err = /^error/.test(result);
   if (call?.salvage || (call?.open && /cut at \d+ tokens/.test(result))) return "parts";
   if (call?.error || /^error: there is no tool called/.test(result)) return "format";
@@ -32,6 +34,7 @@ export function pickCard({ call, result = "", repeat = false }) {
     if (/old lines unchanged/.test(result)) return "rewrite";
     if (!call.arguments?.append && lines(call.arguments?.content) > 150) return "parts";
   }
-  if ((name === "serve" || name === "preview_logs" || name === "run_js") && (/· \d+ errors?\b/.test(result) || /\] error /.test(result))) return "errors";
+  if (name === "run_js" && err) return "runjs";
+  if ((name === "serve" || name === "preview_logs") && (/· \d+ errors?\b/.test(result) || /\] error /.test(result))) return "errors";
   return null;
 }

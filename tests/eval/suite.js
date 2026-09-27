@@ -78,7 +78,7 @@ export async function runTask(task, { makeModel, root = document.body, onEvent =
     budget: model.budget || Infinity, count: model.count || null, usage: model.stats ? () => model.stats.last : null,
     onEvent: (e) => {
       if (e.type === "delta" && !rec.firstMs) rec.firstMs = Math.round(now() - t0);
-      if (e.type === "usage") { rec.prompt += (e.prompt || 0) - (e.reused || 0); rec.reused += e.reused || 0; rec.generated += e.generated || 0; }
+      if (e.type === "usage") { rec.prompt += (e.prompt || 0) - (e.reused || 0); rec.reused += e.reused || 0; rec.generated += e.generated || 0; rec.forced += e.forced || 0; }
       if (e.type === "card") rec.cards[e.id] = (rec.cards[e.id] || 0) + 1;
       onEvent({ task: task.id, ...e });
     },
@@ -87,7 +87,7 @@ export async function runTask(task, { makeModel, root = document.body, onEvent =
   try { r = await agent.run(task.prompt, { signal }); }
   catch (err) { r = { steps: 0, calls: 0, reason: "error", text: String(err?.message || err) }; }
   rec.ms = Math.round(now() - t0);
-  Object.assign(rec, { reason: r.reason, steps: r.steps, calls: r.calls, forced: model.stats?.forced || 0 });
+  Object.assign(rec, { reason: r.reason, steps: r.steps, calls: r.calls });
   try { rec.ctx = agent._size(); } catch {}
   for (const m of mounts.values()) m.destroy();
   offUpdate(); server.close(); box.remove();
@@ -101,10 +101,15 @@ export async function runTask(task, { makeModel, root = document.body, onEvent =
   return { rec, trajectory: { id: task.id, model: label, prompt: task.prompt, system: agent.system, result: r, ...agent.toJSON(), files } };
 }
 
+// `bad` is one set of files or a list of them (each must fail the check)
 export async function selfTest(task, { root = document.body } = {}) {
-  const ws = new MemoryWorkspace({ ...(task.files || {}), ...(task.bad || {}) });
-  const c = await checkTask(task, ws, { root });
-  return { ok: !c.ok, detail: c.detail };
+  const out = [];
+  for (const bad of [task.bad || {}].flat()) {
+    const c = await checkTask(task, new MemoryWorkspace({ ...(task.files || {}), ...bad }), { root });
+    if (c.ok) return { ok: false, detail: `bad variant ${out.length + 1} passes: ${c.detail}` };
+    out.push(c.detail);
+  }
+  return { ok: true, detail: out.join("\n---\n") };
 }
 
 export async function runSuite(tasks, { repeat = 1, onResult = () => {}, ...opts } = {}) {

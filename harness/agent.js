@@ -18,7 +18,7 @@ import { pickCard, hint, PRIORITY, MAX_PER } from "./cards.js";
 
 const STOPPED = "(stopped by the user)";
 const EMPTY = "(empty answer: call a tool or say you are done)";
-const LIVE = new Set(["preview_logs"]);   // results that change with time: a repeat is not a loop
+const LIVE = new Set(["preview_logs", "run_js"]);   // results that can change with time: a repeat is not a loop
 export const CONTEXT_FULL = "context full: start a new task (the files are kept)";
 
 // head and tail of a long tool result (errors are usually at the end, headers at the start)
@@ -123,8 +123,18 @@ export class Agent {
       }
       const e = P.end();
       const u = this.usage?.();
+      // the call grammar forced most of a call's tokens (the adapter ended the answer): the calls are
+      // the grammar's shape around garbage logits, not the model's, so none of them runs (a forced
+      // write_file would overwrite a file, auto-approved in a scratch project)
+      if (u?.reason === "garbage") {
+        for (const c of [...found, ...e.calls]) {
+          c.garbage = true;
+          c.error = `this answer was stopped and its calls were not run: ${u.forced} tokens were forced by the call format, so the room's engine is producing garbage (try again, or reload the model)`;
+          c.open = true;   // (no "write the call again" advice: the format was not the problem)
+        }
+      }
       // a call left open by the length cap: its last value is a fragment, so say why instead of running it
-      {
+      else {
         for (let i = 0; i < e.calls.length; i++) {
           const c = e.calls[i];
           if (!c.open) continue;
@@ -143,7 +153,7 @@ export class Agent {
         }
       }
       // many tokens forced by the call grammar: the logits were not the model's (a misbehaving engine)
-      if (u?.forced > 8) for (const c of e.calls) if (c.error) c.error += ` (${u.forced} tokens were forced by the call format: the room's engine may be misbehaving)`;
+      if (u?.forced > 8 && u.reason !== "garbage") for (const c of [...found, ...e.calls]) if (c.error) c.error += ` (${u.forced} tokens were forced by the call format: the room's engine may be misbehaving)`;
       shown += e.text; found.push(...e.calls);
       if (e.text) this.onEvent({ type: "text", text: e.text, step });
       this.turns.push({ role: "assistant", text: raw, req });
@@ -158,7 +168,7 @@ export class Agent {
         this.onEvent({ type: "done", step });
         return { text: shown.trim(), steps: step, calls, reason: "done" };
       }
-      const results = [], briefs = [], reps = [], cur = new Map();
+      const results = [], briefs = [], reps = [], cur = new Map(), seen = new Set();
       for (const c of found) {
         calls++;
         R.calls.push({ name: c.name, arguments: c.arguments });
@@ -166,10 +176,21 @@ export class Agent {
         // the same call as last step with nothing changed since: answer from memory, do not run it
         const key = c.error || LIVE.has(c.name) ? null : c.name + "\u0000" + JSON.stringify(c.arguments || {});
         const prev = key && prevStep.get(key), rep = !!prev && prev.mut === mut && !signal?.aborted;
+        // the same call twice in one answer (e.g. a forced second call): run it once
+        const dup = c.error ? null : c.name + "\u0000" + JSON.stringify(c.arguments || {});
+        const twice = !!dup && seen.has(dup);
+        if (dup) seen.add(dup);
         let r;
         if (signal?.aborted) r = STOPPED;
-        else if (rep) {
-          r = `${prev.result.split("\n")[0]} (same call as step ${prev.step}; nothing changed)`;
+        else if (twice) {
+          r = "skipped: the same call as the one before it in this answer";
+          this.onEvent({ type: "tool-start", call: c, step });
+          this.onEvent({ type: "tool", call: c, result: r, step, ms: 0 });
+        } else if (rep) {
+          // its result is still in the prompt: point at it; else (compacted away) give it again
+          const inPrompt = this.turns.some((t) => t.role === "user" && t.text.includes(prev.result));
+          r = inPrompt ? `${prev.result.split("\n")[0]} (same call as step ${prev.step}; nothing changed)`
+            : `${prev.result}\n(same call as step ${prev.step}; nothing changed)`;
           this.onEvent({ type: "tool-start", call: c, step });
           this.onEvent({ type: "tool", call: c, result: r, step, ms: 0 });
         } else {

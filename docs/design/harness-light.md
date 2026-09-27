@@ -211,22 +211,25 @@ whole call, as a small hand-written character automaton (no grammar engine, no d
 FREE ──"<tool_call>"──▶ OPEN ──"\n<function="──▶ NAME ──(tool)">"──▶ BODY(fn, given)
 BODY ──"\n<parameter="──▶ PNAME ──(unused param of fn)">"──▶ VALUE(fn, p) ──"</parameter>"──▶ BODY
 BODY ──"\n</function>"  (only when every required param of fn is given)──▶ CLOSE
-CLOSE ──"\n</tool_call>"──▶ AFTER ──"\n<tool_call>"──▶ OPEN
-                                 └──(end of turn token)──▶ done
+CLOSE ──"\n</tool_call>"──▶ FREE   (a stop, another <tool_call>, or anything: the parser ignores it)
 ```
 
-- Literal states (OPEN, BODY, CLOSE, AFTER) accept only tokens that stay on one of the allowed
+- Literal states (OPEN, BODY, CLOSE) accept only tokens that stay on one of the allowed
   strings. NAME and PNAME as today, but PNAME offers only the tool's parameters **not yet given**,
   and BODY offers `</function>` only once the **required** ones are given (no "Required
   parameters MUST be specified" failures, no duplicated parameters).
 - VALUE is free text, except: the end-of-turn / end-of-text tokens are masked (an answer cannot
-  stop inside a call); a value may not contain `<tool_call>`, `</tool_call>`, `<function=`,
-  `</function>` or `<parameter=` (these mean a missing `</parameter>`); `</parameter>` (with or
+  stop inside a call); a value may not contain `<tool_call>` or `</tool_call>`, nor start a line
+  with `<function=`, `</function>` or `<parameter=` (these mean a missing `</parameter>`; inside a
+  line they are legitimate content, e.g. docs about tool calls, and the parser only ends a value at
+  a line-start `<parameter=`); `</parameter>` (with or
   without the leading newline) ends it. Typed values: `integer` params allow digits only, `boolean`
   params `true`/`false`, so `start_line` / `port` / `append` are always valid.
-- AFTER: after `</tool_call>` only another call or end of turn. This is the template's own "NO
-  suffix" rule, enforced: no prose after a call, and the model cannot start writing a fake
-  `<tool_response>` (the room adapter's cut for that stays as a backstop).
+- After `</tool_call>` the text is free again. (An earlier AFTER state allowed only another call
+  or a stop right after `</tool_call>`; one `\n` there masked every stop, including the room's
+  `<tool_response>` stop, and forced a second call. The room adapter cuts an invented
+  `<tool_response>`; the parser ignores other trailing text; the agent runs an exact duplicate call
+  in one answer once.)
 - A token may cross state boundaries (`>\n`, `</parameter>\n<`): a token is allowed iff running
   its characters through the automaton from the current state never rejects. The whole mask is a
   function of the automaton state, not of the text typed inside a value.
@@ -246,13 +249,15 @@ Mask computation and cost:
   against the text before it, so accepted tokens always satisfy the automaton.
 - JSON style keeps today's name-only constraint (no model we ship uses it).
 
-**Diagnostics for F2.** The wrapper counts `forced`: positions where the unmasked argmax was a
-disallowed token. `stats.last.forced` goes into the usage event, the timeline's step line, and
-the early-end error. A healthy model forces ~0 per call; an answer where the constraint had to
-force most tokens is garbage logits (the split engine), not a prompt problem. When `forced`
-exceeds 8 in one call the agent reports "the model's output was not a valid call (N tokens
-forced): the room's engine may be misbehaving" instead of burning three retries. This makes F2
-triage one glance at the console instead of a guess.
+**Diagnostics for F2.** The wrapper counts `forced`: kept positions (the adapters call
+`keep(n)` for emitted tokens; rejected speculative columns do not count) where the unmasked argmax
+was a disallowed token. `stats.last.forced` goes into the usage event, the timeline's step line,
+and the early-end error. A healthy model forces ~0 per call; an answer where the constraint had to
+force most tokens is garbage logits (the split engine), not a prompt problem. With the grammar,
+garbage would otherwise come out as *well-formed* calls, so past a gate (16 forced in one call, or
+6 and more than 20 % of its tokens: `GARBAGE` in model-common.js) the adapter ends the answer
+(reason `garbage`) and the agent runs none of its calls, saying the room's engine is producing
+garbage. A forced write_file never reaches the disk, auto-approve or not.
 
 Tests (Deno, `tests/unit/constrain_test.js`): a toy vocabulary with single characters and nasty
 multi-character tokens (`>\n`, `</parameter>\n<`, `\n</`, `<|im_end|>`); a random sampler driven
@@ -282,12 +287,18 @@ How it runs (host only, `harness/run-js.js` + a small `runProbe` in `preview-fra
    the files it imports, as for any module), then posts `{ t: "done", ms }`. The snippet may use
    top-level `await` (e.g. wait 500 ms, dispatch a `KeyboardEvent`, read `getImageData`).
 3. Mount it in a **hidden, fresh, sandboxed frame** through the same relay as the preview (its own
-   process, so `while(true){}` cannot freeze the room), with the same capture script. Collect
-   console and uncaught errors until `done`, or until **3 s** (then the frame is destroyed).
-4. Result (capped at 30 lines / 2,000 chars with the `logLine` / `fold` formatters of
-   preview_logs): `ok in 412 ms` or `error in 38 ms` / `timed out after 3 s (a loop that never
-   ends?)`, then the log lines with `file:line`. Nothing printed: `ok (no output; print results
-   with console.log)`.
+   process, so `while(true){}` cannot freeze the room), with the same capture script. **Relay
+   only**: without a preview-origin (production today) run_js is not offered at all, and a run
+   frame never falls back to local mode. While a run frame lives the visible previews' watchdogs
+   pause (one relay site, one process); when it ends with the relay hung they get fresh frames,
+   quietly. Collect console and uncaught errors until `done` plus 150 ms (a timer or the first
+   frame that throws right after), or until **3 s** (then the frame is destroyed), or Stop. The
+   done message carries a per-run token, so page code calling the hook does not end the run.
+4. Result (capped at 30 lines / 1,200 chars; the row that overflows is cut, the last error always
+   kept): `ok in 412 ms` or `error in 38 ms` / `timed out after 3 s (a loop that never ends?)`,
+   then printed values as they are and warnings / errors with `file:line`. Nothing printed: `ok
+   (no output; await async work and print with console.log)`. `page` is a path from the project
+   root (else from a served folder).
 
 A test file is just `run_js { code: "import './game.test.js'" }` with `console.assert` /
 `throw` inside: no test framework, no new dependency. Peers never run it (the host's tool, like

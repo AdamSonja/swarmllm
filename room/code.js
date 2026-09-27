@@ -14,7 +14,7 @@ import { Agent, briefCall } from "../harness/agent.js";
 import { codingTools } from "../harness/codetools.js";
 import { PreviewServer } from "../harness/preview.js";
 import { previewTools } from "../harness/preview-tools.js";
-import { runJsTool } from "../harness/run-js.js";
+import { runJsTool, runJsAvailable } from "../harness/run-js.js";
 import { mountPreview, openPreviewTab } from "../harness/preview-frame.js";
 import { PreviewPublisher, PreviewSubscriber } from "../harness/preview-sync.js";
 import { lineDiff } from "../harness/diff.js";
@@ -71,7 +71,9 @@ function wireDiff(d) {
   return { ...w, rows: rows.slice(0, k), more: rows.length - k };
 }
 
-const EVAL = new URLSearchParams(globalThis.location?.search || "").get("eval");
+// the eval suite (tests/eval/, not deployed) runs only on a development host
+const DEV_HOST = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(globalThis.location?.hostname || "");
+const EVAL = DEV_HOST ? new URLSearchParams(globalThis.location?.search || "").get("eval") : null;
 
 export async function initCode(api, { mock = null } = {}) {
   const ui = codeUI({ onMode: (m) => { if (m === "code") entered(); } });
@@ -165,7 +167,8 @@ export async function initCode(api, { mock = null } = {}) {
     closeProject();
     project = p;
     server = new PreviewServer(p.ws);
-    tools = [...codingTools(p.ws, { server }), ...previewTools(server), runJsTool(server)];
+    // run_js only when the snippet runs on the isolated preview host (a loop there cannot freeze the room)
+    tools = [...codingTools(p.ws, { server }), ...previewTools(server), ...(runJsAvailable() ? [runJsTool(server)] : [])];
     publisher = new PreviewPublisher(server, { send: api.send, broadcast: api.broadcast, channel: api.channel });
     server.onUpdate(portUpdate);
     const saved = await loadSession(p.id).catch(() => null);
@@ -380,8 +383,9 @@ export async function initCode(api, { mock = null } = {}) {
     running = true; ui.running(true); ctrl = new AbortController();
     const lines = [];
     try {
-      const { TASKS, byId } = await import("../tests/eval/tasks/index.js");
-      const S = await import("../tests/eval/suite.js");
+      let TASKS, byId, S;
+      try { ({ TASKS, byId } = await import("../tests/eval/tasks/index.js")); S = await import("../tests/eval/suite.js"); }
+      catch { throw new Error("the eval suite is not deployed here (run it from a local checkout)"); }
       const tasks = !spec || spec === "all" ? TASKS : spec.split(",").map((id) => byId(id.trim())).filter(Boolean);
       const style = detectStyle(api.chatTemplate());
       localNote(`eval: ${tasks.length} task${tasks.length === 1 ? "" : "s"} on ${api.peers().length + 1} device(s)`);

@@ -71,7 +71,7 @@ export function roomModel(api, {
 
     const q = asyncQueue();
     const dec = deltaDecoder(T);
-    let raw = "", sent = 0, cutAt = -1, thinkSent = 0, text = "";
+    let raw = "", sent = 0, cutAt = -1, thinkSent = 0, text = "", garbage = false;
     // the visible text so far: the answer part when thinking, cut at an invented tool response
     const visible = () => {
       let s = raw;
@@ -92,10 +92,14 @@ export function roomModel(api, {
     };
     const onToken = (id) => {
       if (cutAt >= 0) return;   // tokens of the step that was in flight when the tag appeared
+      cs.keep(1);
       const d = dec.push(id);
       raw += d;
       cs.setText(raw);
       if (d) flush(false);
+      // the call grammar forced most of a call's tokens: the logits are not the model's (a
+      // misbehaving engine), so stop decoding garbage instead of running to the cap
+      if (cs.garbage && cutAt < 0) { garbage = true; cutAt = visible().length; ctrl.abort(); flush(true); }
     };
     const run = api.generate(ids, { onToken, stop, maxNew: Math.min(maxNew, maxSeq - ids.length - MARGIN), sample: cs.sample, signal: ctrl.signal })
       .then((r) => { if (cutAt < 0) raw += dec.end(); text = flush(true); q.end(); return r; }, (err) => { q.end(err); throw err; });
@@ -112,7 +116,7 @@ export function roomModel(api, {
       if (mine) own.set(text, mine);
       stats.reused += r.reused || 0; stats.prefilled += r.prefilled || 0; stats.generated += (r.tokens?.length ?? r.count ?? 0);
       stats.tps = r.tps || 0;
-      stats.last = { reason: cutAt >= 0 ? "tool_response" : r.reason, prompt: ids.length, reused: r.reused || 0, prefilled: r.prefilled || 0, generated: r.tokens?.length ?? r.count ?? 0, tps: r.tps || 0, stats: r.stats || "", forced: cs.forced || 0 };
+      stats.last = { reason: garbage ? "garbage" : cutAt >= 0 ? "tool_response" : r.reason, prompt: ids.length, reused: r.reused || 0, prefilled: r.prefilled || 0, generated: r.tokens?.length ?? r.count ?? 0, tps: r.tps || 0, stats: r.stats || "", forced: cs.forced || 0 };
     } finally {
       signal?.removeEventListener("abort", onAbort);
       if (!finished) { ctrl.abort(); await run.catch(() => {}); }   // consumer left early: stop the room's step

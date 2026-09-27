@@ -13,7 +13,7 @@ async function setup() {
   const { previewTools } = await import("/harness/preview-tools.js");
   const { codingTools } = await import("/harness/codetools.js");
   const { mountPreview } = await import("/harness/preview-frame.js");
-  const { runJsTool } = await import("/harness/run-js.js");
+  const RJ = await import("/harness/run-js.js"), { runJsTool } = RJ;
   const c = new OffscreenCanvas(4, 4), g = c.getContext("2d");
   g.fillStyle = "#0f0"; g.fillRect(0, 0, 4, 4);
   const png = new Uint8Array(await (await c.convertToBlob({ type: "image/png" })).arrayBuffer());
@@ -46,7 +46,7 @@ setTimeout(() => {
   document.body.append(el);
   const logs = [];
   const view = mountPreview(el, server, 5173, { onLog: (e) => logs.push(e) });
-  Object.assign(window, { __ws: ws, __server: server, __T: T, __logs: logs, __view: view, __mountPreview: mountPreview });
+  Object.assign(window, { __ws: ws, __server: server, __T: T, __logs: logs, __view: view, __mountPreview: mountPreview, __RJ: RJ });
   return await T.serve.run({});
 }
 
@@ -208,7 +208,7 @@ try {
 
   // run_js: a hidden frame of its own, through the relay; the visible preview is untouched
   const rj = await page.evaluate(async () => {
-    const T = window.__T, frames = document.querySelectorAll("iframe").length;
+    const T = window.__T;
     await window.__ws.write("lib/tetris.js", "export function clear(rows) {\n  return rows.filter((r) => !r.every(Boolean));\n}\nexport function bad() {\n  throw new Error('no board');\n}\n");
     await new Promise((r) => setTimeout(r, 1500));   // the visible preview reloads for the new file
     const logs = window.__logs.length;
@@ -216,24 +216,41 @@ try {
     out.value = await T.run_js.run({ code: "import { clear } from './lib/tetris.js';\nconsole.log(clear([[1, 1], [0, 1]]).length);" });
     out.dom = await T.run_js.run({ code: "await new Promise((r) => setTimeout(r, 200));\nconsole.log(document.getElementById('board').width, window.__level.rows);", page: "index.html" });
     out.thrown = await T.run_js.run({ code: "import { bad } from './lib/tetris.js';\nbad();" });
+    out.late = await T.run_js.run({ code: "setTimeout(() => console.log('late tick'), 40);\nconsole.log('first');" });
+    out.fake = await T.run_js.run({ code: "window.__pvDone(true, 1, 'guess');\nawait new Promise((r) => setTimeout(r, 300));\nconsole.log('after the fake done');" });
     const t0 = performance.now();
     let ticks = 0;
     const iv = setInterval(() => ticks++, 100);
     out.loop = await T.run_js.run({ code: "for (;;) {}" });
     clearInterval(iv);
     out.loopMs = Math.round(performance.now() - t0); out.ticks = ticks;
-    out.frames = document.querySelectorAll("iframe").length - frames;
+    out.frames = [...document.querySelectorAll("iframe")].filter((f) => f.parentElement?.style.opacity === "0").length;   // run frames left
     out.visibleLogs = window.__logs.length - logs; out.newLogs = window.__logs.slice(logs).map((e) => e.text);
+    // the visible preview runs again after the loop (its hung relay process was replaced quietly)
+    await new Promise((r) => setTimeout(r, 1500));
+    out.again = await T.serve.run({});
+    out.hungLogs = window.__logs.slice(logs).filter((e) => /preview hung/.test(e.text)).length;
+    // without a relay the runner refuses instead of running the loop in this tab
+    const t1 = performance.now();
+    const noRelay = window.__RJ.browserRunner(document, { mount: (el, src, port, o) => window.__mountPreview(el, src, port, { ...o, relay: null }) });
+    const nr = await noRelay(window.__RJ.runSnapshot({ files: new Map() }, { code: "for (;;) {}" }), { timeout: 3000 });
+    out.nohost = window.__RJ.formatRun(nr); out.nohostMs = Math.round(performance.now() - t1);
     return out;
   });
-  console.log("--- run_js\n" + [rj.value, rj.dom, rj.thrown, rj.loop].join("\n") + "\n---");
-  check("run_js: a project function's value", /^ok in \d+ ms\n\[[\d.]+s\] log __run\.js:2:\d+ 1$/.test(rj.value), rj.value);
-  check("run_js: page loads first, the snippet sees its DOM and state", /^(ok|error) in \d+ ms/.test(rj.dom) && /log __run\.js:2:\d+ 120 20/.test(rj.dom), rj.dom);
+  console.log("--- run_js\n" + [rj.value, rj.dom, rj.thrown, rj.late, rj.fake, rj.loop, rj.again, rj.nohost].join("\n") + "\n---");
+  check("run_js: a project function's value", /^ok in \d+ ms\n1$/.test(rj.value), rj.value);
+  // (the page's own game.js throws "boom is not defined" 50 ms after load: that error is the run's)
+  check("run_js: page loads first, the snippet sees its DOM and state; the page's own error is reported",
+    /^error in \d+ ms/.test(rj.dom) && /^120 20$/m.test(rj.dom) && /error game\.js:6:\d+ ReferenceError: boom is not defined/.test(rj.dom), rj.dom);
+  check("run_js: output from a timer right after the module finished is kept", /^ok in \d+ ms\nfirst\nlate tick$/.test(rj.late), rj.late);
+  check("run_js: a page calling the done hook itself does not end the run", /after the fake done/.test(rj.fake), rj.fake);
   check("run_js: a throw is reported with its file:line", /^error in \d+ ms/.test(rj.thrown) && /Error: no board/.test(rj.thrown) && /error lib\/tetris\.js:5:\d+ Error: no board/.test(rj.thrown), rj.thrown);
   check("run_js: an infinite loop times out, the room page keeps running", /^timed out after 3 s/.test(rj.loop) && rj.loopMs < 6000 && rj.ticks >= rj.loopMs / 250, JSON.stringify(rj));
-  // (the relay is one site, so one process: the loop also hangs the visible preview, which is then
-  // stopped by its watchdog like any hang and runs again on the next edit)
-  check("run_js: its frames are gone, nothing of it in the visible preview's logs", rj.frames === 0 && rj.newLogs.every((t) => /^preview hung/.test(t)), `frames ${rj.frames} logs ${JSON.stringify(rj.newLogs)}`);
+  // (the relay is one site, so one process: the loop also stalls the visible preview; its watchdog
+  // pauses while a run frame lives, and it gets a fresh frame when the run ends hung)
+  check("run_js: its frames are gone, no hang in the visible preview's logs", rj.frames === 0 && rj.hungLogs === 0, `frames ${rj.frames} logs ${JSON.stringify(rj.newLogs)}`);
+  check("run_js: the visible preview runs again after the loop", /loaded in \d+ ms/.test(rj.again), rj.again);
+  check("run_js: without a relay it refuses at once (no loop in the room's tab)", /needs the isolated preview host/.test(rj.nohost) && rj.nohostMs < 1000, `${rj.nohost} ${rj.nohostMs}`);
 
   const stopped = await page.evaluate(async () => { window.__server.stop(5173); await new Promise((r) => setTimeout(r, 50)); return !window.__view.loaded; });
   check("stopping the port clears the preview", stopped);

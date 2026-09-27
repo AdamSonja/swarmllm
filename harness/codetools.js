@@ -62,14 +62,15 @@ function applyEdit(text, path, o, n) {
     return { after: text.slice(0, at) + n + text.slice(at + o.length), line: text.slice(0, at).split("\n").length };
   }
   const F = text.split("\n"), O = asLines(o);
-  for (const [eq, how] of [[(a, b) => fuzz(a) === fuzz(b), "whitespace"], [(a, b) => a.trim() === b.trim() && a.trim() !== "", "indentation"]]) {
+  for (const [eq, how] of [[(a, b) => fuzz(a) === fuzz(b), "whitespace"], [(a, b) => a.trim() === b.trim(), "indentation"]]) {
+    if (how === "indentation" && !O.some((l) => l.trim())) continue;   // (blank lines match blank lines; old needs one that is not)
     const at = windows(F, O, eq);
     if (at.length > 1) return { error: `error: old appears more than once in ${path} (ignoring ${how}); include more surrounding lines so it is unique` };
     if (!at.length) continue;
     const i = at[0];
     let N = n === "" ? [] : asLines(n);
     if (how === "indentation") {
-      const fi = indentOf(F[i]), oi = indentOf(O[0]);
+      const j = O.findIndex((l) => l.trim()), fi = indentOf(F[i + j]), oi = indentOf(O[j]);
       if (fi !== oi) N = N.map((l) => (l && l.startsWith(oi) ? fi + l.slice(oi.length) : l));
     }
     return { after: [...F.slice(0, i), ...N, ...F.slice(i + O.length)].join("\n"), line: i + 1, how };

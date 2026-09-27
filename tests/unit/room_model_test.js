@@ -206,3 +206,16 @@ Deno.test("model-common: streaming decode holds back a split UTF-8 character", a
   const got = []; for await (const x of q) got.push(x);
   eq(got, [1, 2, 3]);
 });
+
+Deno.test("room model: a call whose tokens the grammar keeps forcing is ended as garbage; the agent runs none of it", async () => {
+  const tok = makeTok();
+  // a broken engine: after a good start, its top token is the end of turn (masked inside a call) every time
+  const room = fakeRoom(tok, [["<tool_call>", "\n", "<function=", "read_file>", "\n", "<parameter=", "path>", "\n", "<|im_end|>"], ["hello"]]);
+  const tools = [{ name: "read_file", description: "r", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] }, mutates: false, run: () => { throw new Error("ran"); } }];
+  const m = roomModel(room, { tools, sample: argmax });
+  const A = new Agent({ generate: m.generate, tools, usage: () => m.stats.last });
+  await A.run("go");
+  const u = room.calls.length && A.turns[1].text;
+  ok(u && u.length < 400, "stopped early, not at the cap: " + JSON.stringify(u));
+  ok(/not run: \d+ tokens were forced/.test(A.turns[2].text), A.turns[2].text);
+});

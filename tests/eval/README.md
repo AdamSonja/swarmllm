@@ -6,11 +6,11 @@ decides pass or fail. Design: `docs/design/harness-light.md` §6.
 
 | id | kind | the check (runs in the sandboxed page) |
 |---|---|---|
-| tetris | build, canvas | canvas drawn after 500 ms; ArrowLeft / ArrowUp / Space raise no errors; Space changes the picture |
-| snake | build, canvas | canvas drawn; it moves within 600 ms; arrow keys raise no errors |
+| tetris | build, canvas | canvas drawn after 500 ms; it changes by itself within 2 s (gravity); ArrowLeft / ArrowUp / Space raise no errors; Space changes the lower half at once (a drop) |
+| snake | build, canvas | canvas drawn; it moves within 600 ms; after ArrowUp the change is a column, after ArrowLeft a row (steering; growth is not checked) |
 | todo | build, DOM | Enter in `#new` adds two `#list li`; the checkbox visibly marks one; Delete removes it |
 | calculator | build, DOM | `12+7=` shows 19; C clears; `8/0=` does not throw; `9*3-4=` shows 23 |
-| stopwatch | build, timers | `#time` starts at 00:00, ≥ 00:01 after 1.1 s, frozen after Stop, 00:00 after Reset |
+| stopwatch | build, timers | `#time` starts at 00:00, 00:01-00:02 after 1.6 s, frozen after Stop, 00:00 after Reset |
 | landing | build, static | one h1, ≥ 3 feature cards, a CTA, viewport meta, no horizontal scroll at 400 px |
 | fix-bug | fix | `total()` in the seeded `cart.js` no longer skips the last item |
 | fix-crash | fix | the seeded animation (a TDZ error at load) runs with no errors and draws |
@@ -34,7 +34,7 @@ NODE_PATH=<dir with playwright> node tests/eval/run.mjs --model mock
 E2E_GPU=real node tests/eval/run.mjs --model engine --weights <file.gguf> --headed [--ctx 16384]
 
 # a real room (host + other devices), e.g. the 35B MoE split over a laptop and a phone:
-#   open p2p.html?eval=all (or ?eval=tetris,todo), start the model, open Code, send "/eval"
+#   (localhost only: tests/eval/ is not deployed) open p2p.html?eval=all (or ?eval=tetris,todo), start the model, open Code, send "/eval"
 #   ("/eval calculator,css" runs a subset). One line per task appears in the timeline and a
 #   .jsonl of records and trajectories downloads at the end. Stop ends the run.
 ```
@@ -43,7 +43,7 @@ Options for `run.mjs`: `--tasks a,b`, `--repeat N` (sampling noise), `--no-selft
 (page errors, the apps' expected ones included), `--port`.
 
 In mock mode `run.mjs` also runs a **self-test** first: each task's `bad` files (a deliberately
-wrong solution, or the unfixed seed) must fail its check, so no check passes vacuously.
+wrong solution, or the unfixed seed; a list for several) must fail its check, so no check passes vacuously.
 
 ## Output
 
@@ -58,7 +58,7 @@ wrong solution, or the unfixed seed) must fail its check, so no check passes vac
 and `tests/eval/results/<stamp>-<model>/<id>.json`, the task's full trajectory (system prompt,
 every turn, the final files) for reading failures. The summary line reads
 `success 10/12 (83 %) · steps 7.4 · prefilled 41k · generated 18k · ctx 5.2k/task · 612 s`.
-`cards` and `forced` stay empty until the tool cards (A.1) and the call grammar (B.1) emit them;
+`forced` is the sum over steps of kept tokens the call grammar forced (a healthy model: ~0);
 with the mock model the token columns are 0 and only `ctx` (estimated) moves.
 
 ## Adding a task

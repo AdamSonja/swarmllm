@@ -47,7 +47,7 @@ Deno.test("runProbe: status from the runner's result; the page falls back to a b
   const fake = (res) => async (s, o) => { seen = { s, o }; return res; };
   let r = await runProbe(snap, { code: "1", page: "index.html", timeout: 8000, runner: fake({ logs: [], done: { ok: true, ms: 12 } }) });
   ok(r.status === "ok" && r.ms === 12 && seen.s.entry === "index.html" && seen.o.timeout === 8000, JSON.stringify(r));
-  ok(formatProbe(r) === "ok in 12 ms (no output; print results with console.log)", formatProbe(r));
+  ok(formatProbe(r) === "ok in 12 ms (no output; await async work and print with console.log)", formatProbe(r));
   r = await runProbe(snap, { code: "1", page: "nope.html", runner: fake({ logs: [{ level: "error", text: "boom", src: "a.js", line: 3, col: 1, ms: 0 }], done: { ok: true, ms: 5 } }) });
   ok(r.status === "error" && seen.s.entry === "__run.html", "a logged error fails; a missing page is a blank one");
   ok(formatProbe(r) === "error in 5 ms\n[0.0s] error a.js:3:1 boom", formatProbe(r));

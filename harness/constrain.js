@@ -4,12 +4,14 @@
 //
 //   FREE --"<tool_call>"--> "\n<function=" NAME(tool)">" BODY
 //   BODY --"\n<parameter=" (an unused param of fn)">\n" VALUE "</parameter>"--> BODY
-//   BODY --"\n</function>" (only when the required params are given)--> "\n</tool_call>" AFTER
-//   AFTER --"\n<tool_call>"--> (next call)   or   a stop token (end of turn)
+//   BODY --"\n</function>" (only when the required params are given)--> "\n</tool_call>" FREE
 //
-// VALUE is free text except: stop tokens, and <tool_call>, </tool_call>, <function=, </function>,
-// <parameter= inside it (those mean a missing </parameter>); integer / number params take digits,
-// boolean params true / false. A token is allowed iff running its characters from the current
+// After </tool_call> the text is free again (the parser ignores trailing text; a stop, a second
+// <tool_call> or an invented "\n<tool_response>" are all fine there).
+// VALUE is free text except: stop tokens, <tool_call> and </tool_call> anywhere, and <function=,
+// </function>, <parameter= at the start of a line (those mean a missing </parameter>; elsewhere
+// they can be legitimate file content); integer / number params take digits, boolean params
+// true / false. A token is allowed iff running its characters from the current
 // state never rejects, so tokens may cross state boundaries (">\n", "</parameter>\n<").
 // JSON style (no model we ship) only limits the "name" string to declared tools.
 //
@@ -23,7 +25,7 @@
 // tokenText(id) is the decoded text of that one token; stops are the end-of-turn ids.
 
 const OPEN = "<tool_call>", THINK_END = "</think>", CLOSE_P = "</parameter>";
-const FORBID = new Set(["<tool_call>", "</tool_call>", "<function=", "</function>", "<parameter="]);
+const FORBID = new Set(["<tool_call>", "</tool_call>", "\n<function=", "\n</function>", "\n<parameter="]);
 const PREFIXES = new Set();
 for (const p of [CLOSE_P, ...FORBID]) for (let k = 1; k < p.length; k++) PREFIXES.add(p.slice(0, k));
 const DIGIT = /[0-9]/;
@@ -74,6 +76,8 @@ export class ToolCallConstraint {
   }
   push(s) { this.st = this._feed(this.st, s, true); }
   get text() { return this.base.text; }
+  // inside a tool call (the next token is masked)
+  get inCall() { return this.style === "xml" ? this.st.k !== "F" && this.st.k !== "T" : this._jsonSlot(this.st) != null; }
   set text(t) { this.setText(t); }   // (older callers)
 
   // feed text; `lenient`: a character the automaton rejects drops the call back to free text
@@ -108,8 +112,7 @@ export class ToolCallConstraint {
     } else if (st.tag === "bool" || st.tag === "vclose") {
       const vals = st.tag === "bool" ? ["true", "false"] : [""];
       for (const v of vals) for (const c of ["\n" + CLOSE_P, CLOSE_P]) o.push([v + c, () => this._lit("body", st.fn, st.given, "")]);
-    } else if (st.tag === "close") o.push(["\n</tool_call>", () => this._lit("after", "", 0, "")]);
-    else if (st.tag === "after") o.push(["\n" + OPEN, () => this._lit("open", "", 0, "")]);
+    } else if (st.tag === "close") o.push(["\n</tool_call>", () => ({ k: "F", m: 0 })]);
     this.opts.set(key, o);
     return o;
   }
@@ -129,7 +132,7 @@ export class ToolCallConstraint {
         return live ? { ...st, typed } : null;
       }
       case "V": {
-        if (!st.pm && ch !== "<") return st;
+        if (!st.pm && ch !== "<" && ch !== "\n") return st;
         const s = st.pm + ch;
         if (s === CLOSE_P) return this._lit("body", st.fn, st.given, "");
         if (FORBID.has(s)) return null;
@@ -181,17 +184,16 @@ export class ToolCallConstraint {
   }
   _scan() {
     const st = this.st, json = this.style !== "xml";
-    const stopOk = !json && st.k === "L" && st.tag === "after" && st.typed === "";
     const slot = json ? this._jsonSlot(st) : null;
     const allow = [], deny = [], first = new Map();
     for (let id = 0; id < this.vocabSize; id++) {
       let ok;
-      if (this.stops.has(id)) ok = stopOk;
+      if (this.stops.has(id)) ok = false;
       else {
         const w = this.tokenText(id);
         if (!w) ok = false;
         else if (json) ok = this._okJson(slot.typed, w);
-        else if (st.k === "V" && !st.pm && w.indexOf("<") < 0) ok = true;   // the common case: plain text
+        else if (st.k === "V" && !st.pm && w.indexOf("<") < 0 && w.indexOf("\n") < 0) ok = true;   // the common case: plain text
         else {
           // most tokens fail on their first character: step each distinct first character once
           const c = w[0];

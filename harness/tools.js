@@ -67,8 +67,9 @@ export function parseCallBody(body, schemaFor = () => null) {
   if (fm) {
     const name = fm[1], args = {};
     const props = schemaFor(name)?.properties || {};
-    // a missing </parameter> before the next parameter or </function> is tolerated (seen in the wild)
-    const re = /<parameter=([^>\s]+)>\n?([\s\S]*?)(?:\n?<\/parameter>|\n?(?=<parameter=)|\n?$)/g;
+    // a missing </parameter> before the next parameter (on a line of its own) or </function> is tolerated
+    // (seen in the wild); a <parameter= inside a line is the value's own text
+    const re = /<parameter=([^>\s]+)>\n?([\s\S]*?)(?:\n?<\/parameter>|\n(?=<parameter=)|\n?$)/g;
     let m;
     while ((m = re.exec(fm[2]))) args[m[1]] = coerce(m[2], props[m[1]]);
     return { name, arguments: args };

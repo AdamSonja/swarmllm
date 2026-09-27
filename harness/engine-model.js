@@ -41,15 +41,16 @@ export function engineModel(engine, tok, { thinking = false, maxNew = 1024, K = 
     // and the drafts it accepts, and returns the tokens sampled after it (the last one is the
     // new `next`), exactly as the room does.
     const out = [];
-    let text = "", done = stop.has(next);
-    if (!done) out.push(next);
+    let text = "", done = stop.has(next), garbage = false;
+    if (!done) { out.push(next); cs.keep(1); }
     const room = () => Math.min(maxNew - out.length, engine.maxSeq - engine.pos - 2);
     cs.setText(tok.decode(out));
-    while (!done && room() > 0 && !signal?.aborted) {
+    while (!done && !garbage && room() > 0 && !signal?.aborted) {
       let toks;
       if (spec && engine.mtp && room() > K + 1) { toks = await engine.specStep(next, pick, K); fed.push(next, ...toks.slice(0, -1)); }
       else { toks = [pick(await engine.forwardToken(next))]; fed.push(next); }
-      for (const t of toks) { if (stop.has(t)) { done = true; break; } out.push(t); }
+      for (const t of toks) { if (stop.has(t)) { done = true; break; } out.push(t); cs.keep(1); }
+      garbage = cs.garbage;   // the call grammar forced most tokens: the logits are not the model's
       next = toks[toks.length - 1];
       const now = tok.decode(out);
       cs.setText(now);   // the constraint sees exactly the answer so far
@@ -59,7 +60,7 @@ export function engineModel(engine, tok, { thinking = false, maxNew = 1024, K = 
     if (all.length > text.length) yield all.slice(text.length);
     own.set(all, out.slice());
     stats.generated += out.length;
-    stats.last = { reason: done ? "stop" : "max", prompt: ids.length, reused, prefilled: ids.length - reused, generated: out.length, forced: cs.forced || 0 };
+    stats.last = { reason: garbage ? "garbage" : done ? "stop" : "max", prompt: ids.length, reused, prefilled: ids.length - reused, generated: out.length, forced: cs.forced || 0 };
   }
   return { generate, stats, get fed() { return fed; } };
 }

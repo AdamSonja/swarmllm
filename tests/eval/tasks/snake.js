@@ -49,8 +49,23 @@ ok(c, "no <canvas>");
 ok(drawn(c), "the canvas is blank");
 const a = shot(c); await sleep(600);
 ok(shot(c) !== a, "nothing moved in 600 ms");
-key("ArrowUp"); await sleep(150); key("ArrowLeft"); await sleep(150);
+// the arrow keys steer: after ArrowUp the change between two pictures is a column (head up, tail
+// following), after ArrowLeft a row
+const px = () => c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+const moved = (a, b) => { let x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1; for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) { const p = i / 4, x = p % c.width, y = (p / c.width) | 0; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } return { w: x1 - x0 + 1, h: y1 - y0 + 1 }; };
+key("ArrowUp"); await sleep(450);
+let p0 = px(); await sleep(300);
+const up = moved(p0, px());
+ok(up.h > up.w, "ArrowUp did not turn the snake up (the change was " + up.w + "x" + up.h + " px)");
+key("ArrowLeft"); await sleep(450);
+p0 = px(); await sleep(300);
+const left = moved(p0, px());
+ok(left.w > left.h, "ArrowLeft did not turn the snake left (the change was " + left.w + "x" + left.h + " px)");
 `,
   mock: build(files, "Built Snake on a canvas, served on :5173."),
-  bad: { "snake.js": joined(files)["snake.js"].replace("setInterval(step, 120);", "") },
+  bad: [
+    { "snake.js": joined(files)["snake.js"].replace("setInterval(step, 120);", "") },
+    // moves by itself, ignores the keys
+    { "snake.js": joined(files)["snake.js"].replace('document.addEventListener("keydown"', 'document.addEventListener("nokey"') },
+  ],
 };
