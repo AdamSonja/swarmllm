@@ -138,10 +138,12 @@ export class Agent {
           }
         }
       }
+      // many tokens forced by the call grammar: the logits were not the model's (a misbehaving engine)
+      if (u?.forced > 8) for (const c of e.calls) if (c.error) c.error += ` (${u.forced} tokens were forced by the call format: the room's engine may be misbehaving)`;
       shown += e.text; found.push(...e.calls);
       if (e.text) this.onEvent({ type: "text", text: e.text, step });
       this.turns.push({ role: "assistant", text: raw, req });
-      if (u) this.onEvent({ type: "usage", step, prompt: u.prompt, reused: u.reused, generated: u.generated, tps: u.tps });
+      if (u) this.onEvent({ type: "usage", step, prompt: u.prompt, reused: u.reused, generated: u.generated, tps: u.tps, forced: u.forced || 0 });
       if (!found.length) {
         R.done = true; R.answer = shown.trim();
         this.onEvent({ type: "done", step });

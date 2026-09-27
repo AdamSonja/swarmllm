@@ -29,7 +29,7 @@ function tagHold(s) {
 export function roomModel(api, {
   thinking = false,       // Code mode default off: a think block eats the answer budget
   maxNew = 4096,          // answer cap; per call also min(maxNew, maxSeq - prompt - 16)
-  tools = null,           // for the tool-name constraint
+  tools = null,           // for the tool-call constraint (harness/constrain.js)
   style = "xml",
   sampling = "focused",   // room/sampling.js preset; code wants a low temperature
   sample = null,          // (logits) -> id, overrides `sampling` (tests)
@@ -64,7 +64,7 @@ export function roomModel(api, {
     // a single-token <tool_response> (Qwen's added token) is a stop token: it is then never written
     // into the caches, and the next step still extends them. Split across tokens it is caught as text.
     const stop = new Set([S.imEnd, S.eot, T.vocab?.[TAG]].filter(Number.isInteger));
-    const cs = constrainedSampler(sample || pickSampler(sampling), tools, { tokenText: tt, vocabSize, style });
+    const cs = constrainedSampler(sample || pickSampler(sampling), tools, { tokenText: tt, vocabSize, style, stops: [...stop], thinking: think });
     const ctrl = new AbortController();
     const onAbort = () => ctrl.abort();
     if (signal?.aborted) ctrl.abort(); else signal?.addEventListener("abort", onAbort, { once: true });
@@ -112,7 +112,7 @@ export function roomModel(api, {
       if (mine) own.set(text, mine);
       stats.reused += r.reused || 0; stats.prefilled += r.prefilled || 0; stats.generated += (r.tokens?.length ?? r.count ?? 0);
       stats.tps = r.tps || 0;
-      stats.last = { reason: cutAt >= 0 ? "tool_response" : r.reason, prompt: ids.length, reused: r.reused || 0, prefilled: r.prefilled || 0, generated: r.tokens?.length ?? r.count ?? 0, tps: r.tps || 0, stats: r.stats || "" };
+      stats.last = { reason: cutAt >= 0 ? "tool_response" : r.reason, prompt: ids.length, reused: r.reused || 0, prefilled: r.prefilled || 0, generated: r.tokens?.length ?? r.count ?? 0, tps: r.tps || 0, stats: r.stats || "", forced: cs.forced || 0 };
     } finally {
       signal?.removeEventListener("abort", onAbort);
       if (!finished) { ctrl.abort(); await run.catch(() => {}); }   // consumer left early: stop the room's step

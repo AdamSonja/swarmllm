@@ -15,12 +15,12 @@ import { tokenTexts, constrainedSampler, OwnIds } from "./model-common.js";
 export function engineModel(engine, tok, { thinking = false, maxNew = 1024, K = 3, spec = true, sample = null, tools = null, style = "xml" } = {}) {
   const S = specials(tok);
   const pick0 = sample || ((lg) => { let b = 0; for (let i = 1; i < lg.length; i++) if (lg[i] > lg[b]) b = i; return b; });
-  const cs = constrainedSampler(pick0, tools, { tokenText: tokenTexts(tok), vocabSize: engine.dims?.vocab ?? Object.keys(tok.vocab).length, style });
-  const pick = cs.sample;
   const stop = new Set([S.imEnd, S.eot].filter(Number.isInteger));
+  const cs = constrainedSampler(pick0, tools, { tokenText: tokenTexts(tok), vocabSize: engine.dims?.vocab ?? Object.keys(tok.vocab).length, style, stops: [...stop], thinking });
+  const pick = cs.sample;
   const own = new OwnIds();   // assistant text -> the ids it was sampled as
   let fed = [];            // exactly the tokens the engine's caches hold
-  const stats = { calls: 0, reused: 0, prefilled: 0, generated: 0 };
+  const stats = { calls: 0, reused: 0, prefilled: 0, generated: 0, last: null };
 
   async function* generate({ system = "", turns, signal } = {}) {
     stats.calls++;
@@ -59,6 +59,7 @@ export function engineModel(engine, tok, { thinking = false, maxNew = 1024, K = 
     if (all.length > text.length) yield all.slice(text.length);
     own.set(all, out.slice());
     stats.generated += out.length;
+    stats.last = { reason: done ? "stop" : "max", prompt: ids.length, reused, prefilled: ids.length - reused, generated: out.length, forced: cs.forced || 0 };
   }
   return { generate, stats, get fed() { return fed; } };
 }
