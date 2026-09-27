@@ -549,7 +549,7 @@
     if (inst.key(e, true)) e.preventDefault();
   });
   game.addEventListener("keyup", e => { inst.key(e, false); });
-  game.addEventListener("pointerdown", () => { game.focus({ preventScroll: true }); if (!inst.human) inst.play(); inst.start(); });
+  game.addEventListener("pointerdown", e => { if (e.pointerType !== "mouse" && APP !== "breakout") return; game.focus({ preventScroll: true }); if (!inst.human) inst.play(); inst.start(); });
   game.addEventListener("pointermove", e => { if (document.activeElement !== game || !inst.human) return; const r = game.getBoundingClientRect(); inst.pointer((e.clientX - r.left) / r.width); });
   game.addEventListener("focus", () => hint(true));
   game.addEventListener("blur", () => { hint(false); if (inst.human) { inst.auto(); inst.reset(11); inst.warm(WARM_S[APP]); if (!RM) inst.start(); } });
