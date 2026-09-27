@@ -483,6 +483,8 @@ function onData(from, d) {
         log("room", `${d.name || from} runs a different Pooled version (protocol ${d.v ?? 1}); asked it to reload`);
         break;
       }
+      // a peer picks its own name: keep it a short plain string (it is also escaped wherever it is shown)
+      d.name = String(d.name ?? from).replace(/[\u0000-\u001f\u007f<>"'`&]/g, "").trim().slice(0, 40) || String(from).slice(0, 8);
       e.name = d.name; e.meta = d.meta;
       members.set(from, { name: d.name, meta: d.meta });
       ensureCard(from, d.name, d.meta);

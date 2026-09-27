@@ -1,7 +1,7 @@
 // Minimal markdown renderer for the chat transcript (escapes first; no raw HTML).
 import { splitThink } from "./conversation.js";
 
-export function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+export function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }   // safe in text and in quoted attributes (peer names land in title=/data-name=)
 
 export function md(src) {
   let s = esc(src);
