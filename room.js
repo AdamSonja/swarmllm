@@ -11,7 +11,7 @@ import { esc, md, mdChat } from "./room/markdown.js";
 import { pickSampler, SAMPLING } from "./room/sampling.js";
 import { chatRecipients } from "./room/visibility.js";
 import { PrefixIndex } from "./harness/prefix.js";
-import { MODELS, NEED_GB, MAX_SEQ, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM, maxSeqFor, kvBytesPerLayerPos } from "./room/models.js";
+import { MODELS, NEED_GB, PICKER, MAX_SEQ, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM, maxSeqFor, kvBytesPerLayerPos } from "./room/models.js";
 // the context window of the loaded engine (per model: room/models.js CTX; 2048 for the small ones)
 const ctxMax = () => ai.engine?.maxSeq || MAX_SEQ;
 // ?ckpt=N: keep the room's state after the last N answers on every device (GPU copies), so a
@@ -141,50 +141,73 @@ function log(from, text) {
   $("chat-log").scrollTop = $("chat-log").scrollHeight;
 }
 
+// A device card: name, what kind of device, the memory it lends, its status. The link numbers
+// (rtt, bandwidth, GPU) and the bandwidth test show with ?dev=1.
+const lends = (gb) => "lends " + gb + " GB";
 function peerCard(id, name, meta, self) {
   const card = document.createElement("div");
   card.className = "peer-card" + (self ? " self" : "");
   card.innerHTML = `
-    <div class="peer-name"><span class="dot ${self ? "ok" : "warn"}"></span><span class="pname"></span></div>
-    <div class="peer-gpu"></div>
-    <div class="peer-stats">
-      <span>rtt <b class="rtt">—</b></span>
-      <span>bw <b class="bw">—</b></span>
-      <span>buf <b class="buf">—</b></span>
+    <div class="peer-name"><span class="dot ${self || meta.webgpu ? "ok" : "warn"}"></span><span class="pname"></span><span class="pst"></span></div>
+    <div class="peer-sub"><span class="pkind"></span><span aria-hidden="true">\u00b7</span><span class="buf">\u2014</span></div>
+    <div class="peer-gpu dev-only"></div>
+    <div class="peer-stats dev-only">
+      <span>rtt <b class="rtt">\u2014</b></span>
+      <span>bw <b class="bw">\u2014</b></span>
     </div>
-    ${self ? "" : '<button class="bw-btn">test bandwidth</button>'}`;
-  card.querySelector(".pname").textContent = name + (self ? " (you)" : "");
+    ${self ? "" : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}`;
+  card.querySelector(".pname").textContent = name;
+  if (self) card.querySelector(".pname").insertAdjacentHTML("beforeend", " <small>(you)</small>");
+  card.querySelector(".pkind").textContent = !meta.ua || meta.ua === "Device" ? "Computer" : meta.ua;
   card.querySelector(".peer-gpu").textContent = meta.webgpu
-    ? `${meta.ua} · ${meta.gpu}` : `${meta.ua} · ⚠ no WebGPU`;
+    ? `${meta.ua} · ${meta.gpu}` : `${meta.ua} · no WebGPU`;
   const budget = meta.budgetGB || meta.maxBufGB;
-  card.querySelector(".buf").textContent = meta.contribGB ? "gives " + meta.contribGB + " GB" : (budget ? budget + " GB" : "—");
+  card.querySelector(".buf").textContent = meta.webgpu === false ? "no WebGPU" : meta.contribGB ? lends(meta.contribGB) : (budget ? budget + " GB" : "\u2014");
+  peerStatus(card, meta.webgpu === false ? "asks only" : self ? "" : "connected");
   $("peers").appendChild(card);
   if (!self) card.querySelector(".bw-btn").addEventListener("click", () => bwTest(id));
   return card;
+}
+// the status word on a device card: connected, loading N%, ready
+function peerStatus(card, text, ok = false) {
+  const el = card?.querySelector(".pst"); if (!el) return;
+  el.textContent = text; el.classList.toggle("ok", ok);
 }
 
 let wasReady = false;
 // The model ladder: every model with what this room still needs for it, smallest first. Until
 // someone picks a model by hand, the select follows the largest model the room can run.
 let modelTouched = false;
-const shortName = (key) => (MODELS[key]?.label || key).split("\u00b7")[0].replace(/^Qwen\s*[\d.]+\s+/, "").trim();
+const shortName = (key) => (MODELS[key]?.label || key).split("\u00b7")[0].trim();
+// the picker offers three models; ?dev=1 (and the local test rooms) offer every one in room/models.js
+const DEV = document.documentElement.classList.contains("dev");
+const PICK_NEED = DEV ? NEED_GB : Object.fromEntries(PICKER.map((k) => [k, NEED_GB[k]]));
+function addModelOption(key) {
+  const sel = $("ai-model");
+  if (!MODELS[key] || [...sel.options].some((o) => o.value === key)) return;
+  sel.add(new Option(shortName(key), key));
+}
+if (DEV) Object.keys(MODELS).forEach(addModelOption);
+// set the picker to a model, adding it when another device started one the picker does not list
+function setModelValue(key) { if (!MODELS[key]) return; addModelOption(key); $("ai-model").value = key; }
 function renderLadder(pledged) {
   const el = $("ai-ladder"); if (!el) return;
-  el.innerHTML = ladder(NEED_GB, pledged).map((x) => `<button type="button" class="rung${x.ok ? " ok" : ""}${x.key === $("ai-model").value ? " sel" : ""}" data-k="${x.key}" title="needs ~${x.need} GB">${esc(shortName(x.key))} <b>${x.ok ? "\u2713" : "+" + x.short + " GB"}</b></button>`).join("");
+  el.innerHTML = ladder(PICK_NEED, pledged).map((x) => `<button type="button" class="rung${x.ok ? " ok" : ""}${x.key === $("ai-model").value ? " sel" : ""}" data-k="${x.key}" aria-pressed="${x.key === $("ai-model").value}"><span>${esc(shortName(x.key))}</span> <b>${x.ok ? "fits" : x.short + " GB short"}</b></button>`).join("");
 }
 $("ai-ladder").addEventListener("click", (e) => {
   const b = e.target.closest(".rung"); if (!b || $("ai-model").disabled) return;
-  $("ai-model").value = b.dataset.k; modelTouched = true; updateCluster();
+  setModelValue(b.dataset.k); modelTouched = true; updateCluster();
 });
 function updateNeed(pledged) {
-  if (!modelTouched && !ai.engine && !ai.busy && !$("ai-model").disabled) $("ai-model").value = bestFit(NEED_GB, pledged);
+  if (!modelTouched && !ai.engine && !ai.busy && !$("ai-model").disabled) $("ai-model").value = bestFit(PICK_NEED, pledged);
   renderLadder(pledged);
   const need = NEED_GB[$("ai-model").value] || 1;
   const ok = pledged >= need;
   $("need-fill").style.width = Math.min(100, pledged / need * 100).toFixed(1) + "%";
+  const has = +pledged.toFixed(1);
   $("need-text").textContent = ok
-    ? `needs ~${need} GB \u00b7 room gives ${pledged.toFixed(1)} GB \u00b7 ready`
-    : `needs ~${need} GB \u00b7 room gives ${pledged.toFixed(1)} GB \u00b7 add ${(need - pledged).toFixed(1)} GB more`;
+    ? `Needs ${need} GB. The room has ${has} GB.`
+    : `Needs ${need} GB. The room has ${has} GB, ${(need - pledged).toFixed(1)} GB short.`;
   $("ai-need").classList.toggle("ok", ok);
   if (!ai.busy && !ai.engine) $("ai-start").disabled = !ok;
   if (ok && !wasReady) { $("ai-start").classList.remove("unlocked"); void $("ai-start").offsetWidth; $("ai-start").classList.add("unlocked"); }
@@ -198,8 +221,9 @@ function updateCluster() {
   const pledged = all.reduce((s, m) => s + (m?.webgpu ? m?.contribGB || 0 : 0), 0);
   updateNeed(pledged);
   const mem = all.reduce((s, m) => s + (m?.budgetGB || m?.maxBufGB || 0), 0);
-  $("cluster-summary").textContent =
-    `${all.length} device${all.length > 1 ? "s" : ""} \u00b7 ${gpus} WebGPU \u00b7 ${pledged.toFixed(1)} GB pledged`;
+  $("cluster-summary").textContent = DEV
+    ? `${all.length} device${all.length > 1 ? "s" : ""} \u00b7 ${gpus} WebGPU \u00b7 ${pledged.toFixed(1)} GB pledged`
+    : `${all.length} device${all.length > 1 ? "s" : ""} \u00b7 ${+pledged.toFixed(1)} GB pooled`;
 }
 
 function enterRoom() {
@@ -215,16 +239,16 @@ function enterRoom() {
   log("swarm", `room ${roomCode}: type this code on your other devices`);
   $("ai-panel").style.display = "flex";
   aiStatus("");
-  $("ai-empty").textContent = "pick a model and press start, from any device";
+  $("ai-empty").textContent = "Pick a model and press Start. Anyone in the room can.";
   const selfCard = document.querySelector(".peer-card.self");
   if (selfCard && myMeta.webgpu) {
     const row = document.createElement("div");
     row.className = "pledge";
-    row.innerHTML = `give <input type="number" min="1" max="64" step="1" value="${myMeta.contribGB}"> GB of GPU`;
+    row.innerHTML = `Lend <input type="number" min="1" max="64" step="1" value="${myMeta.contribGB}" aria-label="Gigabytes of memory to lend"> GB`;
     selfCard.appendChild(row);
     row.querySelector("input").addEventListener("change", (e) => {
       const v = parseFloat(e.target.value);
-      if (v >= (myMeta.phone ? 0.5 : 1)) { myMeta.contribGB = v; selfCard.querySelector(".buf").textContent = "gives " + v + " GB"; updateCluster(); broadcastAll({ t: "pledge", gb: v }); }
+      if (v >= (myMeta.phone ? 0.5 : 1)) { myMeta.contribGB = v; selfCard.querySelector(".buf").textContent = lends(v); updateCluster(); broadcastAll({ t: "pledge", gb: v }); }
     });
   }
 }
@@ -356,7 +380,7 @@ function onData(from, d) {
         seen.add(m.id);
         members.set(m.id, { name: m.name, meta: m.meta });
         const c = ensureCard(m.id, m.name, m.meta);
-        if (m.meta?.contribGB) c.querySelector(".buf").textContent = "gives " + m.meta.contribGB + " GB";
+        if (m.meta?.contribGB) c.querySelector(".buf").textContent = lends(m.meta.contribGB);
         const ce = conns.get(m.id); if (ce) ce.meta = m.meta;
       }
       for (const id of [...members.keys()]) if (!seen.has(id)) { members.delete(id); dropCard(id); }
@@ -370,7 +394,7 @@ function onData(from, d) {
       break;
     }
     case "pledge":
-      if (e) { e.meta = { ...e.meta, contribGB: d.gb }; if (e.card) e.card.querySelector(".buf").textContent = "gives " + d.gb + " GB"; }
+      if (e) { e.meta = { ...e.meta, contribGB: d.gb }; if (e.card) e.card.querySelector(".buf").textContent = lends(d.gb); }
       if (members.has(from)) members.get(from).meta = { ...members.get(from).meta, contribGB: d.gb };
       if (isHost && roster.has(from)) { roster.get(from).meta = { ...roster.get(from).meta, contribGB: d.gb }; broadcastRoster(); }
       updateCluster();
@@ -537,7 +561,7 @@ async function keepAwake() {
     if (!wakeLock) awakeStatus("screen stays awake (video) \u2713");
   } catch (e) { if (!wakeLock) awakeStatus("\u26a0 can\u2019t keep the screen awake: set Auto-Lock to Never"); }
 }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "pooled.run \u00b7 room"; } });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "Pooled \u00b7 room"; } });
 document.addEventListener("touchstart", keepAwake, { passive: true });
 $("create-btn").addEventListener("click", () => { keepAwake(); start(true); });
 // (auto-rejoin removed: the user prefers to see what happened)
@@ -589,7 +613,7 @@ $("share-btn").addEventListener("click", openShare);
 $("share-close").addEventListener("click", () => { $("share").hidden = true; });
 $("share").addEventListener("click", (e) => { if (e.target === $("share")) $("share").hidden = true; });
 $("share-copy").addEventListener("click", copyRoomLink);
-$("share-native").addEventListener("click", () => navigator.share?.({ title: "Join my pooled.run room", text: `Room ${roomCode}: lend this device's GPU to a model we run together`, url: roomLink() }).catch(() => {}));
+$("share-native").addEventListener("click", () => navigator.share?.({ title: "Join my Pooled room", text: `Room ${roomCode}: lend this device to the AI model we run together`, url: roomLink() }).catch(() => {}));
 $("room-over-new").addEventListener("click", () => { location.href = location.pathname.startsWith("/r/") ? "/room" : location.pathname.replace(/\?.*$/, ""); });
 // a host whose tab reloaded (or closed by accident) can pick its room back up for 15 minutes
 {
@@ -912,7 +936,7 @@ function chatBotEnd(note, stats) {
   if (note) botEl.pieces = [{ t: note, d: 0 }];
   renderBot(botEl, false);
   // a finished answer in a background tab: say so in the tab title until the tab is looked at
-  if (!note && document.hidden) { document.title = "\u2713 answer ready \u00b7 pooled.run"; }
+  if (!note && document.hidden) { document.title = "\u2713 answer ready \u00b7 Pooled"; }
   if (stats) { const s = document.createElement("div"); s.className = "stats"; s.textContent = stats; botEl.appendChild(s); }
   if (!note && botEl.dataset.mid) {
     const r = document.createElement("div");
@@ -1014,12 +1038,12 @@ $("card-save").addEventListener("click", async () => {
 });
 $("card-share").addEventListener("click", async () => {
   const file = new File([await cardBlob()], `swarm-${roomCode || "room"}.png`, { type: "image/png" });
-  if (navigator.canShare?.({ files: [file] })) navigator.share({ files: [file], title: "Our pooled.run room" }).catch(() => {});
+  if (navigator.canShare?.({ files: [file] })) navigator.share({ files: [file], title: "Our Pooled room" }).catch(() => {});
   else toast("this browser can't share images: use save");
 });
 let lastSoloTps = 0;
 function exportChat() {
-  const lines = [`# pooled.run room ${roomCode || ""}`, "", `_${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${MODELS[ai.model || $("ai-model").value]?.label || ""}_`, ""];
+  const lines = [`# Pooled room ${roomCode || ""}`, "", `_${new Date().toISOString().slice(0, 16).replace("T", " ")} · ${MODELS[ai.model || $("ai-model").value]?.label || ""}_`, ""];
   for (const m of document.querySelectorAll("#ai-output .m")) {
     if (m.classList.contains("user")) lines.push(`**${m.dataset.name || "?"}:** ${m.dataset.text || ""}`, "");
     else if (m.pieces) {
@@ -1263,7 +1287,7 @@ function aiStartAnywhere() {
 async function aiStart(modelArg) {
   if (ai.engine || ai.busy) return;
   ai.busy = true;
-  if (typeof modelArg === "string") $("ai-model").value = modelArg;
+  if (typeof modelArg === "string") setModelValue(modelArg);
   $("ai-start").disabled = true;
   $("ai-model").disabled = true;
   try {
@@ -1465,7 +1489,7 @@ function aiMaybeReady() {
   $("chat-tools").hidden = false;
   $("new-chat").hidden = false;
   setAfterAnswer(false, !!ai.conv.turns.length);
-  $("ai-empty").textContent = "cluster online. ask anything.";
+  $("ai-empty").textContent = "The model is ready. Ask anything.";
   $("ai-prompt").focus();
   broadcastAll({ t: "ai-ready-all", model: ai.model });
   pushMap(0, null, false, true);
@@ -2190,7 +2214,7 @@ function resumeHost(r) {
   if (r.split) $("ai-split").value = r.split;
   for (const it of ai.transcript) { chatUser(it.name, it.text); chatBotStart(it.mid); botEl.pieces = [{ t: it.reply || "", d: 0 }]; chatBotEnd(null, it.stats); }
   if (!r.model || !MODELS[r.model]) return;
-  $("ai-model").value = r.model; modelTouched = true;
+  setModelValue(r.model); modelTouched = true;
   // start the model again once the devices that held layers are back, or after 25 s regardless
   const want = new Set(r.peers || []), t0 = Date.now();
   aiStatus(want.size ? `resumed: waiting for ${[...want].join(", ")} to come back…` : "resumed: loading the model again…");
@@ -2222,7 +2246,7 @@ async function aiOnData(from, d) {
   if ((d.t === "ai-hiddenret" || d.t === "ai-hiddenret-b") && from !== ai.chain[ai.chain.length - 1]) return;
   switch (d.t) {
     case "ai-start-req":
-      if (MODELS[d.model]) $("ai-model").value = d.model;   // every screen shows the model that was actually started
+      setModelValue(d.model);   // every screen shows the model that was actually started
       if (d.boss !== peer.id && conns.has(d.boss)) ai.hostId = d.boss;   // the device dealing the layers runs the room
       $("ai-start").disabled = true; $("ai-model").disabled = true;
       if (d.boss !== peer.id) { aiLoading(true, `starting ${MODELS[d.model]?.label.split("·")[0].trim()}`); $("ldg-sub").textContent = `${d.by} pressed start`; $("ldg-fill").style.width = "0%"; }
@@ -2247,7 +2271,7 @@ async function aiOnData(from, d) {
       $("ai-panel").classList.remove("online");
       $("ai-row").style.display = "none";
       $("room-over").hidden = true;
-      if (MODELS[d.model]) $("ai-model").value = d.model;
+      setModelValue(d.model);
       aiLoading(true, "re-dealing the layers");
       $("ldg-sub").textContent = `${d.by} is re-dealing the layers over the devices in the room`;
       aiStatus(`${d.by} is re-dealing the layers…`);
@@ -2257,7 +2281,7 @@ async function aiOnData(from, d) {
       toast(d.why);
       break;
     case "ai-load": {
-      if (MODELS[d.model]) $("ai-model").value = d.model;
+      setModelValue(d.model);
       ai.role = "worker";
       ai.next = d.next;
       ai.hostId = d.host;
@@ -2288,14 +2312,14 @@ async function aiOnData(from, d) {
       break;
     }
     case "ai-progress":
-      if (e?.card) e.card.querySelector(".bw").textContent = "dl " + d.pct + "%";
+      if (e?.card) { e.card.querySelector(".bw").textContent = "dl " + d.pct + "%"; peerStatus(e.card, "loading " + d.pct + "%"); }
       ai.prog = ai.prog || {}; ai.progAt = ai.progAt || {};
       ai.prog[e?.name || from] = d.pct; ai.progAt[e?.name || from] = Date.now(); loadCardRender();
       break;
     case "ai-ready":
       if (ai.role !== "host" || !ai.chain.includes(from)) break;
       ai.readyPeers.add(from);
-      if (e?.card) e.card.querySelector(".bw").textContent = "ready";
+      if (e?.card) { e.card.querySelector(".bw").textContent = "ready"; peerStatus(e.card, "ready", true); }
       aiMaybeReady();
       break;
     case "ai-error":
@@ -2366,10 +2390,10 @@ async function aiOnData(from, d) {
       $("ai-panel").classList.add("online");
       if (ai.role !== "host" && ai.role !== "worker") ai.role = "guest";
       if (ai.role !== "host") ai.hostId = from;
-      if (MODELS[d.model]) { $("ai-model").value = d.model; ai.model = d.model; }
+      if (MODELS[d.model]) { setModelValue(d.model); ai.model = d.model; }
       $("ai-row").style.display = "flex";
       $("chat-tools").hidden = false;
-      $("ai-empty").textContent = "cluster online. ask anything.";
+      $("ai-empty").textContent = "The model is ready. Ask anything.";
       aiStatus(ai.range ? `cluster online · serving layers ${ai.range[0]}–${ai.range[1] - 1}` : "cluster online · this device asks, the others think");
       mascot("Cluster online! Type a question, the whole room answers.");
       codeRoleChanged();

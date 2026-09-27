@@ -1,9 +1,10 @@
 // The swarm card: a 1200x630 PNG of what this room just did (model, devices and their layers,
 // tok/s, draft acceptance) to download or share. Canvas only, no dependencies.
 
-const C = { bg: "#f5f4ee", dot: "#e1ded2", panel: "#fbfaf5", border: "#e1ded2", text: "#16171c", muted: "#8b877a", accent: "#2b4eff" };
-const SANS = '"Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif';
-const MONO = '"JetBrains Mono", ui-monospace, monospace';
+const C = { bg: "#F6F5F1", dot: "#E4E2DA", panel: "#FBFAF7", border: "#E4E2DA", text: "#14161D", muted: "#5E616B", accent: "#3152FF" };
+const SANS = '"Geist", -apple-system, BlinkMacSystemFont, sans-serif';
+const DISPLAY = '"Funnel Display", "Geist", sans-serif';
+const MONO = '"Geist Mono", ui-monospace, monospace';
 
 function roundRect(g, x, y, w, h, r) { g.beginPath(); g.roundRect ? g.roundRect(x, y, w, h, r) : g.rect(x, y, w, h); }
 function fit(g, text, max) { let t = String(text); while (t.length > 1 && g.measureText(t).width > max) t = t.slice(0, -2) + "…"; return t; }
@@ -17,10 +18,8 @@ export function drawCard(canvas, info) {
   g.fillStyle = C.dot;
   for (let y = 13; y < H; y += 26) for (let x = 13; x < W; x += 26) { g.beginPath(); g.arc(x, y, 1.2, 0, 7); g.fill(); }
   // header
-  g.fillStyle = C.text; g.font = `700 34px ${SANS}`; g.textBaseline = "alphabetic";
-  g.fillText("swarm", 64, 92);
-  const sw = g.measureText("swarm").width;
-  g.fillStyle = C.accent; g.fillText("LLM", 64 + sw, 92);
+  g.fillStyle = C.text; g.font = `500 34px ${DISPLAY}`; g.textBaseline = "alphabetic";
+  g.fillText("Pooled", 64, 92);
   g.fillStyle = C.muted; g.font = `500 16px ${MONO}`;
   g.fillText(`ROOM ${info.code || ""} · ${info.date || ""}`.toUpperCase(), 64, 124);
   // the number
@@ -51,6 +50,6 @@ export function drawCard(canvas, info) {
     if (i < n - 1) { g.strokeStyle = C.accent; g.lineWidth = 3; g.beginPath(); g.moveTo(x + w + 4, y + h / 2); g.lineTo(x + w + gap - 4, y + h / 2); g.stroke(); }
   });
   g.fillStyle = C.muted; g.font = `400 16px ${MONO}`;
-  g.fillText("no servers · nothing to install · one room code · swarmllm.ai", 64, H - 34);
+  g.fillText("one AI model across the devices in a room, in browser tabs · pooled.run", 64, H - 34);
   return canvas;
 }

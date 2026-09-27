@@ -2,6 +2,9 @@
 
 export const NEED_GB = { "qwen3-0.6b": 0.8, "qwen3-1.7b": 2.0, "qwen3-4b": 4.6, "qwen3.8-27b": 17.0, "qwen3.6-35b-moe": 22.5, "smollm-135m": 0.6 };
 
+// The models the room's picker offers. The others stay for tests and ?dev=1.
+export const PICKER = ["qwen3-1.7b", "qwen3.8-27b", "qwen3.6-35b-moe"];
+
 export const MODELS = {
   "qwen3-0.6b": { label: "Qwen3 0.6B · Q8", kind: "gguf",
     gguf: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf",
