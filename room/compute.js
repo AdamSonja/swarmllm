@@ -11,7 +11,18 @@ const REDUCED = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 const DOTS = [[3.4, 3.4, 1.8], [10.2, 3.4, 1.99], [18.5, 3.4, 2.38], [3.4, 10.2, 1.99], [10.2, 10.2, 2.38], [18.5, 10.2, 2.94], [3.4, 18.5, 2.38], [10.2, 18.5, 2.94], [18.5, 18.5, 3.9]];
 const PACKET = ["#2A45E0", "#7C8FFF", "#B9C6FF"];   // --blue-500, --blue-400, --blue-200
 // this device's colour in the room, for its layers here; the two dark neutrals read as light on the dark screen
-const onDark = (c) => (/^#(2B2F3C|5E616B)$/i.test(c || "") ? "#EEF0F6" : c || "");
+// a device's colour on the black screen: dark greys and near-blacks would vanish, so they show light;
+// blues keep their colour (hex swatches and the generated hsl() shades alike)
+const onDark = (c) => {
+  if (!c) return "";
+  let r, g, b;
+  const hex = /^#([0-9a-f]{6})$/i.exec(c), hsl = /^hsl\((\d+) (\d+)% (\d+)%\)$/.exec(c);
+  if (hex) { const n = parseInt(hex[1], 16); r = n >> 16; g = (n >> 8) & 255; b = n & 255; }
+  else if (hsl) { const S = +hsl[2] / 100, L = +hsl[3] / 100, a = S * Math.min(L, 1 - L), f = (k) => { const x = (k + +hsl[1] / 30) % 12; return 255 * (L - a * Math.max(-1, Math.min(x - 3, 9 - x, 1))); }; r = f(0); g = f(8); b = f(4); }
+  else return c;
+  const light = (0.299 * r + 0.587 * g + 0.114 * b) / 255, sat = (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
+  return (sat < 0.25 && light < 0.5) || light < 0.14 ? "#EEF0F6" : c;
+};
 const THEME_LIGHT = "#F6F5F1", THEME_DARK = "#000000";
 const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "k" : String(n);
 

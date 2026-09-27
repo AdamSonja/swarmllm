@@ -6,7 +6,15 @@
   function sparkle(el) {
     if (!el || !el.animate) return;
     try { if (matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch (e) { /* no matchMedia: animate */ }
-    // the shine: a soft light band crossing the tab, clipped to its shape
+    shine(el);
+    // the stars: fixed to the page so the tab's rounded clip does not cut them
+    const r = el.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    burst(el, r, cx, cy);
+  }
+  // the shine: a soft light band crossing the tab, clipped to its shape
+  function shine(el) {
+    if (!el || !el.animate) return;
+    try { if (matchMedia("(prefers-reduced-motion: reduce)").matches) return; } catch (e) { /* animate */ }
     const clip = document.createElement("span");
     clip.setAttribute("aria-hidden", "true");
     clip.style.cssText = "position:absolute;inset:0;border-radius:inherit;overflow:hidden;pointer-events:none;z-index:2";
@@ -16,8 +24,8 @@
     el.appendChild(clip);
     band.animate([{ transform: "translateX(-120%)" }, { transform: "translateX(190%)" }], { duration: 650, easing: "cubic-bezier(.3,.7,.3,1)" })
       .finished.then(() => clip.remove(), () => clip.remove());
-    // the stars: fixed to the page so the tab's rounded clip does not cut them
-    const r = el.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  }
+  function burst(el, r, cx, cy) {
     const N = 9;
     for (let i = 0; i < N; i++) {
       const a = (i / N) * Math.PI * 2 + (i % 2 ? .35 : 0), d = 26 + (i % 3) * 12, s = 7 + (i % 3) * 3;
@@ -47,6 +55,12 @@
     + "[data-twinkle][aria-selected=\"true\"]>.pooled-tw{opacity:1}"
     + ".pooled-tw svg{position:absolute;animation:pooledtw 1.9s ease-in-out infinite}"
     + "@keyframes pooledtw{0%,100%{opacity:0;transform:scale(.3) rotate(0)}50%{opacity:1;transform:scale(1) rotate(45deg)}}"
+    // hovering the tab before it is chosen: it lights up in place (a soft blue fills in, the word turns blue,
+    // the stars twinkle), no sliding band
+    + "[data-twinkle]{transition:background-color .3s ease,color .3s ease,box-shadow .3s ease}"
+    + ":is(#mode-bar,.modes) [data-twinkle]:not([aria-selected=\"true\"]):hover,[data-twinkle]:not([aria-selected=\"true\"]):hover{background:linear-gradient(135deg,rgba(110,134,255,.16),rgba(42,69,224,.10));color:#2A45E0;box-shadow:inset 0 0 0 1px rgba(110,134,255,.35),0 0 14px -4px rgba(42,69,224,.45)}"
+    + "[data-twinkle]:not([aria-selected=\"true\"]):hover>.pooled-tw{opacity:1}"
+    + "[data-twinkle]:not([aria-selected=\"true\"]) .pooled-tw path{fill:#6E86FF}"
     + "@media (prefers-reduced-motion:reduce){.pooled-tw svg{animation:none;opacity:.8}}";
   function twinkles(el) {
     if (el.querySelector(".pooled-tw")) return;
