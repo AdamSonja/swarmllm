@@ -313,7 +313,7 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
     out.roomLog = {};
     for (const [n, p] of Object.entries(tabs)) out.roomLog[n] = await p.evaluate(() => [...document.querySelectorAll("#chat-log div")].map((d) => d.textContent).filter((t) => t.includes("⚠")).map((t) => t.slice(0, 240)));
     out.crumb = {};
-    for (const [n, p] of Object.entries(tabs)) out.crumb[n] = await p.evaluate(() => { try { return JSON.parse(localStorage.getItem("swarm-crumb") || "null")?.s; } catch { return null; } });
+    for (const [n, p] of Object.entries(tabs)) out.crumb[n] = await p.evaluate(() => { try { return JSON.parse(localStorage.getItem("pooled-crumb") || "null")?.s; } catch { return null; } });
     // pass: every answer finished, every tab saw it, no console errors, no ⚠ lines in any room log
     out.ok = out.rounds.every((r) => /^ready/.test(r.per.host.status) && r.per.host.stats && !/failed/.test(r.per.host.stats)
       && Object.values(r.per).every((v) => v.answer === r.per.host.answer))

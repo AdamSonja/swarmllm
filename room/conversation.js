@@ -1,5 +1,5 @@
 // Conversation state for the room host: the chat template, the context budget, and how much of
-// the conversation the swarm's caches already hold, so a new turn prefills only what is new.
+// the conversation the room's caches already hold, so a new turn prefills only what is new.
 // DOM-free so it can be unit tested.
 //
 // Every device keeps its KV caches and recurrent (DeltaNet) state between questions. That state
@@ -16,7 +16,7 @@ export const PERSONAS = {
   eli5: { label: "explain like I'm five", system: "Explain everything as if to a curious five-year-old: short sentences, everyday words, one vivid comparison." },
   pirate: { label: "pirate", system: "You are a cheerful pirate. Answer every question correctly and helpfully, but talk like a pirate." },
   haiku: { label: "haiku", system: "Answer every question as a single haiku (three lines, 5-7-5 syllables). Nothing else." },
-  swarm: { label: "the swarm speaks", system: "You are Swarmy, a hive mind whose thoughts are split across several phones and laptops in this room; every word you say takes a lap through all of them. You find this delightful and say so now and then, but you still answer the question well." },
+  swarm: { label: "the room speaks", system: "You are a mind split across the phones and laptops in this room; every word you say takes a lap through all of them. You find this delightful and say so now and then, but you still answer the question well." },
 };
 
 // Special-token ids the template needs; throws with a readable message when the tokenizer lacks them.

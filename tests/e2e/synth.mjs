@@ -334,7 +334,7 @@ export function buildSynthGGUF(opts = {}) {
   const A = o.moe ? "qwen35moe" : "qwen35";   // MoE files carry their own arch name (keys aliased on load)
   const kv0 = [
     ["general.architecture", GT.STR, A],
-    ["general.name", GT.STR, "SwarmLLM synthetic qwen35 (test only)"],
+    ["general.name", GT.STR, "Pooled synthetic qwen35 (test only)"],
     ["general.alignment", GT.U32, 32],
     ["general.file_type", GT.U32, 2],
     ["qwen35.block_count", GT.U32, L + 1],

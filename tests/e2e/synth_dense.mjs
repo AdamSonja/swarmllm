@@ -186,7 +186,7 @@ export function buildDense(opts = {}) {
   const w = new Wr();
   const kv = [
     ["general.architecture", GT.STR, "qwen3"],
-    ["general.name", GT.STR, "SwarmLLM synthetic qwen3 dense (test only)"],
+    ["general.name", GT.STR, "Pooled synthetic qwen3 dense (test only)"],
     ["general.alignment", GT.U32, 32],
     ["general.file_type", GT.U32, 7],
     ["qwen3.block_count", GT.U32, o.layers],

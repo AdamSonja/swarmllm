@@ -1,4 +1,4 @@
-// SwarmLLM room: signaling, WebRTC mesh, layer assignment, weight streaming and the
+// Pooled room: signaling, WebRTC mesh, layer assignment, weight streaming and the
 // generation loop (prefill, decode, speculative verify). Served with p2p.html at /room.
 import { autotuneCoop, makeTokenizer, DenseEngine, argmax, fetchModelShard, shardTensorNames, gpuSelfTest, kernelMicroTests }
   from "./engine/engine.js";
@@ -52,8 +52,8 @@ function toast(text) {
   setTimeout(() => t.remove(), 4200);
 }
 function mascot() {}
-const PREFIX = "swarmllm-room-";
-const HOST_KEY = "swarm-host";   // localStorage: what a host needs to resume its room after a reload
+const PREFIX = "pooled-room-";   // PeerJS id prefix (was "swarmllm-room-" before the rename; PROTOCOL did not change)
+const HOST_KEY = "pooled-host", OLD_HOST_KEY = "swarm-host";   // localStorage: what a host needs to resume its room after a reload (the old key is still read)
 const rand = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)))
   .map(b => "ABCDEFGHJKMNPQRSTVWXYZ23456789"[b % 30]).join("");
 
@@ -323,7 +323,7 @@ function enterRoom() {
   if (isHost) { $("host-controls").hidden = false; $("mode-bar").hidden = false; }   // Code tab: peers see it once the host starts a session
   peerCard("self", myName, myMeta, true);
   updateCluster();
-  log("swarm", `room ${roomCode}: type this code on your other devices`);
+  log("room", `${roomCode}: type this code on your other devices`);
   $("ai-panel").style.display = "flex";
   aiStatus("");
   $("ai-empty").textContent = "Pick a model and press Start. Anyone in the room can.";
@@ -363,9 +363,9 @@ function wire(conn, name, meta, initiator = false) {
     conns.delete(conn.peer);
     if (isHost) {   // on the host a closed link means the device left; workers wait for the roster
       dropCard(conn.peer); members.delete(conn.peer); roster.delete(conn.peer); broadcastRoster();
-      log("swarm", `${e?.name || conn.peer} left`);
+      log("room", `${e?.name || conn.peer} left`);
       aiPeerLeft(conn.peer, e?.name);
-    } else if (conn.peer === PREFIX + roomCode) { log("swarm", "lost the link to the host"); hostGone(); }
+    } else if (conn.peer === PREFIX + roomCode) { log("room", "lost the link to the host"); hostGone(); }
     updateCluster();
   });
   conn.on("error", () => {});
@@ -378,7 +378,7 @@ function ensureCard(id, name, meta) {
     card = peerCard(id, name || id, meta || {}, false);
     cards.set(id, card);
     updateCluster();
-    log("swarm", `${name || id} joined`);
+    log("room", `${name || id} joined`);
     if ($("ai-output").style.display === "block") sysNote(`${name || id} joined${meta?.contribGB && meta?.webgpu ? `, lends ${meta.contribGB} GB` : ""}`, "join");
     mascot(`${name || id} joined! ${members.size + 1} devices in the room.`);
   }
@@ -402,8 +402,8 @@ function ensureLink(id, timeoutMs = 60000) {
 ensureLink.pending = new Set();
 
 function sendTo(id, obj) { conns.get(id)?.conn.send(obj); }
-// debug: per-peer wire state (channels open, frames sent/received) — `swarmDebug()` in the console
-window.swarmDebug = () => [...conns].map(([id, e]) => ({ id, name: e.name, chans: e.link?.chans.filter((c) => c.readyState === "open").length ?? 0, sent: e.link?.sent ?? 0, recv: e.link?.recv ?? 0 }));
+// debug: per-peer wire state (channels open, frames sent/received) — `pooledDebug()` in the console (`swarmDebug()` still works)
+window.pooledDebug = window.swarmDebug = () => [...conns].map(([id, e]) => ({ id, name: e.name, chans: e.link?.chans.filter((c) => c.readyState === "open").length ?? 0, sent: e.link?.sent ?? 0, recv: e.link?.recv ?? 0 }));
 // activations go over the sliced wire channel when it is up, else as a normal message
 // ?netlag=ms delays every activation frame this device sends, to emulate a slow link in tests
 // (equal delays keep send order)
@@ -436,8 +436,8 @@ function onData(from, d) {
     case "hello":
       // one protocol per room: a tab from an older or newer deploy is told to reload
       if (d.v !== PROTOCOL) {
-        sendTo(from, { t: "bye", reason: `this room runs SwarmLLM protocol ${PROTOCOL} and your tab runs ${d.v ?? 1}: reload both pages so they match` });
-        log("swarm", `${d.name || from} runs a different SwarmLLM version (protocol ${d.v ?? 1}); asked it to reload`);
+        sendTo(from, { t: "bye", reason: `this room runs Pooled protocol ${PROTOCOL} and your tab runs ${d.v ?? 1}: reload both pages so they match` });
+        log("room", `${d.name || from} runs a different Pooled version (protocol ${d.v ?? 1}); asked it to reload`);
         break;
       }
       e.name = d.name; e.meta = d.meta;
@@ -446,7 +446,7 @@ function onData(from, d) {
       if (isHost) {
         roster.set(from, { name: d.name, meta: d.meta }); broadcastRoster();
         aiRejoin(from, d.name);
-        if (d.died?.during && d.died.ago > 2) log("swarm", `${d.name} came back: its tab was killed ${d.died.ago} s ago while ${d.died.during}. Phones kill background tabs; keep the screen on.`);
+        if (d.died?.during && d.died.ago > 2) log("room", `${d.name} came back: its tab was killed ${d.died.ago} s ago while ${d.died.during}. Phones kill background tabs; keep the screen on.`);
         if (ai.visibility !== "all") sendTo(from, { t: "ai-visibility", mode: ai.visibility });
         if (!d.back) aiWelcome(from); else offerRedealForNewcomers();
         codeWelcome(from);
@@ -457,7 +457,7 @@ function onData(from, d) {
       break;
     case "bye":
       toast(d.reason);
-      log("swarm", d.reason);
+      log("room", d.reason);
       if (from === PREFIX + roomCode) { $("room-over").hidden = false; $("room-over-why").textContent = d.reason; }
       break;
     case "roster": {
@@ -500,7 +500,7 @@ function onData(from, d) {
     }
     case "bw-result":
       if (e.card) e.card.querySelector(".bw").textContent = d.mbps + " Mbps";
-      log("swarm", `bandwidth to ${e.name}: ${d.mbps} Mbps`);
+      log("room", `bandwidth to ${e.name}: ${d.mbps} Mbps`);
       break;
   }
 }
@@ -522,7 +522,7 @@ function meshConnect(targetId) {
 async function bwTest(id) {
   const e = conns.get(id);
   if (!e) return;
-  log("swarm", `testing bandwidth to ${e.name}…`);
+  log("room", `testing bandwidth to ${e.name}…`);
   sendTo(id, { t: "bw-start" });
   const chunk = new Uint8Array(64 * 1024);
   const total = 4 * 1024 * 1024;
@@ -588,7 +588,7 @@ async function start(create, resume = null) {
       clearTimeout(timeout);
       wire(conn, "host", undefined, true);
       let died = null;
-      if (!VQ.get("embed")) try { const c = JSON.parse(localStorage.getItem("swarm-crumb") || "null"); if (c && Date.now() - c.t < 10 * 60 * 1000) died = { during: c.s, ago: Math.round((Date.now() - c.t) / 1000) }; } catch {}
+      if (!VQ.get("embed")) try { const c = JSON.parse(localStorage.getItem("pooled-crumb") || "null"); if (c && Date.now() - c.t < 10 * 60 * 1000) died = { during: c.s, ago: Math.round((Date.now() - c.t) / 1000) }; } catch {}
       conn.send({ t: "hello", name: myName, meta: myMeta, died, v: PROTOCOL });
       enterRoom();
     });
@@ -674,7 +674,7 @@ $("join-btn").addEventListener("click", () => { keepAwake(); start(false); });
 $("code-input").addEventListener("keydown", (e) => { if (e.key === "Enter") start(false); });
 // Virtual devices: the host can add devices that are iframes of this page on this same computer.
 // Each joins the room like any other device (its own WebGPU device, its own WebRTC link, its own
-// layers), which shows what a swarm does before friends arrive; the GPU is shared, so it is a
+// layers), which shows what a room does before friends arrive; the GPU is shared, so it is a
 // demo, not a speed-up. Removing one closes it like a tab (fail fast, re-deal).
 let virtualN = 0;
 function addVirtual() {
@@ -692,7 +692,7 @@ function addVirtual() {
 }
 $("add-virtual").addEventListener("click", addVirtual);
 
-// Join links: swarmllm.ai/r/ABCD opens this page and joins the room with no typing. Served
+// Join links: pooled.run/r/ABCD opens this page and joins the room with no typing. Served
 // elsewhere (a local static server, the emulator), the link keeps this page's path and query
 // (signal=, wire=) and adds ?code=.
 function roomLink() {
@@ -748,6 +748,9 @@ if (linkCode) {
 
 // ---- on-disk cache of weight ranges (Cache API): a second start skips the download ----
 let weightCache = null, cacheHits = 0;
+// The names "swarmllm-weights-v1", "https://weights.swarmllm.ai/" (a cache key namespace, never
+// fetched) and the "x-swarm-len" header are from before the rename to Pooled. They stay so weights
+// people already downloaded keep working; the Cache API is per site, so pooled.run starts empty anyway.
 async function getWeightCache() {
   if (weightCache !== null) return weightCache;
   try { weightCache = await caches.open("swarmllm-weights-v1"); } catch { weightCache = false; }
@@ -955,7 +958,7 @@ let ai = {
 
 function aiStatus(s) { $("ai-status").textContent = s; crumb(s); }
 // breadcrumb: if iOS kills the tab, the reloaded page can say where it died
-function crumb(s) { try { localStorage.setItem("swarm-crumb", JSON.stringify({ s, t: Date.now(), mem: performance.memory?.usedJSHeapSize })); } catch {} }
+function crumb(s) { try { localStorage.setItem("pooled-crumb", JSON.stringify({ s, t: Date.now(), mem: performance.memory?.usedJSHeapSize })); } catch {} }
 // (crumb is kept in localStorage for debugging, not shown on the join screen)
 function aiLoading(show, title) {
   $("ai-loading").style.display = show ? "block" : "none";
@@ -1029,7 +1032,7 @@ function chatBotStart(mid) {
   m.className = "m bot";
   if (mid != null) m.dataset.mid = mid;
   m.innerHTML = `<div class="who"><span class="wn"></span><span class="wd" aria-hidden="true"><i></i><i></i><i></i></span></div><div class="bubble"><span class="cursor"></span></div>`;
-  m.querySelector(".wn").textContent = shortName(ai.model || $("ai-model").value) || "swarm";
+  m.querySelector(".wn").textContent = shortName(ai.model || $("ai-model").value) || "room";
   m.classList.add("live");
   m.pieces = [];
   o.appendChild(m); scrollChat();
@@ -1145,9 +1148,9 @@ function setDraftView(on) {
   $("draft-view").classList.toggle("on", on);
   $("draft-view").textContent = on ? "hide drafts" : "show drafts";
   for (const m of document.querySelectorAll("#ai-output .m.bot")) if (m.pieces) renderBot(m, m === botEl);
-  if (on) toast("blue: guessed by the draft head · green: copied from earlier in the chat · both confirmed by the whole swarm in one lap");
+  if (on) toast("blue: guessed by the draft head · green: copied from earlier in the chat · both confirmed by the whole room in one lap");
 }
-// the swarm card: this room's best finished answer speed, its devices and layers, as a PNG
+// the room card: this room's best finished answer speed, its devices and layers, as a PNG
 function openCard() {
   const nodes = lastMap?.nodes?.length ? lastMap.nodes : [{ name: myName, layers: "", host: 1 }];
   const tps = bestTps || lastMap?.st?.tps || lastSoloTps || 0;
@@ -1160,11 +1163,11 @@ $("card-btn").addEventListener("click", () => { $("room-menu").open = false; ope
 $("card-close").addEventListener("click", () => { $("card").hidden = true; });
 $("card").addEventListener("click", (e) => { if (e.target === $("card")) $("card").hidden = true; });
 $("card-save").addEventListener("click", async () => {
-  const a = document.createElement("a"); a.href = URL.createObjectURL(await cardBlob()); a.download = `swarm-${roomCode || "room"}.png`; a.click();
+  const a = document.createElement("a"); a.href = URL.createObjectURL(await cardBlob()); a.download = `pooled-${roomCode || "room"}.png`; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 });
 $("card-share").addEventListener("click", async () => {
-  const file = new File([await cardBlob()], `swarm-${roomCode || "room"}.png`, { type: "image/png" });
+  const file = new File([await cardBlob()], `pooled-${roomCode || "room"}.png`, { type: "image/png" });
   if (navigator.canShare?.({ files: [file] })) navigator.share({ files: [file], title: "Our Pooled room" }).catch(() => {});
   else toast("this browser can't share images: use save");
 });
@@ -1181,7 +1184,7 @@ function exportChat() {
   }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/markdown" }));
-  a.download = `swarm-chat-${roomCode || "room"}.md`;
+  a.download = `pooled-chat-${roomCode || "room"}.md`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
@@ -1232,20 +1235,20 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
   });
   ai.device.addEventListener?.("uncapturederror", (ev) => {
     const gmsg = ev.error?.message || "";
-    if (!ai.firstGpuError) { ai.firstGpuError = gmsg; aiStatus("GPU error: " + gmsg.slice(0, 300)); log("swarm", "\u26a0 FIRST GPU error on " + myName + ": " + gmsg.slice(0, 600)); }
+    if (!ai.firstGpuError) { ai.firstGpuError = gmsg; aiStatus("GPU error: " + gmsg.slice(0, 300)); log("room", "\u26a0 FIRST GPU error on " + myName + ": " + gmsg.slice(0, 600)); }
     crumb("GPU validation error: " + gmsg.slice(0, 400));
     if (ai.hostId && ai.role !== "host") sendTo(ai.hostId, { t: "ai-error", message: "GPU error: " + (ev.error?.message || "").slice(0, 300) });
-    log("swarm", "\u26a0 GPU error on " + myName + ": " + (ev.error?.message || "").slice(0, 140));
+    log("room", "\u26a0 GPU error on " + myName + ": " + (ev.error?.message || "").slice(0, 140));
   });
-  if (location.hash === "#debug") log("swarm", `${myName}: maxBuf ${(adapter.limits.maxBufferSize / 2 ** 30).toFixed(1)} GB \u00b7 maxBind ${(adapter.limits.maxStorageBufferBindingSize / 2 ** 20).toFixed(0)} MB`);
+  if (location.hash === "#debug") log("room", `${myName}: maxBuf ${(adapter.limits.maxBufferSize / 2 ** 30).toFixed(1)} GB \u00b7 maxBind ${(adapter.limits.maxStorageBufferBindingSize / 2 ** 20).toFixed(0)} MB`);
   aiStatus("testing GPU kernels on this device\u2026");
   const tAdapter = await navigator.gpu.requestAdapter();   // an adapter gives out one device only
   const tdev = await tAdapter.requestDevice();               // throwaway: its test buffers die with it
   const st = await gpuSelfTest(tdev);
-  if (!st.ok) log("swarm", `${myName} GPU self-test: ${st.detail}`);
+  if (!st.ok) log("room", `${myName} GPU self-test: ${st.detail}`);
   if (!st.ok) throw new Error("GPU self-test FAILED on this device: " + st.detail + " \u2014 please screenshot this");
   const mt = await kernelMicroTests(tdev);
-  if (!mt.ok) log("swarm", `${myName} kernels: ${mt.detail}`);
+  if (!mt.ok) log("room", `${myName} kernels: ${mt.detail}`);
   if (!mt.ok) throw new Error("GPU kernel FAILED on this device \u2192 " + mt.firstFail + " \u2014 please send me this line");
   try { tdev.destroy(); } catch {}
   ai.device.lost.then((l) => crumb("GPU device lost: " + l.reason + " " + l.message));
@@ -1391,7 +1394,7 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
     });
   }
   prefetcher.pending.clear(); prefetcher.url = null;
-  if (ai.peerBytes) log("swarm", `${myName}: ${(ai.peerBytes / 2 ** 20).toFixed(1)} MB of weights came from devices in the room, ${((ai.netBytes || 0) / 2 ** 20).toFixed(1)} MB from the network`);
+  if (ai.peerBytes) log("room", `${myName}: ${(ai.peerBytes / 2 ** 20).toFixed(1)} MB of weights came from devices in the room, ${((ai.netBytes || 0) / 2 ** 20).toFixed(1)} MB from the network`);
   if (ai.engine) ai.engine.mtpBatchFill = MTP_BATCH;
   // after a verify: the draft-cache refill as one batched pass (?mtprefill=0: one submit per row)
   // and the next step's first draft run in that same pass (?predraft=0: off). Drafts only.
@@ -1490,7 +1493,7 @@ async function aiStart(modelArg) {
     const needGB = (L * layerBytes + embedBytes) / 2 ** 30;
     const haveGB = caps.reduce((s, c) => s + c, embedBytes) / 2 ** 30;
     if (needGB > haveGB * 1.15)
-      log("swarm", `⚠ this model needs ~${needGB.toFixed(1)} GB but the room pledged ~${haveGB.toFixed(1)} GB — it may not fit`);
+      log("room", `⚠ this model needs ~${needGB.toFixed(1)} GB but the room pledged ~${haveGB.toFixed(1)} GB — it may not fit`);
 
     ai.deferred = [];
     // what every device already has cached, so each one can take its missing ranges from the room.
@@ -1512,7 +1515,7 @@ async function aiStart(modelArg) {
     broadcastAll({ t: "ai-layers", by: ai.layersByName });
     const splitDesc = [`you ${assigned[0]}+embed`, ...ai.chain.map((id, i) =>
       `${conns.get(id)?.name || id} ${assigned[i + 1]}`)].join(" · ");
-    log("swarm", `${M.label} — layer split ${$("ai-split").value === "speed" ? "for speed" : "by pledge"}: ${splitDesc}`);
+    log("room", `${M.label} — layer split ${$("ai-split").value === "speed" ? "for speed" : "by pledge"}: ${splitDesc}`);
     ai.loadingShard = true;
     try { await aiLoadShard(modelKey, ranges[0], true, true, ROOM_CTX); } finally { ai.loadingShard = false; }
     aiStatus(n === 1
@@ -1606,7 +1609,7 @@ function aiRejoin(newId, name) {
   if (i > 0) sendTo(ai.chain[i - 1], { t: "ai-next", next: newId });
   sendTo(newId, fresh);
   ai.fed = null; ckptClear(true);           // its fresh engine holds nothing: re-prefill next time
-  log("swarm", `${name} came back — reloading its layers`);
+  log("room", `${name} came back — reloading its layers`);
   aiStatus(`${name} reconnected, reloading its layers…`);
   $("ai-row").style.display = ai.readyPeers.size >= ai.chain.length ? "flex" : "none";
 }
@@ -1843,7 +1846,7 @@ async function aiPrefill(ids, { aborted = () => ai.abort, onStatus = aiStatus } 
   return logits;
 }
 
-// ---- telemetry and the swarm map ----
+// ---- telemetry and the room map ----
 // Workers report their compute per frame kind (ai-tele); the host times each lap, so what is left
 // is the wire. The map shows the chain, what each device holds and how long its part takes.
 function noteLap(lapMs, hostMs) {
@@ -2273,7 +2276,7 @@ function setAfterAnswer(canContinue, ok) {
 function aiCommand(cmd, from) {
   if (ai.role !== "host") return;
   if (ai.busy || !ai.engine || ai.degraded || ai.readyPeers.size < ai.chain.length) {
-    const why = ai.degraded ? "a device left: re-deal the layers first" : ai.busy === "code" ? "the host's agent is working, try again when it is done" : "the swarm is busy, try again in a moment";
+    const why = ai.degraded ? "a device left: re-deal the layers first" : ai.busy === "code" ? "the host's agent is working, try again when it is done" : "the room is busy, try again in a moment";
     if (from === peer.id) toast(why); else sendTo(from, { t: "ai-busy", why });
     return;
   }
@@ -2305,7 +2308,7 @@ function aiNewChat() {
   setAfterAnswer(false, false);
   broadcastAll({ t: "ai-reset", by: myName });
   setCtx(0);
-  toast("new chat: the swarm forgot the conversation");
+  toast("new chat: the room forgot the conversation");
   saveHost();
 }
 function clearChat() {
@@ -2411,7 +2414,7 @@ function saveHost() {
   } catch {}
 }
 function savedHost() {
-  try { const r = JSON.parse(localStorage.getItem(HOST_KEY) || "null"); return r && Date.now() - r.t < 15 * 60 * 1000 ? r : null; } catch { return null; }
+  try { const r = JSON.parse(localStorage.getItem(HOST_KEY) || localStorage.getItem(OLD_HOST_KEY) || "null"); return r && Date.now() - r.t < 15 * 60 * 1000 ? r : null; } catch { return null; }
 }
 function resumeHost(r) {
   ai.conv = { turns: Array.isArray(r.turns) ? r.turns : [] };
@@ -2432,7 +2435,7 @@ function resumeHost(r) {
     const back = [...conns.values()].filter((c) => want.has(c.name)).length;
     if (back >= want.size || Date.now() - t0 > 25000) {
       clearInterval(tick);
-      log("swarm", `resumed room ${roomCode}: ${back} of ${want.size} devices back, dealing the layers again; the conversation continues`);
+      log("room", `resumed room ${roomCode}: ${back} of ${want.size} devices back, dealing the layers again; the conversation continues`);
       aiStart(r.model);
     }
   }, 500);
@@ -2621,7 +2624,7 @@ async function aiOnData(from, d) {
     case "ai-stop":
       if (ai.role === "host" && ai.busy === "gen" && from === ai.askerId) { ai.abort = true; aiStatus(`${e?.name || "the asker"} pressed stop…`); }
       break;
-    case "ai-busy": toast(d.why || "the swarm is still answering, try again in a moment"); break;
+    case "ai-busy": toast(d.why || "the room is still answering, try again in a moment"); break;
   }
 }
 
@@ -2761,7 +2764,7 @@ $("draft-view").addEventListener("click", () => setDraftView(!draftView));
 $("export-chat").addEventListener("click", () => { $("room-menu").open = false; exportChat(); });
 for (const [id, cmd] of [["continue-btn", "continue"], ["regen-btn", "regen"]])
   $(id).addEventListener("click", () => { setAfterAnswer(false, false); if (ai.role === "host") aiCommand(cmd, peer.id); else if (ai.hostId) sendTo(ai.hostId, { t: "ai-cmd", cmd }); });
-// Questions asked while the swarm is answering wait in the host's queue and run in order, one
+// Questions asked while the room is answering wait in the host's queue and run in order, one
 // generation at a time (every device is busy with every token). At most QUEUE_MAX waiting, two
 // per device.
 const QUEUE_MAX = 10;
@@ -2823,7 +2826,7 @@ $("ai-prompt").addEventListener("keydown", (e) => {
 });
 // (Code mode handles its own Esc: one in a field there backs out of the field, not the run)
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented && !e.target?.closest?.("#code-pane") && $("ai-send").classList.contains("stop")) aiStop(); });
-mascot("Hi! I'm Swarmy. Create a room, or type a friend's code to join one.");
+mascot("Hi! Create a room, or type a friend's code to join one.");
 
 // ---- ?sim=1 on localhost: made-up devices, loading, chat and passes, for looking at the UI
 // without a GPU (the visual checks use it). It paints; it never loads or runs a model.
