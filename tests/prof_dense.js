@@ -25,7 +25,7 @@ await eng.prefillTokens(ids.slice(0, FILL));
 let t0 = performance.now(); for (let i = 0; i < 10; i++) await eng.forwardToken(ids[FILL + i]); const wall = (performance.now() - t0) / 10;
 const base = eng.pos;
 
-const MAXQ = 8192, qs = device.createQuerySet({ type: "timestamp", count: MAXQ });
+const MAXQ = 4096, qs = device.createQuerySet({ type: "timestamp", count: MAXQ });
 const res = device.createBuffer({ size: MAXQ * 8, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
 const rd = device.createBuffer({ size: MAXQ * 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
 let names = [], nq = 0, on = false;
