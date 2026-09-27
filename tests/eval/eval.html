@@ -25,12 +25,13 @@ async function loadEngine() {
   const buf = await (await fetch("/__m.gguf")).arrayBuffer();
   const G = parseGGUFHeader(buf);
   const tok = makeTokenizer(tokenizerFromGGUF(G.meta));
-  const L = G.meta["qwen35.block_count"] - (G.meta["qwen35.nextn_predict_layers"] || 0);
+  const arch = G.meta["general.architecture"] || "qwen35";   // qwen35, or qwen35moe for the 35B MoE
+  const L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
   const adapter = await navigator.gpu.requestAdapter();
   const device = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
   const maxSeq = +(q.get("ctx") || 16384);
   const eng = await Qwen35Engine.create({ device, meta: G.meta, layerRange: [0, L], hasEmbed: true, hasHead: true, vocab: G.tensors[GGML_EMBED].shape[0], maxSeq,
-    weights: await qwen35Weights(G, async (i) => new Uint8Array(buf, i.byteOffset, i.byteLength).slice(), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: !!G.meta["qwen35.nextn_predict_layers"] }) });
+    weights: await qwen35Weights(G, async (i) => new Uint8Array(buf, i.byteOffset, i.byteLength).slice(), { lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: !!G.meta[arch + ".nextn_predict_layers"] }) });
   say(`engine: ${L} layers, context ${maxSeq}`);
   return ({ tools }) => {
     const m = engineModel(eng, tok, { tools, maxNew: 4096 });
