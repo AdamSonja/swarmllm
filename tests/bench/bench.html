@@ -51,6 +51,8 @@ async function wcacheEntry(device, info) {
 }
 try {
   const ad = await navigator.gpu.requestAdapter(); const device = await ad.requestDevice({ requiredLimits: { maxBufferSize: ad.limits.maxBufferSize, maxStorageBufferBindingSize: ad.limits.maxStorageBufferBindingSize } });
+  let gpuErrors = 0;
+  device.addEventListener("uncapturederror", (e) => { if (gpuErrors++ < 3) log("GPU ERROR " + e.error?.message?.slice(0, 200)); });
   const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer);
   const arch = G.meta["general.architecture"], L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
   const dense = arch !== "qwen35" && arch !== "qwen35moe", dirURL = MODEL.replace(/[^/]+$/, "");
@@ -111,6 +113,7 @@ try {
       out.push(r); log(JSON.stringify(r));
     }
   }
+  log(`gpuErrors ${gpuErrors}`);
   window.RESULT = out;
 } catch (e) { log("ERROR " + (e.stack || e)); window.RESULT = { error: String(e) }; }
 </script>
