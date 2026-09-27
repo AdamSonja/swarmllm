@@ -156,3 +156,77 @@ branch alone shows it; the cause is open.
 ## 2026-09-26: load time for tests and benches (CPU side; GPU not yet measured)
 
 Loader CPU cost, with the GPU upload stubbed (`tests/bench/load_profile.js`): the 27B took 43.8 s (6.5 s reading, 37.2 s converting, 20.1 s of that the Q4_0 repack) and the MoE 46.0 s (8.4 s reading, 37.6 s converting). The repack is now 3x faster (u16 copies). With the new converted-weights cache (`tests/weight_cache.js`), a warm load is 4 to 6 s for the 27B and about 9 s for the MoE. The Chrome bench's static server read ranges at 0.27 GB/s; 8 MB reads bring that to 2 GB/s, and pre-converted tensors (`bench.html?wcache=1`) take the MoE tab load path from 74.7 s to 17 s on the CPU side. `tests/run_q38_once.js` runs the 27B suite over one upload. Details, and the commands still to run for GPU validation, are in [testing-fast.md](testing-fast.md).
+
+## 2026-09-27: kernel pass on decode (27B) and the dense engine (Qwen3 1.7B), branch kopt/combined, GB10
+
+Everything here is exact: the 27B's outputs are bit-identical to kopt/base (`tests/test_q38_bits.js`: same
+logits hash 85b12667 and trunk-hidden hash eba0b8d5 over a 16-column prefill, 13 plain tokens and 3 spec
+steps; `tests/run.sh q38once` passes; `tests/test_moe.js` 3x MATCH llama.cpp, spec == plain), and the dense
+engine's logits are bit-identical to kopt/base at 2,600 tokens of context (`tests/test_dense_exact.js`,
+hashes 445aa938 / 6aef0553 on both branches; `tests/run.sh quick` passes). Changes that were not exact are
+off by default (the one-kernel dense glue).
+
+What changed (branches, each from kopt/base = feat/engine-opt + opt/load-cache):
+- `kopt/dense-attn` dense attention that is not latency-bound: `attn_scores_d` (G heads per thread share
+  each K row), `attn_softmax_d` (parallel max and exp, then ONE thread adds the exponentials in position
+  order with 8 loads in flight), `attn_out_d` (the per-(head, dim) chains read V / p tiles staged in shared
+  memory by the whole workgroup, next tile prefetched into registers). Same operations in the same order
+  as attn_scores / attn_softmax (a one-thread-per-head kernel before) / attn_out. Switch: `attnFast`.
+- `kopt/dense-fuse` (on dense-attn): residual adds folded into the o / down GEMVs (`_acc`), one rmsnorm
+  dispatch for all batch columns, the qk-norm + rope + K/V cache writes as three reference-shaped
+  multi-column kernels (`head_norm_dmc`, `rope_dmc`, `kv_store_d`): no cache copies, one compute pass per
+  layer. A single fused glue kernel was measured too (`fuseGlue`, off): the same rope expression compiles
+  to differently rounded code inside a bigger kernel on NVIDIA Vulkan, so it is not exact.
+- `kopt/dense-qkv` (on dense-fuse): q, k, v from one GEMV over the row-concatenated weights (`mergeQKV`).
+  Dawn (Chrome) rejects two writable bindings of one buffer in a dispatch where wgpu (Deno) does not, so
+  the glue kernels bind the merged buffer once; the Chrome bench now logs uncaptured GPU errors.
+- `kopt/encode-ahead` both engines: while the GPU runs token N, the command buffer of position N + 1 is
+  recorded (a token's commands depend only on the position and the switches); logits copy in the same
+  submit. Switch: `encodeAhead`.
+- `kopt/rmsnorm` rmsnorm and the dn_pre q/k L2 norms with 4 / 8 loads in flight, same in-order sums.
+- `kopt/head-rows` LM head GEMV with 8 rows per workgroup (rows per workgroup never enter a row's
+  arithmetic): on for the dense engine, off for the hybrid (no gain on the 27B head).
+- `kopt/wide-loads` opt/wide-loads (16-byte weight loads) re-based and GPU-validated: bit-identical in the
+  model (COOPWIDE=4,2 gives the same 27B hashes) but no faster (GPU 90.0 -> 91.0 ms/token), not merged.
+
+### Qwen3 1.7B Q8 (dense engine), before (kopt/base) -> after (kopt/combined)
+
+Chrome (tests/bench/chrome_bench.mjs, `prefill=512,4096`; plain decode = 40 tokens after a short chat
+prompt; the dense model has no draft head, so no speculative number):
+
+| | base run 1 | base run 2 | combined run 1 | combined run 2 | |
+|---|---|---|---|---|---|
+| decode, short chat (two-sum / hash-map) | 52.6 / 52.6 | 51.3 / 51.1 | 61.1 / 63.7 | 58.7 / 61.8 | +17% |
+| prefill to 512 tokens | 83.9 | 84.2 | 261.1 | 259.4 | 3.1x |
+| prefill to 4096 tokens | 22.2 | 22.3 | 176.3 | 176.6 | 7.9x |
+| decode at 512 | 35.4 | 35.1 | 58.4 | 58.6 | +66% |
+| decode at 4096 | 10.45 | 10.43 | 32.9 | 32.8 | 3.1x |
+
+Deno (tests/bench_dense.js, FILLS=512,4096): prefill 82.2 / 82.4 -> 219.4 / 221.2 at 512 and 19.2 / 19.3 ->
+158.9 / 159.6 at 4096; decode 22.9 / 24.0 -> 36.5 / 36.7 at 512 and 7.49 / 7.42 -> 25.3 / 24.9 at 4096.
+Per token at 4k context (tests/prof_dense.js): 219 ms -> 41 ms wall; the old softmax was one thread per
+head walking 4k positions three times in global memory.
+
+### Qwen 3.8 27B Q4_0, before (kopt/base) -> after (kopt/combined)
+
+Chrome (`batchcols=16&prefill=512,4096`, 40 tokens, K=3):
+
+| | base run 1 | base run 2 | combined run 1 | combined run 2 | combined run 3 |
+|---|---|---|---|---|---|
+| plain (two-sum / hash-map) | 10.62 / 10.56 | 10.56 / 10.48 | 11.11 / 11.09 | 11.03 / 11.11 | 11.11 / 11.08 |
+| spec K=3 (two-sum / hash-map) | 24.01 / 20.19 | 23.69 / 20.12 | 23.99 / 20.12 | 23.96 / 20.28 | 24.08 / 20.30 |
+| prefill to 512 / 4096 | 72.7 / 66.4 | 72.5 / 66.3 | 72.7 / 66.1 | 73.0 / 66.3 | 73.0 / 66.3 |
+| decode at 4096 | 9.46 | 9.42 | 9.90 | 9.84 | 9.89 |
+
+Plain decode +5%, speculative and prefill unchanged (the verify pass and prefill use the batched kernels,
+which this pass did not touch; prefill is the prefill workflow's). Deno (tests/bench_ctx.js MODEL=27b,
+FILLS=512,4096): plain 8.77 / 8.80 -> 9.28 / 9.29 at 512 and 8.59 / 8.60 -> 9.08 / 9.08 at 4096; spec at 512
+16.98 / 16.97 -> 16.92 / 16.93; prefill 66.2 / 65.9 -> 66.0 / 66.0. (The spec number at 4096 is not
+comparable: bench_ctx builds its prompt from engine/qwen35.js, whose text changed, and acceptance went
+17/42 -> 14/51.) tests/prof_ts.js: wall 106.1 -> 101.3 ms/token from encode-ahead (GPU time unchanged),
+then GPU 90.9 -> 88.7 ms from rmsnorm (3.18 -> 1.64 ms, 129 dispatches) and dn_pre (2.10 -> 1.35 ms).
+
+Where the 27B token still goes (GPU 88.7 ms): the GEMVs are ~79 ms at 200-215 GB/s (gate/up 469 us x 64,
+LM head 5.8 ms at 228 GB/s); exact knobs tried per shape (tests/bench_wide.js: 16-byte loads, 1-16 rows
+per workgroup) are all bit-identical and within +-5% of today's kernel, so the remaining gap to llama.cpp
+(13.8 tok/s) is load efficiency that an exact kernel cannot reorder its way out of.
