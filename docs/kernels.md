@@ -61,7 +61,7 @@ A generated token on the 27B = ~111 ms on the GB10: **82 ms streaming 15 GB of w
 ### On the wire (the room)
 26. **Binary frames (−33%) and f16 activations (−50%)** over WebRTC data channels; decoders accept f32 from older peers.
 27. **16 prompt tokens per network round** (4 GPU passes per round) so prefill pays one round-trip per 16 tokens.
-28. **Cache API with size stamps**: the cache refuses 206 responses, so range responses are stored as 200 with an `x-swarm-len` stamp and validated on read.
+28. **Cache API with size stamps**: the cache refuses 206 responses, so range responses are stored as 200 with an `x-swarm-len` stamp and validated on read (the header keeps its old name so caches from before the rename stay valid).
 29. **Fire-and-forget prefill dispatches** with periodic `onSubmittedWorkDone()` syncs to keep the queue from growing unbounded.
 
 ## Things tried and rejected (measured)

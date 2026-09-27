@@ -1,6 +1,6 @@
-# Contributing to SwarmLLM
+# Contributing to Pooled
 
-Thanks for helping. SwarmLLM is a from-scratch WebGPU inference engine plus a peer-to-peer runtime that runs large models across browser tabs. Most useful contributions fall into: kernels, model support, the room protocol, the site, docs, and benchmark reports from hardware we do not have.
+Thanks for helping. Pooled (formerly SwarmLLM) runs one open model across the devices in a room, in their browser tabs. It is our own WebGPU engine, a peer-to-peer runtime over WebRTC, and Code mode, an in-browser coding agent on top. Useful contributions include kernels, model support, the room protocol, Code mode, the site, docs, and benchmark reports from hardware we do not have.
 
 ## Before you start
 
@@ -33,7 +33,17 @@ npm run e2e -- --phone    # room emulator: host, worker and a phone-shaped tab i
 
 The emulator (`tests/e2e/room.mjs`) forms a real room through PeerJS signaling and WebRTC, splits the small model across the tabs, runs prompts, and reports stats, wire channel counters and console errors. `--wire off|slice|stripeN` picks the hidden-state transport, `--phone` adds a tab with a mobile user agent and a 4x CPU throttle so the phone code paths run. It needs `npm install` and a Chromium with WebGPU on the machine; it is never run automatically.
 
-To run the site locally, serve the repository root with any static server (`npx serve .`) and open `/room`.
+**No GPU?** Headless Chromium runs WebGPU on SwiftShader, so these run on any machine (they need `npm install` for Playwright and the `peer` server):
+
+```bash
+npm run e2e:code                          # Code mode end to end: two tabs, a real room, a scripted model builds and fixes a Tetris game
+node tests/e2e/preview_browser.mjs        # the sandboxed preview on its own
+node tests/e2e/room_synth.mjs             # the real engine and room on a tiny synthetic model
+```
+
+`harness_tetris.mjs` and `room_synth.mjs` take `--port` and `--signal-port` if the default ports are busy.
+
+To run the site locally, serve the repository root with `npm run serve` (or `npx serve .`, which reads `serve.json` for the `/room` and `/r/:code` rewrites) and open `/room`.
 
 ## Pull requests
 
@@ -42,17 +52,18 @@ To run the site locally, serve the repository root with any static server (`npx 
 - Kernel and engine changes must keep the golden tests passing **bit-exactly**. The speculative decoding path must produce a stream identical to plain decoding (`tests/test_mtp.js`). If a change is intentionally approximate, it needs a switch that defaults to off, and a note in the PR.
 - Performance changes must add a row to [docs/bench-log.md](docs/bench-log.md) with the hardware, commit, and before/after numbers, including neutral results. "Faster" without a number is not reviewable. Room measurements name the devices and one of the standard prompts listed in the bench log, so rows stay comparable across PRs.
 - Protocol changes must keep older peers failing loudly rather than silently (bump the message version).
-- Add or update a test. GPU tests live in `tests/`, unit tests that need no GPU in `tests/unit/`.
+- Add or update a test. GPU tests live in `tests/`, unit tests that need no GPU in `tests/unit/`, browser tests on SwiftShader in `tests/e2e/`.
+- Code mode changes (`harness/`, the Code pane in the room) must keep `npm run e2e:code` and `tests/e2e/preview_browser.mjs` passing.
 - Keep the diff readable: no reformatting of untouched code, no drive-by renames.
 
 **Commit messages**: imperative subject line under 72 characters, a body that says *why*, and the measured effect for performance work.
 
-**After submitting**: CI runs syntax checks and the unit tests, and Vercel posts a preview URL for your branch on the PR (every branch gets `swarmllm-git-<branch>-nehanths-projects.vercel.app`). GPU tests run on the maintainer's hardware before merge; say which tests you ran locally and on what GPU. Merging to `main` deploys production.
+**After submitting**: CI runs syntax checks and the unit tests, and Vercel posts a preview URL for your branch on the PR (every branch gets `<project>-git-<branch>-nehanths-projects.vercel.app`; see [RELEASE.md](RELEASE.md)). GPU tests run on the maintainer's hardware before merge; say which tests you ran locally and on what GPU. Merging to `main` deploys production.
 
 ## Coding guidelines
 
 - Plain modern JavaScript (ES modules), no build step, no framework. The site must work by opening the HTML files.
-- WGSL kernels are generated from JavaScript templates in `engine/engine.js` when they vary by shape; keep generated code deterministic and readable.
+- WGSL kernels live in `engine/wgsl/*.js` (`base.js`, `coop.js`, `qwen35.js`, `gemm.js`, `moe.js`) as JavaScript templates, generated per shape when they vary. Keep generated code deterministic and readable.
 - Kernel rules learned the hard way (see [docs/kernels.md](docs/kernels.md)): never dynamically index a local array (it spills), keep `workgroupBarrier()` outside conditionals, accumulate in f32, no subgroup or pointer-parameter features without a probe and a fallback, and dispatch tall matvecs in 2-D (a single dimension over 65,535 workgroups is silently dropped).
 - Everything must run on Chrome, Safari 26, and Deno. Feature-detect at runtime; never assume an extension.
 - Prefer measuring to reasoning: `benchmarks/bench_breakdown.js` skips kernel families to show where time goes.
@@ -72,4 +83,5 @@ User-facing behavior changes update the relevant page in `docs/`. New models go 
 - [docs/architecture.md](docs/architecture.md): how a token flows through the system.
 - [docs/kernels.md](docs/kernels.md): the WebGPU engine.
 - [docs/protocol.md](docs/protocol.md): the room protocol.
+- [docs/design/harness-app.md](docs/design/harness-app.md): Code mode.
 - [docs/bench-log.md](docs/bench-log.md): every performance change with its numbers.

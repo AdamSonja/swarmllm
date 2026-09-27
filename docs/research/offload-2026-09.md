@@ -1,4 +1,4 @@
-# MoE expert offload and SSD streaming: research for SwarmLLM (2026-09-26)
+# MoE expert offload and SSD streaming: research for Pooled, then called SwarmLLM (2026-09-26)
 
 Tags: **[M-ours]** we measured it today (GB10 box, headless Chromium 131 / Deno WebGPU, engine from `origin/tabby-new-idea`); **[M]** measured and published by the authors, with a reproducible setup; **[C]** a claim or projection; **[E]** my estimate.
 

@@ -1,0 +1,22 @@
+# 30 · Long context and sessions
+
+**Phase:** code mode · **Status:** in part · design and what landed: [docs/long-context-and-sessions.md](../docs/long-context-and-sessions.md)
+
+## Why
+A coding agent reads files, writes files, and reads errors, so its context fills fast. Re-prefilling the whole conversation on every step is the slowest thing a room does. Long context and sessions that resume without re-prefilling are what make Code mode usable, and they help long chats too.
+
+## What landed
+- f16 KV cache and split-K flash attention; int8 KV cache as an option (`?kv=q8`).
+- Context per model (`CTX` in `room/models.js`, from roadmap 13): the 27B defaults to 16K tokens (up to 32K with `?ctx=`), the 35B MoE to 32K (up to 64K).
+- Session state export and import, GPU slots, room checkpoints after each answer (`?ckpt=N`), and several agent sessions on one engine (`harness/sessions.js`).
+- Prompt-lookup drafts over the whole context, so copying code back is cheap.
+
+## Still open
+- Save room checkpoints to disk (OPFS) on every device, so a session survives a reload.
+- Stable prompt rendering for agents: compact old turns instead of dropping them, which breaks prefix reuse.
+- Several sessions at once through one batched pass.
+- Timing on real hardware at 1K, 8K and 32K context, with rows in the bench log.
+
+## Done when
+- A Code mode session of 20+ steps never re-prefills more than what is new, including after a device reloads.
+- Bench-log rows show decode and prefill tok/s at 1K, 8K and 32K on the 27B and the 35B MoE.

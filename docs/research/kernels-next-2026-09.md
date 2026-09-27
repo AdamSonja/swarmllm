@@ -1,6 +1,6 @@
 # Next kernel and engine levers: dense 27B and the MoE path (September 2026)
 
-Written 2026-09-26 from reading `origin/tabby-new-idea` and from outside sources. Nothing in this document was run on a GPU; the GB10 was busy. Numbers marked **[M]** come from the repo's own measurements (bench-log.md, research/decode-overhead-and-wire.md, kernel-plan-3.md, deltanet-prefill-research.md). Numbers marked **[E]** are my estimates. This document picks up where `research/kernels-2026-09.md` stopped and does not repeat its items. Where an item overlaps with that document, it says so.
+Written 2026-09-26 from reading `origin/tabby-new-idea` and from outside sources. Nothing in this document was run on a GPU; the GB10 was busy. Numbers marked **[M]** come from the repo's own measurements (bench-log.md, archive/research/decode-overhead-and-wire.md, archive/kernel-plan-3.md, archive/deltanet-prefill-research.md). Numbers marked **[E]** are my estimates. This document picks up where `research/kernels-2026-09.md` stopped and does not repeat its items. Where an item overlaps with that document, it says so.
 
 "Exact" means the change keeps today's bits for every column of every pass, so the current goldens (`tests/test_mtp.js`, `test_batch*`, `test_twins.js`, `engine_synth`) still pass unchanged. "Flag" means the change reorders a floating-point reduction. Such changes must stay behind an off-by-default switch, and every device in a room must pick the same setting, because the setting is part of the protocol.
 
@@ -77,7 +77,7 @@ Not ranked: flash-decoding (built on the branch; time it at 1K and 8K), pure-Q4_
 
 ## 4. Ranked changes: MoE (Qwen3.6-35B-A3B)
 
-MoE goldens have not yet been frozen on real hardware (tabby-kernel.md: "timing on real hardware: not done"). **The cheapest moment to change the MoE kernels' reduction orders is before those goldens exist.** The invariants that have to hold are batched == single and spec == plain, and every item below keeps them by construction, because each (column, slot) pair runs the same arithmetic in every pass width.
+MoE goldens have not yet been frozen on real hardware (long-context-and-sessions.md: "timing on real hardware: not done"). **The cheapest moment to change the MoE kernels' reduction orders is before those goldens exist.** The invariants that have to hold are batched == single and spec == plain, and every item below keeps them by construction, because each (column, slot) pair runs the same arithmetic in every pass width.
 
 Architecture facts that matter for the kernels (research/moe-2026-09.md; official config): hidden size 2048, 40 layers (layers 3, 7, …, 39 are full attention and the other 30 are Gated DeltaNet), **256 experts, top-8**, expert FFN 512, **one shared expert** (FFN 512) scaled by a scalar `sigmoid(w_sg·x)`, softmax over all 256 experts then renormalization over the chosen 8, no routed scale, and every layer is MoE. The MTP block is itself a MoE layer.
 

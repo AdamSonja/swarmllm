@@ -1,8 +1,9 @@
-# Tabby kernel: the engine side of a P2P coding harness
+# Long context and sessions
 
-`tabby-kernel` turns the SwarmLLM engine (Qwen 3.8 27B across browser tabs) into something a
-coding agent can sit on: long context, sessions that resume without re-prefilling, a disk cache,
-and tool calls. Research behind the choices: [research/tabby-2026-09.md](research/tabby-2026-09.md);
+This is the engine side of Code mode (roadmap 30). It makes the Pooled engine (Qwen 3.8 27B and
+Qwen 3.6 35B MoE across browser tabs) something a coding agent can sit on: long context, sessions
+that resume without re-prefilling, a disk cache, and tool calls. The work was first done on a
+branch called `tabby-kernel`; the research notes still use that name. Research behind the choices: [research/tabby-2026-09.md](research/tabby-2026-09.md);
 earlier kernel work: [research/kernels-2026-09.md](research/kernels-2026-09.md).
 
 Nothing here has been timed on a real GPU yet (the development machine only has SwiftShader).
