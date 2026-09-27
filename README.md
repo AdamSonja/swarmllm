@@ -189,7 +189,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md). Bench
 @software{pooled2026,
   author = {Narendrula, Nehanth},
   title  = {Pooled: peer-to-peer LLM inference in the browser},
-  note   = {Formerly SwarmLLM},
   year   = {2026},
   url    = {https://github.com/Nehanth/pooled}
 }
@@ -198,8 +197,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md). Bench
 ## Acknowledgements
 
 Model weights and the GGUF format come from the [Qwen](https://huggingface.co/Qwen) team and [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp), whose speculative-decoding graph for Qwen 3.5/3.8 was the reference for ours. Prior work that shaped this: [Petals](https://github.com/bigscience-workshop/petals), [exo](https://github.com/exo-explore/exo), [WebLLM](https://github.com/mlc-ai/web-llm), [LlamaWeb](https://arxiv.org/abs/2605.20706), and the Gated DeltaNet and PipeInfer papers.
-
-Pooled was called SwarmLLM until September 2026; swarmllm.ai links redirect to pooled.run.
 
 ## License
 
