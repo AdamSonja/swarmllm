@@ -1178,8 +1178,14 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
       // columns and drop to the 8- or 4-column GEMV twins automatically, so
       // the generated stream is unchanged.
       batchCols: 16, coopRowsB: 1,
-      // ?draftvocab=N: draft over the first N vocabulary rows only (engine/qwen35.js); off by default
-      draftVocab: parseInt(new URLSearchParams(location.search).get("draftvocab"), 10) || 0,
+      // ?draftvocab=N: draft over the first N vocabulary rows only (engine/qwen35.js). Default 65536:
+      // the head is the biggest matrix a draft reads (1.35 GB of Q8 on the 27B, 0.54 GB on the MoE),
+      // and on English prose and code only 1-2.5% of tokens lie above 65536
+      // (benchmarks/draftvocab_coverage.js). For other scripts (Chinese ~84% above it) the engine
+      // falls back to the full head by itself (draftVocabAuto). ?draftvocab=0: full head always.
+      // ?dvauto=0: the small head always. Drafts only, the output never changes.
+      draftVocab: DRAFT_VOCAB,
+      draftVocabAuto: new URLSearchParams(location.search).get("dvauto") !== "0",
       // the K drafts of a speculative step, its verify and its LM head in one submit (keeps the
       // embedding table, or its first draftvocab rows, on the GPU); ?draftchain=0 turns it off
       draftChain: new URLSearchParams(location.search).get("draftchain") !== "0",
@@ -1190,6 +1196,10 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
       ...(new URLSearchParams(location.search).get("fuse") === "0" ? { attnGlue: false, dnFuse: false, attnMC: false } : {}),
       // ?kv=q8: int8 KV cache (~56% of f16's memory) for long contexts; changes the numerics a little
       kvQ8: new URLSearchParams(location.search).get("kv") === "q8",
+      // ?moefuse=0: the unfused MoE FFN kernels (A/B). The fused path (the default) gives different
+      // MoE bits, so every device of a room should run the same setting; ?moednrows=1|2|4 tunes it
+      moeFuse: new URLSearchParams(location.search).get("moefuse") !== "0",
+      moeDnRows: parseInt(new URLSearchParams(location.search).get("moednrows"), 10) || 1,
     });
   } else if (M.kind === "gguf") {
     aiStatus("reading model index\u2026");
@@ -1224,6 +1234,9 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
   prefetcher.pending.clear(); prefetcher.url = null;
   if (ai.peerBytes) log("swarm", `${myName}: ${(ai.peerBytes / 2 ** 20).toFixed(1)} MB of weights came from devices in the room, ${((ai.netBytes || 0) / 2 ** 20).toFixed(1)} MB from the network`);
   if (ai.engine) ai.engine.mtpBatchFill = MTP_BATCH;
+  // after a verify: the draft-cache refill as one batched pass (?mtprefill=0: one submit per row)
+  // and the next step's first draft run in that same pass (?predraft=0: off). Drafts only.
+  if (ai.engine) { ai.engine.mtpBatchRefill = MTP_REFILL; ai.engine.mtpPreDraft = PRE_DRAFT; }
   ai.range = range;
   ai.model = modelKey;
   aiLoading(false);
@@ -1530,6 +1543,9 @@ function ckptResume(ids, reused) {
 // (roadmap 25: +18–45% tokens per lap after a prompt). Drafts only change speed, never output.
 // ?fill=0 turns it off for A/B runs.
 const FILL_DRAFTS = new URLSearchParams(location.search).get("fill") !== "0";
+const MTP_REFILL = new URLSearchParams(location.search).get("mtprefill") !== "0";
+const PRE_DRAFT = new URLSearchParams(location.search).get("predraft") !== "0";
+const DRAFT_VOCAB = (() => { const v = new URLSearchParams(location.search).get("draftvocab"); return v === null ? 65536 : parseInt(v, 10) || 0; })();
 const MTP_BATCH = new URLSearchParams(location.search).get("mtpbatch") !== "0";   // ?mtpbatch=0: one draft-cache row per submit, for A/B
 function fillDrafts(h, ids, i0, basePos, n) {
   if (!FILL_DRAFTS || !ai.engine?.mtp) return;

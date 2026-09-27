@@ -590,7 +590,9 @@ export function gpuUploadEntry(device, e, keepCpu = false) {
     return buf;
   };
   if (e.kind === "q8" || e.kind === "q4")
-    e.gpu = { kind: e.kind, qs: mk(e.qs, GPUBufferUsage.STORAGE), sc: mk(e.scales, GPUBufferUsage.STORAGE) };
+    // COPY_SRC: engines may row-concatenate projections on the GPU at load (Qwen35Engine fuseProj), and
+    // the MoE engine repacks the shared expert's gate/up on the GPU (engine/qwen35.js packGU)
+    e.gpu = { kind: e.kind, qs: mk(e.qs, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC), sc: mk(e.scales, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC) };
   else e.gpu = { kind: "f32", buf: mk(e.data, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC) };
   if (!keepCpu) e.qs = e.scales = e.data = null;
   return e.gpu;

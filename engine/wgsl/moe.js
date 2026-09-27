@@ -13,22 +13,169 @@
 //   moe_dn_{q4,q8}  y[col,slot] = Wdown[e] h[col,slot]
 //   moe_combine     x[col] += sum_k selw[col,k] * y[col,k] + sigmoid(sg[col]) * shared[col]
 
-const ROWS = 4;
+// ---- expert GEMV kernels: configurable layout (MOE_DEFAULT below; MOE_LEGACY reproduces the first coop build) ----
+//
+// A workgroup of WG threads is cut into WG / TPR row groups of TPR threads. Each group owns R consecutive
+// rows (R accumulators per thread per matrix), so a workgroup covers RPW = (WG / TPR) * R rows and a
+// (column, slot) pair needs ceil(dOut / RPW) workgroups in x. Inside a group:
+//   wide = false: 4 threads share a 32-weight block (one Q4 word / two Q8 words each), TPR / 4 blocks per step
+//   wide = true:  one thread owns a whole block, loaded as one vec4<u32> (Q4, 16 B) or two (Q8, 32 B),
+//                 TPR blocks per step, with 16 B loads (research D4)
+// U unrolls the block loop (U independent block loads in flight per row); tail steps past nb are clamped to
+// the last block and dropped with select(), so every load stays in bounds and in one basic block.
+// xsh = true stages the (column, slot)'s input vector in workgroup memory once, transposed to
+// [slot-of-8][block] with a padded stride (nb + 1), so threads reading consecutive blocks hit different banks.
+// The partial sums are reduced by a halving tree over the TPR lanes of each group (log2 TPR barriers).
+//
+// Every (column, slot) pair runs the same code whatever the pass width, so the batched path (verify /
+// prefill) is bit-identical to the one-token path for any config. Different configs sum in different
+// orders, so they give different (equally valid) MoE bits; the MoE goldens are llama.cpp text.
+export const MOE_LEGACY = Object.freeze({
+  gu: Object.freeze({ WG: 256, TPR: 256, R: 4, U: 1, wide: false, xsh: false }),
+  dn: Object.freeze({ WG: 64, TPR: 64, R: 4, U: 1, wide: false, xsh: false }),
+});
+export const MOE_DEFAULT = Object.freeze({
+  // Picked by tests/bench/moe_kernel_sweep.js on the GB10 (2026-09-26): in-model (prof_ts) moe_gu_q4 69.8 -> 60.7 µs,
+  // moe_dn_q4 43.0 -> 38.4 µs vs legacy. The first guess (gu 128/16/2/2, dn 128/4/2/4) was no faster than legacy.
+  // gate/up (512 x 2048 per expert): 32 threads x 16 B per row, 1 row per group, 4 rows per workgroup
+  gu: Object.freeze({ WG: 128, TPR: 32, R: 1, U: 1, wide: true, xsh: true }),
+  // down (2048 x 512 per expert, 16 blocks per row): 8 threads x 2 blocks per row, 16 rows per workgroup
+  dn: Object.freeze({ WG: 128, TPR: 8, R: 1, U: 1, wide: true, xsh: true }),
+});
+const WG_MEM = 16384;   // WebGPU default maxComputeWorkgroupStorageSize
+const pow2 = (n) => Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0;
 
-// Expert GEMV kernels, laid out like the dense cooperative GEMV (coop.js): four threads share a 32-weight
-// block (one Q4 word or two Q8 words each), x is read once per block as two vec4s and reused for every row
-// in the workgroup, and dequant is unpack4xU8 / unpack4xI8 into vec4 dots. Workgroup y = (column, slot):
-// every (column, slot) pair does the same math whether a pass has 1 column or many, so the batched path
-// stays bit-identical to the one-token path.
+// opt: undefined (= "legacy") | "default" | "legacy" | { gu?: {...}, dn?: {...} } (partial overrides of MOE_DEFAULT,
+// or of MOE_LEGACY when opt.base === "legacy"). dims: { dim, inter } (inter = expert FFN width).
+// Returns { gu, dn } with every field resolved plus rows (= RPW) and the baked input width dIn.
+export function moeKernelConfig(opt, { dim, inter }) {
+  // opt undefined / null: MOE_LEGACY (the tuned layout showed no end-to-end gain, so it is opt-in: "default")
+  if (opt == null) opt = { base: "legacy" };
+  if (typeof opt === "string") opt = opt === "legacy" ? { base: "legacy" } : opt === "default" ? {} : (() => { throw new Error(`moeKernel: unknown preset ${opt}`); })();
+  const base = opt.base === "legacy" ? MOE_LEGACY : MOE_DEFAULT;
+  const one = (kind, dIn) => {
+    const c = { ...base[kind], ...(opt[kind] || {}) };
+    const { WG, TPR, R, U } = c;
+    c.wide = !!c.wide; c.xsh = !!c.xsh;
+    if (!pow2(WG) || WG > 256 || WG < 4) throw new Error(`moeKernel.${kind}.WG must be a power of two in [4, 256] (got ${WG})`);
+    if (!pow2(TPR) || TPR > WG || (!c.wide && TPR < 4)) throw new Error(`moeKernel.${kind}.TPR must be a power of two <= WG${c.wide ? "" : " and >= 4"} (got ${TPR})`);
+    if (!Number.isInteger(R) || R < 1 || R > TPR || R > 8) throw new Error(`moeKernel.${kind}.R must be an integer in [1, min(8, TPR)] (got ${R})`);
+    if (!Number.isInteger(U) || U < 1 || U > 8) throw new Error(`moeKernel.${kind}.U must be an integer in [1, 8] (got ${U})`);
+    if (dIn % 32) throw new Error(`MoE ${kind} input width ${dIn} is not a multiple of 32`);
+    const NA = kind === "gu" ? 2 : 1, red = NA * R * WG * 4, xs = 8 * (dIn / 32 + 1) * 16;
+    if (red > WG_MEM) throw new Error(`moeKernel.${kind}: ${red} B of reduction scratch exceeds ${WG_MEM} B of workgroup memory`);
+    if (c.xsh && red + xs > WG_MEM) c.xsh = false;   // input too wide to stage: read it from the storage buffer
+    c.rows = (WG / TPR) * R; c.dIn = dIn;
+    return c;
+  };
+  return { gu: one("gu", dim), dn: one("dn", inter) };
+}
+
+// Code emitters. js = true emits a JavaScript generator body with the same control flow and index math
+// (tests/unit/moe_kernels_test.js runs it on the CPU); the WGSL-only constructs go through these helpers.
+function emit(js) {
+  return {
+    q4lo: (w) => js ? `q4lo(${w})` : `(vec4<f32>(unpack4xU8(${w} & 0x0F0F0F0Fu)) - vec4<f32>(8.0))`,
+    q4hi: (w) => js ? `q4hi(${w})` : `(vec4<f32>(unpack4xU8((${w} >> 4u) & 0x0F0F0F0Fu)) - vec4<f32>(8.0))`,
+    i8x4: (w) => js ? `i8x4(${w})` : `vec4<f32>(unpack4xI8(${w}))`,
+    div: (a, b) => js ? `Math.floor((${a}) / (${b}))` : `((${a}) / (${b}))`,
+  };
+}
+export function wgslToJs(body) {
+  return body.replace(/\bvar (\w+): [^=;]+ = /g, "let $1 = ").replace(/\bvar (\w+) = /g, "let $1 = ")
+    .replace(/\b(0x[0-9A-Fa-f]+)u\b/g, "$1").replace(/\b(\d+)u\b/g, "$1").replace(/workgroupBarrier\(\);/g, "yield;");
+}
+
+// One expert GEMV kernel. kind "gu": h[cs][row] = silu(Wg[e] x) * (Wu[e] x); kind "dn": y[cs][row] = Wd[e] h[cs].
+// Returns { name, decl, body, P }: decl = bindings + workgroup arrays (WGSL only), body = the function body.
+export function expertKernel(kind, fmt, c, js = false) {
+  const E = emit(js);
+  const P = `m${kind === "gu" ? "g" : "d"}${fmt}`, name = `moe_${kind}_${fmt}`;
+  const { WG, TPR, R, U, wide, xsh } = c;
+  const LANES = wide ? TPR : TPR / 4, RPW = (WG / TPR) * R, NA = kind === "gu" ? 2 : 1;
+  const mats = kind === "gu" ? [["g", `${P}_gq`, `${P}_gs`], ["u", `${P}_uq`, `${P}_us`]] : [["y", `${P}_q`, `${P}_sc`]];
+  const X = `${P}_x`, XS = `${P}_xs`, RED = `${P}_red`;
+  const rs = Array.from({ length: R }, (_, r) => r);
+  const xl = (s) => xsh ? `${XS}[(${s}) * nbp + b]` : `${X}[xc + b * 8u + ${s}]`;
+  const scale = (SC, r) => `unpack2x16float(${SC}[(er${r} * nb + b) >> 1u])[(er${r} * nb + b) & 1u]`;
+  // one row's contribution of block b
+  const term = (Q, SC, r, m) => {
+    const sc = scale(SC, r);
+    if (!wide && fmt === "q4") return `${sc} * (dot(${E.q4lo(`${Q}[(er${r} * nb + b) * 4u + qt]`)}, xa) + dot(${E.q4hi(`${Q}[(er${r} * nb + b) * 4u + qt]`)}, xb))`;
+    if (!wide) return `${sc} * (dot(${E.i8x4(`${Q}[(er${r} * nb + b) * 8u + qt * 2u]`)}, xa) + dot(${E.i8x4(`${Q}[(er${r} * nb + b) * 8u + qt * 2u + 1u]`)}, xb))`;
+    const w = `w${m}${r}`;
+    if (fmt === "q4") {
+      const p = (i) => `(dot(${E.q4lo(`${w}[${i}u]`)}, x${i}) + dot(${E.q4hi(`${w}[${i}u]`)}, x${i + 4}))`;
+      return `${sc} * ((${p(0)} + ${p(1)}) + (${p(2)} + ${p(3)}))`;
+    }
+    const d = (v, i, s) => `dot(${E.i8x4(`${v}[${i}u]`)}, x${s})`;
+    const h = (v, o) => `((${d(v, 0, o)} + ${d(v, 1, o + 1)}) + (${d(v, 2, o + 2)} + ${d(v, 3, o + 3)}))`;
+    return `${sc} * (${h(`${w}a`, 0)} + ${h(`${w}b`, 4)})`;
+  };
+  const wload = (Q, r, m) => !wide ? "" : fmt === "q4" ? `let w${m}${r} = ${Q}[er${r} * nb + b];`
+    : `let w${m}${r}a = ${Q}[(er${r} * nb + b) * 2u]; let w${m}${r}b = ${Q}[(er${r} * nb + b) * 2u + 1u];`;
+  const xloads = wide ? Array.from({ length: 8 }, (_, s) => `let x${s} = ${xl(`${s}u`)};`).join(" ")
+    : fmt === "q4" ? `let xa = ${xl("qt")}; let xb = ${xl("qt + 4u")};` : `let xa = ${xl("qt * 2u")}; let xb = ${xl("qt * 2u + 1u")};`;
+  const step = (u) => {
+    const head = U === 1 ? `let b = b0;` : `let bu = b0 + ${u * LANES}u; let ok = bu < nb; let b = min(bu, nb - 1u);`;
+    const loads = mats.map(([m, Q]) => rs.map((r) => wload(Q, r, m)).join(" ")).join(" ");
+    const adds = mats.map(([m, Q, SC]) => rs.map((r) => U === 1 ? `      ${m}${r} += ${term(Q, SC, r, m)};` : `      ${m}${r} += select(0.0, ${term(Q, SC, r, m)}, ok);`).join("\n")).join("\n");
+    return `    {\n      ${head}\n      ${xloads}\n      ${loads}\n${adds}\n    }`;
+  };
+  const k = (mi, r) => (mi * R + r) * WG;
+  const out = kind === "gu"
+    ? `let gg = ${RED}[lane * ${WG}u + grp * ${TPR}u]; ${P}_h[cs * S.ys + row] = gg / (1.0 + exp(-gg)) * ${RED}[(${R}u + lane) * ${WG}u + grp * ${TPR}u];`
+    : `${P}_y[cs * S.ys + row] = ${RED}[lane * ${WG}u + grp * ${TPR}u];`;
+  const body = `
+  let S = ${P}_s; let t = lid.x; let cs = wg.y; let lane = t % ${TPR}u; let grp = ${E.div("t", `${TPR}u`)};
+  let e = ${P}_sel[cs]; let nb = ${E.div("S.dIn", "32u")}; let row0 = wg.x * ${RPW}u + grp * ${R}u;
+  let xc = ${kind === "gu" ? `${E.div("cs", "S.K")} * ${E.div("S.xs", "4u")}` : `cs * ${E.div("S.xs", "4u")}`};   // ${kind === "gu" ? "the column's x" : "each (column, slot) has its own input h"}
+${wide ? "" : "  let qt = lane & 3u; let bl = lane >> 2u;\n"}${xsh ? `  let nbp = nb + 1u;
+  for (var i: u32 = t; i < nb * 8u; i += ${WG}u) { ${XS}[(i & 7u) * nbp + (i >> 3u)] = ${X}[xc + i]; }
+  workgroupBarrier();
+` : ""}${mats.map(([m]) => rs.map((r) => `  var ${m}${r}: f32 = 0.0;`).join("\n")).join("\n")}
+${rs.map((r) => `  let er${r} = e * S.dOut + min(row0 + ${r}u, S.dOut - 1u);`).join("\n")}
+  for (var b0: u32 = ${wide ? "lane" : "bl"}; b0 < nb; b0 += ${LANES * U}u) {
+${Array.from({ length: U }, (_, u) => step(u)).join("\n")}
+  }
+${mats.map(([m], mi) => rs.map((r) => `  ${RED}[${k(mi, r)}u + t] = ${m}${r};`).join("\n")).join("\n")}
+  workgroupBarrier();
+${TPR === 1 ? "" : `  for (var st: u32 = ${TPR / 2}u; st > 0u; st >>= 1u) {
+    if (lane < st) {
+${mats.map((_, mi) => rs.map((r) => `      ${RED}[${k(mi, r)}u + t] += ${RED}[${k(mi, r)}u + t + st];`).join("\n")).join("\n")}
+    }
+    workgroupBarrier();
+  }
+`}  if (lane < ${R}u) { let row = row0 + lane; if (row < S.dOut) { ${out} } }
+`;
+  const qT = wide ? "array<vec4<u32>>" : "array<u32>";
+  const decl = kind === "gu" ? `
+@group(1) @binding(0) var<storage, read> ${P}_gq: ${qT};
+@group(1) @binding(1) var<storage, read> ${P}_gs: array<u32>;
+@group(1) @binding(2) var<storage, read> ${P}_uq: ${qT};
+@group(1) @binding(3) var<storage, read> ${P}_us: array<u32>;
+@group(1) @binding(4) var<storage, read> ${X}: array<vec4<f32>>;
+@group(1) @binding(5) var<storage, read_write> ${P}_h: array<f32>;
+@group(1) @binding(6) var<storage, read> ${P}_sel: array<u32>;
+@group(1) @binding(7) var<uniform> ${P}_s: MOE;` : `
+@group(1) @binding(0) var<storage, read> ${P}_q: ${qT};
+@group(1) @binding(1) var<storage, read> ${P}_sc: array<u32>;
+@group(1) @binding(2) var<storage, read> ${X}: array<vec4<f32>>;
+@group(1) @binding(3) var<storage, read_write> ${P}_y: array<f32>;
+@group(1) @binding(4) var<storage, read> ${P}_sel: array<u32>;
+@group(1) @binding(5) var<uniform> ${P}_s: MOE;`;
+  const wgDecl = `
+var<workgroup> ${RED}: array<f32, ${NA * R * WG}>;${xsh ? `\nvar<workgroup> ${XS}: array<vec4<f32>, ${8 * (c.dIn / 32 + 1)}>;` : ""}`;
+  return { name, P, decl: decl + wgDecl, body: js ? wgslToJs(body) : body, wgslBody: body };
+}
+
+// ---------------- fused MoE FFN (moeFuse, the default when every MoE layer qualifies) ----------------
+// The fused kernels keep the first coop build's thread layout (4 threads per 32-weight block, ROWS rows per
+// workgroup); the moeKernel layouts above only apply to the unfused moe_gu / moe_dn kernels.
+const ROWS = 4;
 const q4lo = (w) => `vec4<f32>(unpack4xU8(${w} & 0x0F0F0F0Fu)) - vec4<f32>(8.0)`;
 const q4hi = (w) => `vec4<f32>(unpack4xU8((${w} >> 4u) & 0x0F0F0F0Fu)) - vec4<f32>(8.0)`;
 const i8x4 = (w) => `vec4<f32>(unpack4xI8(${w}))`;
-// one thread's share of block b of expert row er: x from vec4 array X at vec4 offset xc
-function term(fmt, Q, SC, X, er, xc) {
-  const sc = `unpack2x16float(${SC}[(${er} * nb + b) >> 1u])[(${er} * nb + b) & 1u]`;
-  if (fmt === "q4") return `${sc} * (dot(${q4lo(`${Q}[(${er} * nb + b) * 4u + qt]`)}, ${X}[${xc} + b * 8u + qt]) + dot(${q4hi(`${Q}[(${er} * nb + b) * 4u + qt]`)}, ${X}[${xc} + b * 8u + qt + 4u]))`;
-  return `${sc} * (dot(${i8x4(`${Q}[(${er} * nb + b) * 8u + qt * 2u]`)}, ${X}[${xc} + b * 8u + qt * 2u]) + dot(${i8x4(`${Q}[(${er} * nb + b) * 8u + qt * 2u + 1u]`)}, ${X}[${xc} + b * 8u + qt * 2u + 1u]))`;
-}
 const tree = (WG, n, red) => `
   workgroupBarrier();
   for (var st: u32 = ${WG / 2}u; st > 0u; st >>= 1u) {
@@ -37,9 +184,88 @@ ${Array.from({ length: n }, (_, r) => `      ${red}[${r * WG}u + t] += ${red}[${
     }
     workgroupBarrier();
   }`;
+// Per layer and column: router GEMV (the shared-expert gate row appended as row nExp, one launch),
+// moe_route (softmax, top-K, sigmoid of the shared gate), moe_gus (K routed slots + the shared expert as
+// slot K, gate/up + SiLU), moe_dnc (down for all K + 1 slots, combine and residual add in one epilogue).
+// Slot K reads the shared expert's own weights, which may be in another format than the routed experts
+// (Q8_0 shared, Q4_0 routed in the bartowski Q4_0 file): the branch on the slot index is uniform per
+// workgroup. K is baked into the kernels (KS = K + 1 slots). As before, workgroup y = (column, slot) or
+// column, so every column does the same math in a 1-column pass as in an N-column pass.
+//
+// Uniform MOEF: dOut, dIn (routed matrix), sDim (shared expert FFN width: rows for gate/up, dIn for down),
+// nExp, xs (input / residual column stride, floats), ys (h stride per (column, slot), floats), norm,
+// shared (unused, 1), oUq / oGs / oUs (word offsets of the shared up qs, gate scales, up scales in the
+// packed shared gate/up buffer, whose gate qs start at 0), pad.
 
-function guKernel(fmt, WG) {
-  const P = `mg${fmt}`, LANES = WG / 4;
+// termOff: like term(), with word offsets into Q / SC and explicit block count / index names
+function termOff(fmt, Q, qo, SC, so, X, er, xc, nb = "nb", b = "b") {
+  const bi = `(${er} * ${nb} + ${b})`;
+  const sc = `unpack2x16float(${SC}[${so} + (${bi} >> 1u)])[${bi} & 1u]`;
+  if (fmt === "q4") return `${sc} * (dot(${q4lo(`${Q}[${qo} + ${bi} * 4u + qt]`)}, ${X}[${xc} + ${b} * 8u + qt]) + dot(${q4hi(`${Q}[${qo} + ${bi} * 4u + qt]`)}, ${X}[${xc} + ${b} * 8u + qt + 4u]))`;
+  return `${sc} * (dot(${i8x4(`${Q}[${qo} + ${bi} * 8u + qt * 2u]`)}, ${X}[${xc} + ${b} * 8u + qt * 2u]) + dot(${i8x4(`${Q}[${qo} + ${bi} * 8u + qt * 2u + 1u]`)}, ${X}[${xc} + ${b} * 8u + qt * 2u + 1u]))`;
+}
+
+// Router: same softmax as moe_router (max and sum trees, same order), then top-K by rank: thread i counts
+// the experts ordered before it, (p_j > p_i) or (p_j == p_i and j < i), and writes itself to that slot if
+// it is below K. That is exactly the order of moe_router's K argmax rounds (ties to the lower index), so
+// the ids and weights are the same bits, without the 8 x 8 barrier rounds. Slot K gets the shared gate
+// sigmoid(logit[nExp]) with moe_combine's expression.
+function routeKernel(K) {
+  const KS = K + 1;
+  return `
+@group(1) @binding(0) var<storage, read> rt_l: array<f32>;
+@group(1) @binding(1) var<storage, read_write> rt_sel: array<u32>;
+@group(1) @binding(2) var<storage, read_write> rt_w: array<f32>;
+@group(1) @binding(3) var<uniform> rt_s: MOEF;
+var<workgroup> rt_p: array<f32, 1024>;
+var<workgroup> rt_v: array<f32, 256>;
+var<workgroup> rt_ki: array<u32, ${K}>;
+var<workgroup> rt_kv: array<f32, ${K}>;
+@compute @workgroup_size(256)
+fn moe_route(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let col = wg.x; let t = lid.x; let n = rt_s.nExp;
+  let lb = col * rt_s.xs;
+  if (t < ${K}u) { rt_ki[t] = 0u; rt_kv[t] = 0.0; }
+  var m: f32 = -3.0e38;
+  for (var i: u32 = t; i < n; i += 256u) { m = max(m, rt_l[lb + i]); }
+  rt_v[t] = m;
+  workgroupBarrier();
+  for (var st: u32 = 128u; st > 0u; st >>= 1u) { if (t < st) { rt_v[t] = max(rt_v[t], rt_v[t + st]); } workgroupBarrier(); }
+  let mx = rt_v[0];
+  workgroupBarrier();
+  var s: f32 = 0.0;
+  for (var i: u32 = t; i < n; i += 256u) { let p = exp(rt_l[lb + i] - mx); rt_p[i] = p; s += p; }
+  rt_v[t] = s;
+  workgroupBarrier();
+  for (var st: u32 = 128u; st > 0u; st >>= 1u) { if (t < st) { rt_v[t] += rt_v[t + st]; } workgroupBarrier(); }
+  let inv = 1.0 / rt_v[0];
+  for (var i: u32 = t; i < n; i += 256u) { rt_p[i] = rt_p[i] * inv; }
+  workgroupBarrier();
+  for (var i: u32 = t; i < n; i += 256u) {
+    let p = rt_p[i];
+    var r: u32 = 0u;
+    for (var j: u32 = 0u; j < n; j++) { let q = rt_p[j]; r += select(0u, 1u, q > p || (q == p && j < i)); }
+    if (r < ${K}u && p == p) { rt_ki[r] = i; rt_kv[r] = p; }
+  }
+  workgroupBarrier();
+  if (t == 0u) {
+    var tot: f32 = 0.0;
+    for (var k: u32 = 0u; k < ${K}u; k++) { tot += rt_kv[k]; }
+    for (var k: u32 = 0u; k < ${K}u; k++) {
+      rt_sel[col * ${KS}u + k] = rt_ki[k];
+      rt_w[col * ${KS}u + k] = select(rt_kv[k], rt_kv[k] / tot, rt_s.norm == 1u);
+    }
+    let g = rt_l[lb + n];
+    rt_sel[col * ${KS}u + ${K}u] = 0u;
+    rt_w[col * ${KS}u + ${K}u] = 1.0 / (1.0 + exp(-g));
+  }
+}`;
+}
+
+// gate/up for K routed slots + the shared expert (slot K). Grid: x = ceil(max(dOut, sDim) / ROWS),
+// y = column * KS + slot. Same per-thread layout and reduction as moe_gu.
+function gusKernel(fmt, sfmt, K, WG = 256) {
+  const KS = K + 1, P = `gs${fmt}${sfmt}`, LANES = WG / 4;
   const rows = (f) => Array.from({ length: ROWS }, (_, r) => f(r)).join("\n");
   return `
 @group(1) @binding(0) var<storage, read> ${P}_gq: array<u32>;
@@ -49,51 +275,109 @@ function guKernel(fmt, WG) {
 @group(1) @binding(4) var<storage, read> ${P}_x: array<vec4<f32>>;
 @group(1) @binding(5) var<storage, read_write> ${P}_h: array<f32>;
 @group(1) @binding(6) var<storage, read> ${P}_sel: array<u32>;
-@group(1) @binding(7) var<uniform> ${P}_s: MOE;
+@group(1) @binding(7) var<storage, read> ${P}_sh: array<u32>;
+@group(1) @binding(8) var<uniform> ${P}_s: MOEF;
 var<workgroup> ${P}_red: array<f32, ${2 * ROWS * WG}>;
 @compute @workgroup_size(${WG})
-fn moe_gu_${fmt}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
-  let S = ${P}_s; let t = lid.x; let cs = wg.y; let qt = t & 3u; let bl = t >> 2u;
-  let e = ${P}_sel[cs]; let nb = S.dIn / 32u; let row0 = wg.x * ${ROWS}u; let xc = (cs / S.K) * (S.xs / 4u);
-${rows((r) => `  var g${r}: f32 = 0.0; var u${r}: f32 = 0.0; let er${r} = e * S.dOut + min(row0 + ${r}u, S.dOut - 1u);`)}
-  for (var b: u32 = bl; b < nb; b += ${LANES}u) {
-${rows((r) => `    g${r} += ${term(fmt, `${P}_gq`, `${P}_gs`, `${P}_x`, `er${r}`, "xc")};\n    u${r} += ${term(fmt, `${P}_uq`, `${P}_us`, `${P}_x`, `er${r}`, "xc")};`)}
+fn moe_gus_${fmt}_${sfmt}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let S = ${P}_s; let t = lid.x; let cs = wg.y; let col = cs / ${KS}u; let slot = cs - col * ${KS}u;
+  let qt = t & 3u; let bl = t >> 2u; let nb = S.dIn / 32u; let row0 = wg.x * ${ROWS}u; let xc = col * (S.xs / 4u);
+${rows((r) => `  var g${r}: f32 = 0.0; var u${r}: f32 = 0.0;`)}
+  var dOut = S.dOut;
+  if (slot < ${K}u) {
+    let e = ${P}_sel[cs];
+${rows((r) => `    let er${r} = e * S.dOut + min(row0 + ${r}u, S.dOut - 1u);`)}
+    for (var b: u32 = bl; b < nb; b += ${LANES}u) {
+${rows((r) => `      g${r} += ${termOff(fmt, `${P}_gq`, "0u", `${P}_gs`, "0u", `${P}_x`, `er${r}`, "xc")};\n      u${r} += ${termOff(fmt, `${P}_uq`, "0u", `${P}_us`, "0u", `${P}_x`, `er${r}`, "xc")};`)}
+    }
+  } else {
+    dOut = S.sDim;
+${rows((r) => `    let sr${r} = min(row0 + ${r}u, S.sDim - 1u);`)}
+    for (var b: u32 = bl; b < nb; b += ${LANES}u) {
+${rows((r) => `      g${r} += ${termOff(sfmt, `${P}_sh`, "0u", `${P}_sh`, "S.oGs", `${P}_x`, `sr${r}`, "xc")};\n      u${r} += ${termOff(sfmt, `${P}_sh`, "S.oUq", `${P}_sh`, "S.oUs", `${P}_x`, `sr${r}`, "xc")};`)}
+    }
   }
 ${rows((r) => `  ${P}_red[${r * WG}u + t] = g${r}; ${P}_red[${(ROWS + r) * WG}u + t] = u${r};`)}
 ${tree(WG, 2 * ROWS, `${P}_red`)}
   if (t < ${ROWS}u) {
     let row = row0 + t;
-    if (row < S.dOut) { let gg = ${P}_red[t * ${WG}u]; ${P}_h[cs * S.ys + row] = gg / (1.0 + exp(-gg)) * ${P}_red[(${ROWS}u + t) * ${WG}u]; }
+    if (row < dOut) { let gg = ${P}_red[t * ${WG}u]; ${P}_h[cs * S.ys + row] = gg / (1.0 + exp(-gg)) * ${P}_red[(${ROWS}u + t) * ${WG}u]; }
   }
 }`;
 }
 
-function dnKernel(fmt, WG) {
-  const P = `md${fmt}`, LANES = WG / 4;
-  const rows = (f) => Array.from({ length: ROWS }, (_, r) => f(r)).join("\n");
+// down for all KS slots of one column + combine + residual: workgroup (row block, column) runs every
+// slot's GEMV rows (the same per-thread terms and one tree for all slots), then thread r writes
+// x[row] += sum_k w_k y_k (k = 0 .. K - 1 in order) + w_K y_shared, moe_combine's expression and order.
+function dncKernel(fmt, sfmt, K, R, WG = 64) {
+  const KS = K + 1, P = `dc${fmt}${sfmt}`, LANES = WG / 4;
+  const ks = Array.from({ length: K }, (_, k) => k), rs = Array.from({ length: R }, (_, r) => r);
+  const acc = (k, r) => `y${k}_${r}`;
   return `
 @group(1) @binding(0) var<storage, read> ${P}_q: array<u32>;
 @group(1) @binding(1) var<storage, read> ${P}_sc: array<u32>;
-@group(1) @binding(2) var<storage, read> ${P}_x: array<vec4<f32>>;
-@group(1) @binding(3) var<storage, read_write> ${P}_y: array<f32>;
+@group(1) @binding(2) var<storage, read> ${P}_h: array<vec4<f32>>;
+@group(1) @binding(3) var<storage, read_write> ${P}_x: array<f32>;
 @group(1) @binding(4) var<storage, read> ${P}_sel: array<u32>;
-@group(1) @binding(5) var<uniform> ${P}_s: MOE;
-var<workgroup> ${P}_red: array<f32, ${ROWS * WG}>;
+@group(1) @binding(5) var<storage, read> ${P}_w: array<f32>;
+@group(1) @binding(6) var<storage, read> ${P}_sq: array<u32>;
+@group(1) @binding(7) var<storage, read> ${P}_ss: array<u32>;
+@group(1) @binding(8) var<uniform> ${P}_s: MOEF;
+var<workgroup> ${P}_red: array<f32, ${KS * R * WG}>;
 @compute @workgroup_size(${WG})
-fn moe_dn_${fmt}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
-  let S = ${P}_s; let t = lid.x; let cs = wg.y; let qt = t & 3u; let bl = t >> 2u;
-  let e = ${P}_sel[cs]; let nb = S.dIn / 32u; let row0 = wg.x * ${ROWS}u; let xc = cs * (S.xs / 4u);   // each (column, slot) has its own input h
-${rows((r) => `  var y${r}: f32 = 0.0; let er${r} = e * S.dOut + min(row0 + ${r}u, S.dOut - 1u);`)}
+fn moe_dnc_${fmt}_${sfmt}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let S = ${P}_s; let t = lid.x; let col = wg.y; let qt = t & 3u; let bl = t >> 2u;
+  let nb = S.dIn / 32u; let nbs = S.sDim / 32u; let row0 = wg.x * ${R}u; let hs4 = S.ys / 4u;
+${rs.map((r) => `  let rr${r} = min(row0 + ${r}u, S.dOut - 1u);`).join("\n")}
+${ks.map((k) => `  let e${k} = ${P}_sel[col * ${KS}u + ${k}u]; let xc${k} = (col * ${KS}u + ${k}u) * hs4;
+  ${rs.map((r) => `var ${acc(k, r)}: f32 = 0.0; let er${k}_${r} = e${k} * S.dOut + rr${r};`).join(" ")}`).join("\n")}
+  ${rs.map((r) => `var ${acc(K, r)}: f32 = 0.0;`).join(" ")}
+  let xcs = (col * ${KS}u + ${K}u) * hs4;
   for (var b: u32 = bl; b < nb; b += ${LANES}u) {
-${rows((r) => `    y${r} += ${term(fmt, `${P}_q`, `${P}_sc`, `${P}_x`, `er${r}`, "xc")};`)}
+${ks.map((k) => rs.map((r) => `    ${acc(k, r)} += ${termOff(fmt, `${P}_q`, "0u", `${P}_sc`, "0u", `${P}_h`, `er${k}_${r}`, `xc${k}`)};`).join("\n")).join("\n")}
   }
-${rows((r) => `  ${P}_red[${r * WG}u + t] = y${r};`)}
-${tree(WG, ROWS, `${P}_red`)}
-  if (t < ${ROWS}u) { let row = row0 + t; if (row < S.dOut) { ${P}_y[cs * S.ys + row] = ${P}_red[t * ${WG}u]; } }
+  for (var b: u32 = bl; b < nbs; b += ${LANES}u) {
+${rs.map((r) => `    ${acc(K, r)} += ${termOff(sfmt, `${P}_sq`, "0u", `${P}_ss`, "0u", `${P}_h`, `rr${r}`, "xcs", "nbs")};`).join("\n")}
+  }
+${Array.from({ length: KS }, (_, k) => rs.map((r) => `  ${P}_red[${(k * R + r) * WG}u + t] = ${acc(k, r)};`).join("\n")).join("\n")}
+${tree(WG, KS * R, `${P}_red`)}
+  if (t < ${R}u) {
+    let row = row0 + t;
+    if (row < S.dOut) {
+      let wb = col * ${KS}u;
+      var o: f32 = 0.0;
+      for (var k: u32 = 0u; k < ${K}u; k++) { o += ${P}_w[wb + k] * ${P}_red[(k * ${R}u + t) * ${WG}u]; }
+      o += ${P}_w[wb + ${K}u] * ${P}_red[(${K * R}u + t) * ${WG}u];
+      ${P}_x[col * S.xs + row] += o;
+    }
+  }
 }`;
 }
 
-export function moeWGSL() {
+// The fused kernels for one engine: K (top-k), R (output rows per moe_dnc workgroup), and the
+// (routed, shared) format pairs the model's layers need for gate/up and for down.
+export function moeFusedWGSL({ K, R = 2, gu = [], dn = [] }) {
+  if (!(K >= 1 && K <= 16) || ![1, 2, 4].includes(R)) throw new Error(`moeFusedWGSL: K ${K}, R ${R}`);
+  return /* wgsl */ `
+// ---------------- fused mixture of experts (engine/wgsl/moe.js moeFusedWGSL) ----------------
+struct MOEF { dOut: u32, dIn: u32, sDim: u32, nExp: u32, xs: u32, ys: u32, norm: u32, shOff: u32, oUq: u32, oGs: u32, oUs: u32, pad: u32 };
+${routeKernel(K)}
+${gu.map(([f, s]) => gusKernel(f, s, K)).join("\n")}
+${dn.map(([f, s]) => dncKernel(f, s, K, R)).join("\n")}
+`;
+}
+
+
+function expertWGSL(kind, fmt, c) {
+  const { name, decl, body } = expertKernel(kind, fmt, c);
+  return `${decl}
+@compute @workgroup_size(${c.WG})
+fn ${name}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {${body}}
+`;
+}
+
+// cfg: moeKernelConfig(...) result (MOE_DEFAULT at dim 2048, expert width 512 when omitted)
+export function moeWGSL(cfg = moeKernelConfig("default", { dim: 2048, inter: 512 })) {
   return /* wgsl */ `
 // ---------------- mixture of experts (engine/wgsl/moe.js) ----------------
 struct MOE { dOut: u32, dIn: u32, K: u32, nExp: u32, xs: u32, ys: u32, norm: u32, pad: u32 };
@@ -147,10 +431,10 @@ fn moe_router(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id
     for (var k: u32 = 0u; k < K; k++) { mr_w[col * K + k] = select(mr_k[k], mr_k[k] / tot, mr_s.norm == 1u); }
   }
 }
-${guKernel("q4", 256)}
-${guKernel("q8", 256)}
-${dnKernel("q4", 64)}
-${dnKernel("q8", 64)}
+${expertWGSL("gu", "q4", cfg.gu)}
+${expertWGSL("gu", "q8", cfg.gu)}
+${expertWGSL("dn", "q4", cfg.dn)}
+${expertWGSL("dn", "q8", cfg.dn)}
 
 // Combine: x[col] += sum_k w_k y[col,k] (k in order) + sigmoid(sg[col]) * shared[col].
 // dOut = dim, xs = x column stride, ys = y (col,slot) stride, nExp (reused) = shared column stride,
