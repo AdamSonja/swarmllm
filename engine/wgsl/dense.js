@@ -293,4 +293,62 @@ fn kv_store_d(@builtin(global_invocation_id) gid: vec3<u32>) {
   kvd_kc[cb] = kvd_k[col * kvd.ks + i];
   kvd_vc[cb] = kvd_v[col * kvd.vs + i];
 }
+// Single-binding forms for a merged q | k | v buffer (mergeQKV): Dawn rejects two writable bindings of
+// one buffer in a dispatch, so q and k are one read_write binding and k starts at koff. Same code as
+// head_norm_dmc / rope_dmc above otherwise.
+struct DGL1 { qs: u32, ks: u32, vs: u32, norm: u32, koff: u32, p0: u32, p1: u32, p2: u32 };
+@group(1) @binding(0) var<storage, read_write> hn1_x: array<f32>;
+@group(1) @binding(1) var<storage, read> hn1_qw: array<f32>;
+@group(1) @binding(2) var<storage, read> hn1_kw: array<f32>;
+@group(1) @binding(3) var<uniform> hn1: DGL1;
+@compute @workgroup_size(32)
+fn head_norm_dmc1(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let hh = gid.x; let col = gid.y;
+  if (hh >= cfg.nH + cfg.nKV) { return; }
+  if (hh < cfg.nH) {
+    let off = col * hn1.qs + hh * cfg.headDim;
+    var ss: f32 = 0.0;
+    for (var i: u32 = 0u; i < cfg.headDim; i++) { let v = hn1_x[off + i]; ss += v * v; }
+    let inv = inverseSqrt(ss / f32(cfg.headDim) + cfg.eps);
+    for (var i: u32 = 0u; i < cfg.headDim; i++) { hn1_x[off + i] *= inv * hn1_qw[i]; }
+  } else {
+    let off = hn1.koff + col * hn1.ks + (hh - cfg.nH) * cfg.headDim;
+    var ss: f32 = 0.0;
+    for (var i: u32 = 0u; i < cfg.headDim; i++) { let v = hn1_x[off + i]; ss += v * v; }
+    let inv = inverseSqrt(ss / f32(cfg.headDim) + cfg.eps);
+    for (var i: u32 = 0u; i < cfg.headDim; i++) { hn1_x[off + i] *= inv * hn1_kw[i]; }
+  }
+}
+@group(1) @binding(0) var<storage, read_write> rp1_x: array<f32>;
+@group(1) @binding(1) var<uniform> rp1: DGL1;
+@compute @workgroup_size(64)
+fn rope_dmc1(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let half = cfg.headDim / 2u;
+  let nq = cfg.nH * half;
+  let idx = gid.x; let col = gid.y;
+  if (idx >= nq + cfg.nKV * half) { return; }
+  let pos = frame.pos + col;
+  if (idx < nq) {
+    let h = idx / half;
+    let i = idx % half;
+    let off = col * rp1.qs + h * cfg.headDim;
+    let freq = pow(cfg.theta, -f32(2u * i) / f32(cfg.headDim));
+    let ang = f32(pos) * freq;
+    let c = cos(ang); let s = sin(ang);
+    let a = rp1_x[off + i]; let b = rp1_x[off + i + half];
+    rp1_x[off + i] = a * c - b * s;
+    rp1_x[off + i + half] = b * c + a * s;
+  } else {
+    let h = (idx - nq) / half;
+    let i = (idx - nq) % half;
+    let off = rp1.koff + col * rp1.ks + h * cfg.headDim;
+    let freq = pow(cfg.theta, -f32(2u * i) / f32(cfg.headDim));
+    let ang = f32(pos) * freq;
+    let c = cos(ang); let s = sin(ang);
+    let a = rp1_x[off + i]; let b = rp1_x[off + i + half];
+    rp1_x[off + i] = a * c - b * s;
+    rp1_x[off + i + half] = b * c + a * s;
+  }
+}
 `;
+

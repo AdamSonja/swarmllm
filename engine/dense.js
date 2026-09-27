@@ -83,7 +83,8 @@ export class DenseEngine {
     };
     if (this.attnFastOn) Object.assign(G1, { attn_scores_d: ["ro", "ro", "rw", "u"], attn_softmax_d: ["rw"], attn_out_d: ["ro", "ro", "rw", "u"] });
     if (this.fuseOn) Object.assign(G1, { attn_glue_d: ["rw", "ro", "ro", "ro", "ro", "rw", "rw", "u"], rmsnorm_dmc: ["ro", "ro", "rw", "u"],
-      head_norm_dmc: ["rw", "rw", "ro", "ro", "u"], rope_dmc: ["rw", "rw", "u"], kv_store_d: ["ro", "ro", "rw", "rw", "u"] });
+      head_norm_dmc: ["rw", "rw", "ro", "ro", "u"], rope_dmc: ["rw", "rw", "u"], kv_store_d: ["ro", "ro", "rw", "rw", "u"],
+      head_norm_dmc1: ["rw", "ro", "ro", "u"], rope_dmc1: ["rw", "u"] });
     const bufType = { u: "uniform", ro: "read-only-storage", rw: "storage" };
     this.pipes = {};
     // compile every pipeline in parallel (async): overlaps shader compilation
@@ -129,7 +130,7 @@ export class DenseEngine {
     // its kernel and its arithmetic, so the bits are the same; rows per workgroup never enter a row's
     // sums). q / k / v are then 256-byte aligned views of one output buffer. Needs Q8/Q4 q/k/v of one
     // kind and 256-byte aligned segment sizes (true for every Qwen3 size).
-    this.mergeQKV = mergeQKV !== false && matvecVariant === "coop" && (qDim * 4) % 256 === 0 && (kvDim * 4) % 256 === 0;
+    this.mergeQKV = mergeQKV !== false && !this.fuseGlue && matvecVariant === "coop" && (qDim * 4) % 256 === 0 && (kvDim * 4) % 256 === 0;
     if (this.mergeQKV) {
       const kinds = new Set(W.layers.map((l) => [l.q, l.k, l.v].map((e) => e && e.kind).join()));
       if (kinds.size !== 1 || ![...kinds][0].split(",").every((k) => k === "q8" || k === "q4") || new Set([...kinds][0].split(",")).size !== 1) this.mergeQKV = false;
@@ -233,11 +234,13 @@ export class DenseEngine {
     const U = (a) => this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM);
     const uGlue = this.fuseOn ? U([0, 0, 0, this.layers[0]?.qNorm ? 1 : 0]) : null;
     const uGlueNoNorm = this.fuseOn ? U([0, 0, 0, 0]) : null;
+    const uGlue1 = this.fuseOn && this.mergeQKV ? U([0, 0, 0, 0, qDim, 0, 0, 0]) : null;   // one q | k | v binding, k at qDim
     this.layerBGs = this.layers.map((L2) => ({
       glue: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [this.q, this.k, this.v, (L2.qNorm || { buf: this.x }).buf, (L2.kNorm || { buf: this.x }).buf, L2.kCache, L2.vCache, uGlue]) : null,
       glueNN: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [this.q, this.k, this.v, (L2.qNorm || { buf: this.x }).buf, (L2.kNorm || { buf: this.x }).buf, L2.kCache, L2.vCache, uGlueNoNorm]) : null,
-      hn3: this.fuseOn && L2.qNorm ? this._bg(this.pipes.head_norm_dmc, 1, [this.q, this.k, L2.qNorm.buf, L2.kNorm.buf, uGlue]) : null,
-      rope3: this.fuseOn ? this._bg(this.pipes.rope_dmc, 1, [this.q, this.k, uGlue]) : null,
+      hn3: !this.fuseOn || !L2.qNorm ? null : this.mergeQKV ? this._bg(this.pipes.head_norm_dmc1, 1, [this.qkvBuf, L2.qNorm.buf, L2.kNorm.buf, uGlue1])
+        : this._bg(this.pipes.head_norm_dmc, 1, [this.q, this.k, L2.qNorm.buf, L2.kNorm.buf, uGlue]),
+      rope3: !this.fuseOn ? null : this.mergeQKV ? this._bg(this.pipes.rope_dmc1, 1, [this.qkvBuf, uGlue1]) : this._bg(this.pipes.rope_dmc, 1, [this.q, this.k, uGlue]),
       kv3: this.fuseOn ? this._bg(this.pipes.kv_store_d, 1, [this.k, this.v, L2.kCache, L2.vCache, uGlue]) : null,
       oAcc: this.fuseOn ? mv(L2.wo, this.attnOut, this.x, dim, qDim, true) : null,
       downAcc: this.fuseOn ? mv(L2.wdown, this.g, this.x, dim, inter, true) : null,
@@ -336,8 +339,9 @@ export class DenseEngine {
       if (BG.v) this._dispatchOp(pass, BG.v);
       if (this.glue3 !== false && BG.rope3) {   // three exact multi-head kernels, no copies, one pass
         const g3 = (name, bg, x) => { pass.setPipeline(this.pipes[name]); pass.setBindGroup(0, this.bgCommonFor[name]); pass.setBindGroup(1, bg); pass.dispatchWorkgroups(x, 1); };
-        if (BG.hn3) g3("head_norm_dmc", BG.hn3, Math.ceil((nH + nKV) / 32));
-        g3("rope_dmc", BG.rope3, Math.ceil((nH + nKV) * headDim / 2 / 64));
+        const sfx = this.mergeQKV ? "1" : "";
+        if (BG.hn3) g3("head_norm_dmc" + sfx, BG.hn3, Math.ceil((nH + nKV) / 32));
+        g3("rope_dmc" + sfx, BG.rope3, Math.ceil((nH + nKV) * headDim / 2 / 64));
         g3("kv_store_d", BG.kv3, Math.ceil(kvDim / 64));
       } else if (this.fuseGlue !== false) {
         if (this.fuseNorm === false) {
@@ -549,7 +553,7 @@ export class DenseEngine {
     // per-column frame uniforms + per-column group0 for the per-token kernels
     this.frameBufsB = [0, 1, 2, 3].map(() => dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
     const colPipes = ["rmsnorm", "head_norm", "rope", "attn_scores", "attn_softmax", "attn_out", "silu_mul", "add_res",
-      ...(this.attnFastOn ? ["attn_scores_d", "attn_softmax_d", "attn_out_d"] : []), ...(this.fuseOn ? ["attn_glue_d", "rmsnorm_dmc", "head_norm_dmc", "rope_dmc", "kv_store_d"] : [])];
+      ...(this.attnFastOn ? ["attn_scores_d", "attn_softmax_d", "attn_out_d"] : []), ...(this.fuseOn ? ["attn_glue_d", "rmsnorm_dmc", "head_norm_dmc", "rope_dmc", "kv_store_d", "head_norm_dmc1", "rope_dmc1"] : [])];
     this.bgCommonB = [0, 1, 2, 3].map((c) => {
       const m = {};
       for (const name of colPipes)
@@ -571,6 +575,7 @@ export class DenseEngine {
     const U = (a) => this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM);
     const uGlueB = this.fuseOn ? U([B.q.stride / 4, B.k.stride / 4, B.v.stride / 4, this.layers[0]?.qNorm ? 1 : 0]) : null;
     const uGlueBNN = this.fuseOn ? U([B.q.stride / 4, B.k.stride / 4, B.v.stride / 4, 0]) : null;
+    const uGlueB1 = this.fuseOn && this.mergeQKV ? U([B.q.stride / 4, B.k.stride / 4, B.v.stride / 4, 0, qDim, 0, 0, 0]) : null;
     const uNormB = this.fuseOn ? U([dim, B.x.stride / 4, B.xn.stride / 4, 0]) : null;
     // per-layer batched resources
     this.layerB = this.layers.map((L) => {
@@ -579,8 +584,9 @@ export class DenseEngine {
       return {
         glue: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [B.q.buf, B.k.buf, B.v.buf, (L.qNorm || { buf: this.x }).buf, (L.kNorm || { buf: this.x }).buf, L.kCache, L.vCache, uGlueB]) : null,
         glueNN: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [B.q.buf, B.k.buf, B.v.buf, (L.qNorm || { buf: this.x }).buf, (L.kNorm || { buf: this.x }).buf, L.kCache, L.vCache, uGlueBNN]) : null,
-        hn3: this.fuseOn && L.qNorm ? this._bg(this.pipes.head_norm_dmc, 1, [B.q.buf, B.k.buf, L.qNorm.buf, L.kNorm.buf, uGlueB]) : null,
-        rope3: this.fuseOn ? this._bg(this.pipes.rope_dmc, 1, [B.q.buf, B.k.buf, uGlueB]) : null,
+        hn3: !this.fuseOn || !L.qNorm ? null : this.mergeQKV ? this._bg(this.pipes.head_norm_dmc1, 1, [B.qkv.buf, L.qNorm.buf, L.kNorm.buf, uGlueB1])
+          : this._bg(this.pipes.head_norm_dmc, 1, [B.q.buf, B.k.buf, L.qNorm.buf, L.kNorm.buf, uGlueB]),
+        rope3: !this.fuseOn ? null : this.mergeQKV ? this._bg(this.pipes.rope_dmc1, 1, [B.qkv.buf, uGlueB1]) : this._bg(this.pipes.rope_dmc, 1, [B.q.buf, B.k.buf, uGlueB]),
         kv3: this.fuseOn ? this._bg(this.pipes.kv_store_d, 1, [B.k.buf, B.v.buf, L.kCache, L.vCache, uGlueB]) : null,
         norm1MC: this.fuseOn ? this._bg(this.pipes.rmsnorm_dmc, 1, [B.x.buf, L.inNorm.buf, B.xn.buf, uNormB]) : null,
         norm2MC: this.fuseOn ? this._bg(this.pipes.rmsnorm_dmc, 1, [B.x.buf, L.postNorm.buf, B.xn.buf, uNormB]) : null,
@@ -640,8 +646,9 @@ export class DenseEngine {
       rms(LB.norm1MC, "norm1");
       for (const op of LB.qkv) this._dispatchOp(pass, op);
       if (this.glue3 !== false && LB.rope3) {   // three exact kernels for all columns, no copies
-        if (LB.hn3) mc("head_norm_dmc", LB.hn3, Math.ceil((nH + nKV) / 32));
-        mc("rope_dmc", LB.rope3, Math.ceil((nH + nKV) * headDim / 2 / 64));
+        const sfx = this.mergeQKV ? "1" : "";
+        if (LB.hn3) mc("head_norm_dmc" + sfx, LB.hn3, Math.ceil((nH + nKV) / 32));
+        mc("rope_dmc" + sfx, LB.rope3, Math.ceil((nH + nKV) * headDim / 2 / 64));
         mc("kv_store_d", LB.kv3, Math.ceil(kvDim / 64));
       } else if (this.fuseGlue === false) {   // the reference head_norm / rope dispatches and cache copies
         for (let c = 0; c < 4; c++) {
