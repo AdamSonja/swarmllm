@@ -342,7 +342,11 @@ function renderPool(pledged) {
   meter.querySelector(".apm-fill").innerHTML = devs.map((d) => `<i style="--sw:${devColor(d.name)};width:${(d.meta.contribGB / top * 100).toFixed(2)}%" title="${esc(String(d.name))}: ${d.meta.contribGB} GB"></i>`).join("");
   // a tick where each model starts to fit; the picked one says what it needs
   const sel = $("ai-model").value;
-  meter.querySelector(".apm-ticks").innerHTML = needs.map(([k, gb]) => `<span class="${pledged >= gb ? "ok" : ""}${k === sel ? " sel" : ""}${gb / top > 0.6 ? " r" : gb / top < 0.3 ? " l" : ""}" style="left:${(gb / top * 100).toFixed(2)}%" title="${esc(shortName(k))} needs ${gb} GB">${k === sel ? `<b>${esc(shortName(k))} needs ${gb} GB</b>` : ""}</span>`).join("");
+  meter.querySelector(".apm-ticks").innerHTML = needs.map(([k, gb]) => `<span class="${pledged >= gb ? "ok" : ""}${k === sel ? " sel" : ""}${gb / top > 0.6 ? " r" : gb / top < 0.3 ? " l" : ""}" style="left:${(gb / top * 100).toFixed(2)}%" title="${esc(shortName(k))} needs ${gb} GB"></span>`).join("");
+  // what the selected model needs, as its own line under the meter (not a label hanging off its tick)
+  const selNeed = needs.find(([k]) => k === sel);
+  $("ap-need").hidden = !selNeed;
+  if (selNeed) { const [k, gb] = selNeed, short = gb - pledged; $("ap-need").innerHTML = `${esc(shortName(k))} needs <b>${gb} GB</b><span>${short > 0 ? `${+short.toFixed(1)} GB short` : "fits"}</span>`; $("ap-need").classList.toggle("ok", short <= 0); }
   $("ap-devs").innerHTML = devs.map((d) => `<li style="--sw:${devColor(d.name)}"><i></i><span>${esc(String(d.name))}${d.name === myName ? " <small>(this device)</small>" : ""}</span><b>${d.meta.contribGB} GB</b></li>`).join("")
     || '<li class="none">No device with WebGPU yet</li>';
   const can = !!myMeta.webgpu;

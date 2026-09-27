@@ -529,7 +529,7 @@
   .ap-k { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); }
   .ap-k b { font: 500 22px/1 var(--mono); letter-spacing: -.02em; color: var(--text); font-variant-numeric: tabular-nums; }
   /* the pool: one segment per device, a tick where each model starts to fit */
-  #ap-meter { position: relative; height: 10px; margin: 14px 0 30px; border-radius: 5px; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--rule-2); }
+  #ap-meter { position: relative; height: 10px; margin: 14px 0 10px; border-radius: 5px; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--rule-2); }
   .apm-fill { position: absolute; inset: 0; display: flex; gap: 2px; border-radius: 5px; overflow: hidden; }
   .apm-fill i { flex: none; height: 100%; background: var(--sw); transition: width .6s var(--ease); }
   .apm-ticks span { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--border-2); }
@@ -541,6 +541,10 @@
   .apm-ticks span.sel.ok b { color: var(--accent-text); }
   .apm-ticks span.r b { left: auto; right: -2px; transform: none; }
   .apm-ticks span.l b { left: -2px; transform: none; }
+  #ap-need { display: flex; align-items: baseline; gap: 6px; margin: 0 0 14px; font-size: 12px; color: var(--muted); }
+  #ap-need b { font: 500 12px/1 var(--mono); color: var(--text); }
+  #ap-need span { margin-left: auto; font: 400 12px/1 var(--mono); color: var(--ink-2); }
+  #ap-need.ok span { color: var(--accent-text); }
   #ap-devs { list-style: none; display: flex; flex-direction: column; gap: 6px; }
   #ap-devs li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--text); }
   #ap-devs li i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--sw); }
@@ -1359,6 +1363,7 @@
         <section class="ap-pool" aria-label="The room's memory">
           <p class="ap-k"><span>The room pools</span><b id="ap-total">0 GB</b></p>
           <div id="ap-meter" aria-hidden="true"><div class="apm-fill"></div><div class="apm-ticks"></div></div>
+          <p id="ap-need" hidden></p>
           <ul id="ap-devs" aria-label="What each device gives"></ul>
         </section>
         <section class="ap-me" id="ap-me" aria-label="This device">
