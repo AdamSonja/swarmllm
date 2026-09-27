@@ -106,11 +106,11 @@ ol,ul{list-style:none}
 .hd-code span{display:inline-block;transition:opacity .3s,transform .3s var(--ease)}
 .hd-code span.off{opacity:.25;transform:translateY(2px)}
 .chips{flex:1;min-width:0;display:flex;gap:6px;overflow:hidden}
-.chip{flex:none;display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 10px;border:1px solid var(--rule);border-radius:var(--r-sm);background:var(--white);font-size:var(--t-sm);color:var(--ink);white-space:nowrap;transition:border-color .2s,box-shadow .2s}
+.chip{flex:none;display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 10px;border:1px solid var(--chip-bd,var(--rule));border-radius:var(--r-sm);background:var(--white);font-size:var(--t-sm);color:var(--ink);white-space:nowrap;transition:border-color .2s,box-shadow .2s}
 .chip::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--sw)}
 .chip svg{color:var(--ink-2)}
 .chip .cg{font:400 var(--t-sm)/1 var(--mono);color:var(--ink-3)}
-.chip.c0{border-color:var(--blue-200)}
+.chip.c0{--chip-bd:var(--blue-200)}
 .chip .cg:empty{display:none}
 /* downloading: a chip shows its device's percent instead of its GB, as in the room (.pchip .cst) */
 .chip .cst{display:none;font:500 var(--t-xs)/1 var(--mono);color:var(--blue-text)}
@@ -361,6 +361,11 @@ html:not(.js) .ldc{display:none}
 @keyframes deal{from{opacity:0;transform:scaleY(.4)}}
 .cells i.f{background:var(--sw);box-shadow:none;animation:cell .35s var(--ease)}
 @keyframes cell{from{transform:scaleY(.4)}}
+/* the room's token sweep (cellhot / actflash / cardtok / minihot), by --h from 0 to 1 (demo.js sweep) */
+.demo:is([data-scene="chat"],[data-scene="code"]) .cells i{--h:0;transition:none;transform:scaleY(calc(1 + .3 * var(--h)));filter:brightness(calc(1 + .45 * var(--h))) saturate(calc(1 + .2 * var(--h)));box-shadow:0 0 10px rgba(42,69,224,calc(.5 * var(--h)))}
+.hl .act{--h:0;box-shadow:0 0 0 4px color-mix(in srgb,var(--sw) calc(25% * var(--h)),transparent)}
+.chip{--h:0;--chip-bd:var(--rule);transition:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--blue-soft) calc(100% * var(--h)),transparent);border-color:color-mix(in srgb,var(--sw) calc(100% * var(--h)),var(--chip-bd))}
+.bd-mini i{--h:0;filter:brightness(calc(1 + .5 * var(--h))) saturate(calc(1 + .2 * var(--h)))}
 .cells i.hot{transform:scaleY(1.25);background:var(--blue-400);filter:brightness(1.1);box-shadow:0 0 10px rgba(42,69,224,.55);transition:transform 0s,background-color 0s,box-shadow 0s}
 .c2 .cells i.hot{background:var(--blue-500)}
 .lk-l{margin-top:16px;text-align:center;font:400 var(--t-xs)/1 var(--mono);color:var(--ink-3);white-space:nowrap;transition:opacity .4s,color .2s}
@@ -422,8 +427,9 @@ html:not(.js) .ldc{display:none}
 .wk-mk{flex:none;fill:var(--ink-2);overflow:visible}
 .wk-mk circle{transform-box:fill-box;transform-origin:center;animation:dlwave 1.6s var(--ease) infinite;animation-delay:calc(var(--rc) * .12s)}
 .wk-mk .lit{fill:var(--blue)}
-.m-acts{display:none;align-items:center;gap:8px;margin-top:6px;min-height:28px}
-.a.done .m-acts{display:flex}
+/* the numbers' line keeps its room from the start, so it appears without moving anything */
+.m-acts{display:flex;visibility:hidden;align-items:center;gap:8px;margin-top:6px;min-height:28px}
+.a.done .m-acts{visibility:visible}
 .icon-act{display:grid;place-items:center;width:28px;height:28px;border-radius:var(--r-sm);color:var(--ink-3)}
 .m-acts .stats{font:400 var(--t-xs)/1 var(--mono);color:var(--ink-3)}
 .ctools{flex:none;display:flex;align-items:center;gap:4px;margin:8px 36px 0}
@@ -433,6 +439,10 @@ html:not(.js) .ldc{display:none}
 .q p{background:var(--ink);color:#fff;border-bottom-right-radius:var(--r-xs)}
 .a p{background:var(--white);border:1px solid var(--rule);border-bottom-left-radius:var(--r-xs)}
 .say.cursor::after{content:"";display:inline-block;width:7px;height:14px;margin-left:3px;vertical-align:-2px;background:var(--blue);border-radius:1px}
+#a1.cursor::after{content:none}
+#a1 .ghost{visibility:hidden}
+#a1 .cur{display:none;width:7px;height:14px;margin:0 -7px 0 0;vertical-align:-2px;background:var(--blue);border-radius:1px}
+#a1.cursor .cur{display:inline-block}
 .composer{display:flex;align-items:center;gap:10px;flex:none;height:46px;margin:6px 36px 16px;padding:0 5px 0 14px;border:1px solid var(--rule-3);border-radius:var(--r-md);background:var(--white);transition:border-color .2s,box-shadow .2s}
 .composer.hot{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-soft)}
 .field{flex:1;min-width:0;font-size:var(--t-base);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -614,7 +624,7 @@ html:not(.js) .pkt{display:none}
 html:not(.js) .s-chat{border-top:1px solid var(--rule-2)}
 html:not(.js) .msgs{padding-top:24px}
 html:not(.js) .composer,html:not(.js) .wlive{display:none}
-html:not(.js) .a .m-acts{display:flex}
+html:not(.js) .a .m-acts{visibility:visible}
 html:not(.js) :is(.diff.new,.ctools,.cbar){display:none}
 html:not(.js) .log{-webkit-mask-image:none;mask-image:none;overflow:auto}
 html:not(.js) .s-code{height:600px;border-top:1px solid var(--rule-2)}
@@ -787,7 +797,8 @@ html:not(.js) .sb-dots i{display:none}
   .hd-k{display:none}
   .toasts{left:16px;right:16px;align-items:center}
   .hd-code{margin-right:0}
-  .hd-inv{display:none}
+  .hd-inv{width:30px;height:30px;padding:0}
+  .hd-inv .lbl,.hd-sum .pw{display:none}
   .hd-me{width:30px;height:30px}
   .pv-addr .pth,.pv-open{display:none}
   html:not(.js) .s-tabs{height:470px}
@@ -826,6 +837,6 @@ html:not(.js) .sb-dots i{display:none}
 }
 /* with JS, the demo stays hidden until demo.js has reset it to step 1 (the static markup is the finished Code scene) */
 .js .demo:not([data-ready]) :is(.modes,.win,.stepbar){visibility:hidden}
-/* the room bar's Invite: only while devices are joining (steps 2 and 3) */
-.js .demo:not(.inviting) .hd-inv{opacity:0;visibility:hidden}
+/* the room bar's Invite: always there once there is a room, as in the room (not over the two tabs, before anyone is in one) */
+.js .demo[data-scene="tabs"] .hd-inv{opacity:0;visibility:hidden}
 .hd-inv{transition:opacity .3s var(--ease),visibility 0s}

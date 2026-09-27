@@ -133,11 +133,13 @@
   const CH = FILL1 + .6, A0 = CH + 1;                              // 5: chat
   let ANSWER = $("a1").textContent, WORDS = ANSWER.split(" ");
   const DUR = i => [1.2, .6, .38, .26][i] || .08;    // each word's trip; the first slow enough to follow
-  let WT = [], A1 = 0, C = 0, STEPS = [], END = 0, GAME = 0, SLOWS = [];
+  let WT = [], A1 = 0, C = 0, STEPS = [], END = 0, GAME = 0, SLOWS = [], SWEEPS = [];
   // 6 to 8, from C (the switch to Code): the ask, the files, :5173 serving the app; the change, the reload
   const ASK = 2.05, FILES = 2.8, SERVED = 5.45, CHANGE = 6.8, RELOAD = 8.85, SHOWN = 9.1;
   function timeWords() {
     WT = [A0]; WORDS.forEach((_, i) => WT.push(WT[i] + DUR(i)));
+    // a sweep starts with a word, at most one per lap (as room.js mapPulse): the fast words ride along
+    SWEEPS = []; WT.slice(0, -1).forEach(x => { if (!SWEEPS.length || x - SWEEPS[SWEEPS.length - 1] >= .6) SWEEPS.push(x); });
     A1 = WT[WORDS.length];
     C = Math.ceil((A1 + 1.5) * 10) / 10;               // a second to read the answer, then the tab switches
     GAME = C + SHOWN;                                  // the app, changed, on screen
@@ -316,6 +318,21 @@
   const mini = [...demo.querySelectorAll(".bd-mini i")], bdTok = $("bdTok");
   const setHot = i => { if (i === hotI) return; if (hotI >= 0) { cells[hotI].classList.remove("hot"); mini[hotI].classList.remove("hot"); } if (i >= 0) { cells[i].classList.add("hot"); mini[i].classList.add("hot"); } hotI = i; };
   const tok = d => { chips.forEach((ch, j) => ch.classList.toggle("tok", j === d)); rows.forEach((rw, j) => rw.classList.toggle("tok", j === d)); };
+  /* the room's token sweep (p2p.html #room-screen.sweep: cellhot, actflash, cardtok, minihot): a glow runs along
+     the layers, lane after lane, each device's dot and chip lighting as it reaches them. Driven by the timeline,
+     so seeking and freezing show it too. SW is the room's lap x .9 (a 600 ms lap), in timeline seconds */
+  const SW = .54;
+  const bump = (q, peak) => q <= 0 || q >= 1 ? 0 : q < peak ? q / peak : (1 - q) / (1 - peak);
+  const acts = rows.map(r => r.querySelector(".act")), C0 = [0, 17, 37];
+  let swOn = false;
+  const sweep = tau => {
+    if (tau == null || tau > 2.2 * SW) { if (!swOn) return; tau = -1; swOn = false; } else swOn = true;
+    const k = v => v.toFixed(3);
+    cells.forEach((cel, c) => cel.style.setProperty("--h", k(bump((tau - SW * c / 40) / SW, .3))));
+    mini.forEach((m, c) => m.style.setProperty("--h", k(bump((tau - SW * (c < 17 ? 0 : c < 37 ? 1 : 2) / 3) / SW, .3))));
+    acts.forEach((a, d) => a.style.setProperty("--h", k(bump((tau - SW * C0[d] / 40) / SW, .25))));
+    chips.forEach((ch, d) => ch.style.setProperty("--h", k(bump((tau - SW * d / 4 / .9) / (SW / .9), .2))));
+  };
   const trip = u => {
     if (!geo) measure();
     const { ends } = geo;
@@ -328,40 +345,39 @@
   };
   let words = -1, flowing = false;
   const aLi = a1.parentNode;
+  // the answer streams into a bubble that already has its final size: the words still to come sit there
+  // unseen, so the bubble never re-wraps or grows word by word (the cursor takes no room either)
+  a1.textContent = ""; a1.innerHTML = '<span class="vis"></span><i class="cur" aria-hidden="true"></i><span class="ghost"></span>';
+  const aVis = a1.firstChild, aGhost = a1.lastChild;
+  const sayTo = n => { aVis.textContent = WORDS.slice(0, n).join(" "); aGhost.textContent = n >= WORDS.length ? "" : (n ? " " : "") + WORDS.slice(n).join(" "); };
   const flow = t => {
     aLi.classList.toggle("streaming", t >= A0 && t < A1);
     if ((t >= A1) !== aLi.classList.contains("done")) { aLi.classList.toggle("done", t >= A1); toBottom(); }
-    const wait = t >= A0 && t < A1 && t < WT[1];
+    const wait = t < WT[1];   // from the moment the answer's place shows until its first word: the working line
     if (wait !== aLi.classList.contains("wait")) { aLi.classList.toggle("wait", wait); toBottom(); }
     if (t < A0 || t >= A1) {
-      if (flowing) { flowing = false; pkt.classList.remove("on"); band.classList.remove("hop", "writing"); bdLive.textContent = "Ready"; setHot(-1); tok(-1); a1.classList.remove("cursor"); }
+      if (flowing) { flowing = false; band.classList.remove("writing"); bdLive.textContent = "Ready"; sweep(null); a1.classList.remove("cursor"); }
       const n = t < A0 ? 0 : WORDS.length;
-      if (n !== words) { words = n; a1.textContent = n ? ANSWER : ""; bdTok.textContent = n ? WORDS.length : 0; }
+      if (n !== words) { words = n; sayTo(n); bdTok.textContent = n ? WORDS.length : 0; }
       return;
     }
     if (!flowing) { flowing = true; band.classList.add("writing"); bdLive.textContent = "Writing"; }
     let w = 0; while (w < WORDS.length - 1 && t >= WT[w + 1]) w++;
-    if (w !== words) { words = w; a1.textContent = WORDS.slice(0, w).join(" "); a1.classList.add("cursor"); bdTok.textContent = w + 1; toBottom(); }
-    const p = trip((t - WT[w]) / DUR(w));
-    pkt.style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px)`;
-    pkt.classList.toggle("on", !p.end);
-    band.classList.toggle("hop", !!p.hop);
-    setHot(p.i); tok(p.d);
+    if (w !== words) { words = w; sayTo(w); a1.classList.add("cursor"); bdTok.textContent = w + 1; }
+    // the room's sweep: one per word while words are slow, then one per lap that the faster words ride along with
+    let s0 = SWEEPS[0]; for (const x of SWEEPS) { if (x <= t) s0 = x; else break; }
+    sweep(t - s0);
   };
 
   // Code: while the agent streams (a file, a line of its answer) a token passes through every layer, pass after pass,
   // the same glow as in the chat (the room's band sweeps on every pass in Code too)
-  const PASS = .42;
+  const PASS = 2 * SW + .15;
   let coding = false;
   const codeFlow = (t, on) => {
-    if (!on) { if (coding) { coding = false; pkt.classList.remove("on"); band.classList.remove("hop"); setHot(-1); tok(-1); } return; }
+    if (!on) { if (coding) { coding = false; sweep(null); } return; }
     coding = true;
-    bdTok.textContent = WORDS.length + Math.floor((t - C) / PASS);
-    const p = trip(((t - C) / PASS) % 1);
-    pkt.style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px)`;
-    pkt.classList.toggle("on", !p.end);
-    band.classList.toggle("hop", !!p.hop);
-    setHot(p.i); tok(p.d);
+    bdTok.textContent = WORDS.length + Math.floor((t - C) / .12);
+    sweep((t - C) % PASS);
   };
 
   /* ---------- chat ---------- */
@@ -441,7 +457,7 @@
     fileState(name, "w", key === "edit" ? null : 0);
     lv.parentNode.append(lv); logBottom();
   };
-  const liveEnd = () => { const w = writing; lv.classList.add("pending"); writing = null; tok(-1); if (w) fileState(w[3], "done", lineOut[w[4]]); };
+  const liveEnd = () => { const w = writing; lv.classList.add("pending"); writing = null; if (w) fileState(w[3], "done", lineOut[w[4]]); };
   const tool = k => { const el = show(k); if (el) { log.append(el); logBottom(); } return el; };
   let streams = [];
   const reveal = (el, rate) => streams.push({ el: el.querySelector(".say"), text: saysText.get(el), t0: tl.t, rate });
@@ -487,7 +503,7 @@
     // 5: chat
     [CH, () => scene("chat")],
     [CH + .3, () => { geo = null; chatComposer.classList.add("hot"); }],
-    [CH + .95, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); a1.textContent = ""; toBottom(); measure(); }],
+    [CH + .95, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); sayTo(0); toBottom(); measure(); }],
     // the answer ends on "It can chat, or write code.": a second later the Code tab is pressed, as if clicked, and the story goes on there
     [C - .3, () => press(mCode, 300)],
     // 6: Code
@@ -524,10 +540,9 @@
 
   const toastB = $("toastB"), toastC = $("toastC");
   const frame = t => {
-    flag("inviting", t >= S1 && t < S3);
     // "heron joined", "lynx joined": the room's toast, for a few seconds after each device comes in
     [[toastB, S1 + 1.65], [toastC, JOIN3]].forEach(([el, t0]) => {
-      const st = t >= t0 && t < t0 + 3.2 ? "on" : t >= t0 + 3.2 && t < t0 + 3.6 ? "out" : "";
+      const st = t >= t0 && t < t0 + 3.8 ? "on" : t >= t0 + 3.8 && t < t0 + 4.2 ? "out" : "";
       if (el.dataset.st !== st) { el.dataset.st = st; el.classList.remove("on", "out"); if (st) el.classList.add(st); }
     });   // Invite shows only while devices are joining (steps 2 and 3)
     if (t >= DL) loadAt(t);
@@ -588,7 +603,7 @@
     saysText.forEach((txt, el) => { const s = el.querySelector(".say"); if (s) { s.textContent = txt; s.classList.remove("cursor"); } });
     chatTyped.textContent = ""; codeTyped.textContent = ""; chatComposer.classList.remove("hot"); codeComposer.classList.remove("hot");
     Object.keys(fItems).forEach(n => fileState(n, "done", lineOut[n])); fileState("game.js", "mod", lineOut.edit);
-    lv.classList.add("pending"); tok(-1);
+    lv.classList.add("pending"); sweep(null);
     app.classList.remove("blank"); runGame(1, true);
     toBottom(); logBottom();
     paintBar(END);
