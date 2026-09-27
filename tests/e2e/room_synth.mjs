@@ -188,6 +188,8 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
     out.online = await tabs.host.textContent("#ai-status");
     out.split = await tabs.host.evaluate(() => [...document.querySelectorAll("#chat-log div")].map((d) => d.textContent).filter((t) => /layer split/.test(t)).slice(-1)[0] || "");
     log(`[${label}] online after ${out.loadS}s: ${out.online}`);
+    // this build opens rooms in Code mode: switch every tab to Chat so #ai-prompt / #ai-send are visible
+    for (const p of Object.values(tabs)) await p.evaluate(() => { const c = document.getElementById("mode-chat"); if (c && c.getAttribute("aria-selected") !== "true") c.click(); });
     if (out.split) log(`[${label}] ${out.split}`);
 
     for (let r = 0; r < ROUNDS; r++) {
@@ -195,8 +197,8 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
       const nStats = await tabs.host.evaluate(() => document.querySelectorAll(".m.bot .stats").length);
       const nBots = await tabs.host.evaluate(() => document.querySelectorAll(".m.bot").length);
       const tr = Date.now();
-      await tabs.host.fill("#ai-prompt", prompt);
-      await tabs.host.click("#ai-send");
+      // set the box and click Send in the page (as room_prof.mjs does): the chat row may be off screen in this layout
+      await tabs.host.evaluate((text) => { const box = document.getElementById("ai-prompt"); box.value = text; box.dispatchEvent(new Event("input")); document.getElementById("ai-send").click(); }, prompt);
       // --queue: a worker asks too while the host's question is being answered; it waits in the
       // host's queue and is answered next, so this round has two answers
       let expect = 1;

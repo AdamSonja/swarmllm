@@ -561,6 +561,102 @@ fn argmax(@builtin(local_invocation_id) lid: vec3<u32>) {
   if (t == 0u) { am_out[0] = am_i[0]; am_out[1] = bitcast<u32>(am_v[0]); }
 }
 
+// --- two-stage argmax / top-k over the columns of a logits matrix (GPU sampling) ---
+// Sampling needs at most k (value, index) pairs per column, so the logits never leave the GPU.
+// Order: value descending, index ascending (the same tie rule as argmax above and the host's
+// greedy: the lowest index of the largest value). NaN and -Inf are never picked; every non-finite
+// value (NaN, +-Inf) is counted, so the host keeps its NaN check without the logits.
+// topk_a: grid (ceil(n / 4096), columns). Each workgroup holds a 4096-logit slice of its column in
+//   registers (16 per thread) and runs k selection rounds: round r takes the best element that
+//   comes after round r-1's pick in that order (no exclusion list needed). Record per (column,
+//   workgroup): k x [idx, bits(value)] then [nonFiniteCount, 0]; stride 2k + 2 u32.
+// topk_b: grid (1, columns). k rounds over the nw * k candidates of its column, same order.
+//   out[col * (2k + 2) ..] = k x [idx, bits] then [nonFiniteCount, 0]. With k = 1 that is
+//   [idx, bits, bad, 0]: the old argmax's 16-byte layout (emb_gather reads idx at [0]).
+// Missing entries (fewer than k finite values > -Inf) are idx 0xffffffff; round 0 falls back to
+// index 0 when a column has no finite value at all (what the host's greedy returns).
+// tk_u: n, column stride (floats), k (1..64), nw.  tb_u: nw, k.
+const TK_NONE: u32 = 0xffffffffu;
+@group(1) @binding(0) var<storage, read> tk_x: array<f32>;
+@group(1) @binding(1) var<storage, read_write> tk_p: array<u32>;
+@group(1) @binding(2) var<uniform> tk_u: vec4<u32>;
+@group(1) @binding(0) var<storage, read> tb_p: array<u32>;
+@group(1) @binding(1) var<storage, read_write> tb_out: array<u32>;
+@group(1) @binding(2) var<uniform> tb_u: vec4<u32>;
+var<workgroup> tk_v: array<f32, 256>;
+var<workgroup> tk_i: array<u32, 256>;
+var<workgroup> tk_bad: atomic<u32>;
+fn tk_better(v: f32, i: u32, bv: f32, bi: u32) -> bool { return v > bv || (v == bv && i < bi); }
+fn tk_after(v: f32, i: u32, lv: f32, li: u32) -> bool { return v < lv || (v == lv && i > li); }
+// workgroup-wide best (tk_better) of every thread's (bv, bi); every thread gets [idx, bits]
+fn tk_reduce(t: u32, bv: f32, bi: u32) -> vec2<u32> {
+  tk_v[t] = bv; tk_i[t] = bi;
+  workgroupBarrier();
+  for (var s: u32 = 128u; s > 0u; s >>= 1u) {
+    if (t < s) {
+      let ov = tk_v[t + s]; let oi = tk_i[t + s];
+      if (tk_better(ov, oi, tk_v[t], tk_i[t])) { tk_v[t] = ov; tk_i[t] = oi; }
+    }
+    workgroupBarrier();
+  }
+  let r = vec2<u32>(tk_i[0], bitcast<u32>(tk_v[0]));
+  workgroupBarrier();   // the next round overwrites slot 0
+  return r;
+}
+@compute @workgroup_size(256)
+fn topk_a(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let t = lid.x; let n = tk_u.x; let k = tk_u.z; let nw = tk_u.w;
+  let s0 = wid.x * 4096u; let base = wid.y * tk_u.y;
+  var xs: array<f32, 16>;
+  var bad: u32 = 0u;
+  for (var j: u32 = 0u; j < 16u; j++) {
+    let i = s0 + j * 256u + t;
+    var v: f32 = 0.0;
+    if (i < n) {
+      v = tk_x[base + i];
+      if ((bitcast<u32>(v) & 0x7f800000u) == 0x7f800000u) { bad += 1u; }
+    }
+    xs[j] = v;
+  }
+  if (bad > 0u) { atomicAdd(&tk_bad, bad); }
+  let rec = (wid.y * nw + wid.x) * (2u * k + 2u);
+  var lv: f32 = 0.0; var li: u32 = TK_NONE;
+  for (var r: u32 = 0u; r < k; r++) {
+    var bv: f32 = -3.402823e38; var bi: u32 = TK_NONE;
+    for (var j: u32 = 0u; j < 16u; j++) {
+      let i = s0 + j * 256u + t; let v = xs[j];
+      if (i < n && (r == 0u || tk_after(v, i, lv, li)) && tk_better(v, i, bv, bi)) { bv = v; bi = i; }
+    }
+    let w = tk_reduce(t, bv, bi);
+    li = w.x; lv = bitcast<f32>(w.y);
+    if (t == 0u) { tk_p[rec + 2u * r] = w.x; tk_p[rec + 2u * r + 1u] = w.y; }
+  }
+  if (t == 0u) { tk_p[rec + 2u * k] = atomicLoad(&tk_bad); tk_p[rec + 2u * k + 1u] = 0u; }
+}
+@compute @workgroup_size(256)
+fn topk_b(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let t = lid.x; let nw = tb_u.x; let k = tb_u.y; let R = 2u * k + 2u;
+  let pb = wid.y * nw * R; let ob = wid.y * R; let m = nw * k;
+  var bad: u32 = 0u;
+  for (var w: u32 = t; w < nw; w += 256u) { bad += tb_p[pb + w * R + 2u * k]; }
+  if (bad > 0u) { atomicAdd(&tk_bad, bad); }
+  var lv: f32 = 0.0; var li: u32 = TK_NONE;
+  for (var r: u32 = 0u; r < k; r++) {
+    var bv: f32 = -3.402823e38; var bi: u32 = TK_NONE;
+    for (var e: u32 = t; e < m; e += 256u) {
+      let o = pb + (e / k) * R + 2u * (e % k);
+      let i = tb_p[o];
+      if (i == TK_NONE) { continue; }
+      let v = bitcast<f32>(tb_p[o + 1u]);
+      if ((r == 0u || tk_after(v, i, lv, li)) && tk_better(v, i, bv, bi)) { bv = v; bi = i; }
+    }
+    let w = tk_reduce(t, bv, bi);
+    li = w.x; lv = bitcast<f32>(w.y);
+    if (t == 0u) { tb_out[ob + 2u * r] = select(w.x, 0u, r == 0u && w.x == TK_NONE); tb_out[ob + 2u * r + 1u] = w.y; }
+  }
+  if (t == 0u) { tb_out[ob + 2u * k] = atomicLoad(&tk_bad); tb_out[ob + 2u * k + 1u] = 0u; }
+}
+
 
 // --- fused DeltaNet pre-pass (after conv): gates (sigmoid beta, decay) on
 // threads [2*nKH, 2*nKH+nVH), per-head L2 norm of the q and k heads on threads

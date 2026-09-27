@@ -4,10 +4,18 @@ All notable changes to Pooled (called SwarmLLM before September 2026). Format fo
 
 ## [Unreleased]
 
-### Changed
-- **SwarmLLM is now Pooled, at [pooled.run](https://pooled.run).** swarmllm.ai and www.swarmllm.ai redirect to pooled.run for good, and join links like `/r/ABCD` keep working. The repo moved to github.com/Nehanth/pooled; the old GitHub URLs redirect. Browser caches are per site, so the first visit to pooled.run downloads model weights again. Rooms now use the PeerJS id prefix `pooled-room-`, so a pooled.run tab and an old swarmllm.ai tab never land in the same room.
+## [1.0.0] - 2026-09-27
+
+The first stable release: peer-to-peer inference in the browser at [pooled.run](https://pooled.run).
 
 ### Added
+- **Sampling on the GPU** (`gpuSample`, on by default; `?gpusample=0` / `GPU_SAMPLE=0` for the logits path): the head's argmax or top-k runs in the same submit (`topk_a` / `topk_b`), so 16 bytes come back per greedy token instead of the 1 MB logits vector, and the draft chain's argmax is a two-stage multi-workgroup kernel. Chrome on the GB10, 35B MoE: plain 48 -> 50.5 tok/s (+5%), speculative 72 -> 80 (two-sum) and 65 -> 71.5 (hash map), +10-12%; 27B +1% plain, +3-4% speculative. In a room (MoE, `japan` prompt): one device +7% plain / +9% speculative, two devices +6% speculative. Same tokens as before (sampling never changes the logits; the 27B bit fingerprint is unchanged), MoE matches llama.cpp, split rooms equal one device. A masked sampler (Code mode's tool-name constraint) still gets full logits.
+- **MoE prompt processing 2-3x faster by default**: tiled prefill attention, the wide prefill GEMM and expert-grouped MoE FFN are on for Qwen 3.6 35B (Chrome, 2048 tokens: 168 -> 402 tok/s). Checked: a split room equals one device, spec equals plain, phone-class limits fall back cleanly; MoE prefill logits tolerance is 2e-2 (the batched path's own baseline).
+- **Qwen3 1.7B kernels** (bit-exact): parallel attention softmax, fused residuals and norms, one QKV GEMV, encode-ahead. Chrome: prompt processing at 4K 22 -> 177 tok/s, decode at 4K context 10.4 -> 32.9 tok/s, short chats ~52 -> ~61 tok/s.
+- **27B decode +5%** in Chrome (10.5 -> 11.1 tok/s) from encode-ahead and faster norms, bit-exact; tiled prefill attention makes 16K prompts ~1.9x faster.
+- **Code mode for small models** (`harness/argfix.js`): tool calls are repaired before they run (tool and parameter aliases, paths, string booleans and ports, content arrays, stray JSON); `serve` accepts a file as its dir; write/edit guards, a loop card and a clean finish after a successful serve. Real Qwen3 1.7B eval: 4/8 -> 7/8 tasks.
+- **Device screen**: "Loading 40%" / "Working" / "Ready" / "Standing by", a "hop" dot that flashes each time a pass reaches the device, tok/s, tokens and ms per hop.
+- **Room**: join and leave toasts, a context circle in Chat, a working indicator until the first token, a floating editor over the preview while the agent edits a served app, per-layer blocks in the folded band; a host that reloads goes straight back into its room.
 - **Merged projection GEMVs** (`fuseProj`): the projections that read the same input run as one GEMV over stacked rows; bit-identical. With the fused MoE and the one-submit speculative step, Chrome decode on the GB10 went up 16–24% plain and 26–32% speculative on the MoE (docs/bench-log.md, 2026-09-26).
 - **Draft vocabulary cap** (`draftVocab`, room default 65536 with an automatic fallback to the full vocabulary): the draft head scores only the first 65536 tokens, which cuts its LM head read; the verify still uses the full vocabulary, so output is unchanged.
 - **Qwen3 1.7B gets 8K of context** in rooms (was 2K; Code mode's prompt alone is ~620 tokens), and JSON-call models decode greedily so their tool calls stay well formed.
@@ -62,7 +70,18 @@ All notable changes to Pooled (called SwarmLLM before September 2026). Format fo
 - Protocol version in `hello`; a tab from another deploy is told to reload instead of failing mid-answer (`PROTOCOL` in `room/transport.js`, 4 today).
 - A synthetic Qwen-3.5-architecture model and SwiftShader harnesses (`tests/e2e/synth.mjs`, `engine_synth.mjs`, `room_synth.mjs`) that run the real engine and the real multi-tab room on a machine with no GPU.
 
+### Changed
+- **Landing**: the hero and demo fit on the first screen; the demo follows the real room (join, lend, pick, split, with a phone) and flows from Chat into Code; switching to Code sparkles.
+- One-word lowercase device names; no yellow or orange text; the black dots button opens this device's screen (no "Lend" wording); the GitHub mark in the header; dots favicon everywhere.
+- Guests (phones included) get the Chat/Code switch once the model is ready.
+- **SwarmLLM is now Pooled, at [pooled.run](https://pooled.run).** swarmllm.ai and www.swarmllm.ai redirect to pooled.run for good, and join links like `/r/ABCD` keep working. The repo moved to github.com/Nehanth/pooled; the old GitHub URLs redirect. Browser caches are per site, so the first visit to pooled.run downloads model weights again. Rooms now use the PeerJS id prefix `pooled-room-`, so a pooled.run tab and an old swarmllm.ai tab never land in the same room.
+
 ### Fixed
+- **Rooms could not start a model**: the load-time kernel check read the dense engine's merged q/k/v view as a buffer, so every device failed "GPU kernel FAILED" (PR #91; `tests/test_selftest.js` now runs first in `tests/run.sh quick`).
+- **Split rooms**: a speculative rollback pending when the room reset was dropped, so workers saved checkpoints with rejected drafts in their state and a resumed turn went wrong (`tests/test_moe_split.js`).
+- Peer names can no longer inject markup (quotes escaped, names cleaned on join).
+- swarmllm.ai's bare domain now redirects to pooled.run like every other path.
+- CI unit tests run without a local node_modules.
 - **Dense models (Qwen3 0.6B/1.7B/4B) produced gibberish whenever a device's autotune picked 8 rows per workgroup.** The 4-column batched kernels are built with 4 rows per workgroup, but `engine/dense.js` dispatched `dOut / coopRows` workgroups, so at ROWS=8 half of every batched GEMV's output rows were never written (stale but finite, so no NaN check fired). Every prompt prefill on such a device was corrupted; since each device autotunes on its own, a room broke as soon as any device in the chain picked ROWS=8 (solo on such a device broke too for prompts of 5+ tokens). The dispatch now uses the batched kernels' own rows. `tests/e2e/engine_dense_synth.mjs` checks batched vs one-token hiddens for WG {64, 256} x ROWS {4, 8} (all bit-identical now; ROWS=8 differed by up to 7.1 before), and `room_synth_dense.mjs --rows-per-tab 4,8` reproduces the room (different from solo at the first character before, identical after).
 - Speculative steps could draft past the answer cap, so a capped answer forced the next question to re-prefill the whole conversation.
 - A review of the new room code: a degraded room queued questions forever; the transport's gap timer could skip a frame that was only late and then run it out of order; host-only messages were accepted from any peer; a malformed ask could lock the host busy; layer labels were not escaped; Continue/Regenerate could run during a re-deal.

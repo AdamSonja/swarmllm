@@ -1,0 +1,13 @@
+// Run tests/bench/prof.html in Chrome with the real GPU (as tests/bench/chrome_bench.mjs does).
+//   node tests/prof/prof_chrome.mjs models/q36moe/Qwen_Qwen3.6-35B-A3B-Q4_0.gguf [out.json] [extra query]
+// --enable-webgpu-developer-features: full-precision timestamps (Chrome quantizes them to 100 µs otherwise)
+import { chromium } from "playwright"; import { spawn } from "node:child_process"; import fs from "node:fs";
+const root = new URL("../..", import.meta.url).pathname, model = process.argv[2], OUT = process.argv[3], EXTRA = process.argv[4] ? "&" + process.argv[4] : "";
+const srv = spawn("node", [root + "tests/bench/serve.mjs", root, "8792"], { stdio: "inherit" }); await new Promise((r) => setTimeout(r, 600));
+const b = await chromium.launch({ headless: false, args: ["--no-sandbox", "--headless=new", "--enable-unsafe-webgpu", "--enable-webgpu-developer-features", "--use-gl=angle", "--use-angle=gl-egl", "--enable-features=Vulkan", "--ignore-gpu-blocklist", "--js-flags=--max-old-space-size=65536"] });
+const p = await b.newPage(); p.on("console", (m) => console.log("  tab:", m.text())); p.on("crash", () => console.log("TAB CRASHED"));
+await p.goto(`http://127.0.0.1:8792/tests/bench/prof.html?model=/${model}${EXTRA}`);
+await p.waitForFunction(() => window.RESULT, null, { timeout: 30 * 60e3, polling: 2000 }).catch((e) => console.log("timeout", e.message));
+const r = await p.evaluate(() => window.RESULT).catch(() => null);
+if (OUT && r) fs.writeFileSync(OUT, JSON.stringify(r, null, 1));
+await b.close(); srv.kill();
