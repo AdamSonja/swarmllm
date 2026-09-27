@@ -309,7 +309,7 @@ export async function initCode(api, { mock = null } = {}) {
         flushTok(); live(e.step, null);
         const i = ++toolN;
         callIdx.set(e.call, i);
-        tool(i, { step: e.step, name: str(e.call.name || /<function=([^>\s]+)>/.exec(e.call.raw || "")?.[1] || "tool call", 60), brief: str(briefCall(e.call), 200), state: "running" });
+        tool(i, { step: e.step, name: str(e.call.name || /<function=([^>\s]+)>/.exec(e.call.raw || "")?.[1] || /"name"\s*:\s*"([^"]+)"/.exec(e.call.raw || "")?.[1] || "tool call", 60), brief: str(briefCall(e.call), 200), state: "running" });
         break;
       }
       case "tool": {

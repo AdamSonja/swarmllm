@@ -75,13 +75,34 @@ export function parseCallBody(body, schemaFor = () => null) {
     return { name, arguments: args };
   }
   try {
-    const o = JSON.parse(b);
+    const o = parseLooseJSON(b);
     if (!o || typeof o.name !== "string") return { error: "tool call has no name", raw };
     let a = o.arguments ?? o.parameters ?? {};
     if (typeof a === "string") { try { a = JSON.parse(a); } catch { /* leave as text */ } }
     return { name: o.name, arguments: a };
   } catch (e) {
     return { error: "tool call is not valid JSON: " + e.message, raw };
+  }
+}
+
+// JSON.parse, then the near misses small models write for a call: extra or missing closing braces,
+// and a stray "{" before "arguments" ({"name": "x", {"arguments": {...}}}). Strings are respected.
+export function parseLooseJSON(s) {
+  try { return JSON.parse(s); } catch (first) {
+    let t = s.trim().replace(/("name"\s*:\s*"[^"]*"\s*,\s*)\{\s*(?="(?:arguments|parameters)"\s*:)/, "$1");
+    // balance braces outside strings: drop unmatched closers, close what is still open
+    let out = "", depth = 0, inStr = false, esc = false;
+    for (const c of t) {
+      if (inStr) { out += c; if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') { inStr = true; out += c; continue; }
+      if (c === "{" || c === "[") depth++;
+      if (c === "}" || c === "]") { if (depth === 0) continue; depth--; }
+      out += c;
+      if (depth === 0 && out.trim().startsWith("{") && (c === "}")) break;   // one object: ignore what follows it
+    }
+    if (inStr) throw first;
+    while (depth-- > 0) out += "}";
+    return JSON.parse(out);
   }
 }
 
@@ -140,7 +161,9 @@ export class ToolCallParser {
       // a model that stops right after </function> without closing the call still meant it; without
       // </function> the answer was cut mid-call (length cap) and its last value is a fragment
       // also accept a call that ends right after a closed parameter (seen from Qwen: no </function>)
-      const done = /<\/function>/.test(this.buf) || /^\s*<function=[^>\s]+>[\s\S]*<\/parameter>\s*$/.test(this.buf);
+      let done = /<\/function>/.test(this.buf) || /^\s*<function=[^>\s]+>[\s\S]*<\/parameter>\s*$/.test(this.buf);
+      // a JSON call the model ended without </tool_call>: complete if it parses (loosely)
+      if (!done && /^\s*\{/.test(this.buf)) { try { const o = parseLooseJSON(this.buf.trim()); done = !!o && typeof o.name === "string" && (o.arguments !== undefined || o.parameters !== undefined); } catch { /* still open */ } }
       const c = done ? parseCallBody(this.buf, this.schemaFor) : { error: "unterminated <tool_call>", raw: this.buf, open: true };
       r.calls.push(c); this.calls.push(c);
     } else r.text = this.buf;

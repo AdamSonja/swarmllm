@@ -97,3 +97,13 @@ Deno.test("xml: tool-call tags inside a line of a value are the value's text; a 
   eq(parseCallBody(`<function=write_file>\n<parameter=path>\nREADME.md\n</parameter>\n<parameter=content>\n${doc}\n</parameter>\n</function>`).arguments, { path: "README.md", content: doc });
   eq(parseCallBody("<function=write_file>\n<parameter=path>\na.md\n<parameter=content>\nhi\n</parameter>\n</function>").arguments, { path: "a.md", content: "hi" });
 });
+
+Deno.test("JSON calls from small models: extra/missing braces, a stray { before arguments, no </tool_call>", () => {
+  const eq = (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(JSON.stringify(a) + " != " + JSON.stringify(b)); };
+  eq(parseCallBody('{"name": "write_file", "arguments": {"path": "a.html", "content": "<p>{x}</p>\\n"}}}'), { name: "write_file", arguments: { path: "a.html", content: "<p>{x}</p>\n" } });
+  eq(parseCallBody('{"name": "serve", {"arguments": {"dir": ".", "entry": "index.html"}}}'), { name: "serve", arguments: { dir: ".", entry: "index.html" } });
+  eq(parseCallBody('{"name": "read_file", "arguments": {"path": "x.js"'), { name: "read_file", arguments: { path: "x.js" } });
+  const P = new ToolCallParser();
+  P.feed('<tool_call>\n{"name": "list_dir", "arguments": {"path": "."}}}');
+  eq(P.end().calls, [{ name: "list_dir", arguments: { path: "." } }]);
+});
