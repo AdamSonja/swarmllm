@@ -20,7 +20,8 @@ if (eng.moeK) console.log("moeKernel", JSON.stringify(eng.moeK), "moeFuse", eng.
 const ids = tok.encode("The capital of France is"); for (const id of ids) await eng.forwardToken(id);
 // wall time, normal path
 let t0 = performance.now(); for (let i = 0; i < 20; i++) await eng.forwardToken(1); const wall = (performance.now() - t0) / 20;
-// instrumented path
+// instrumented path (encode-ahead off: a command buffer recorded before the hook would carry no timestamps)
+eng.encodeAhead = false; eng._fwdPre = null;
 const MAXQ = 4096, qs = device.createQuerySet({ type: "timestamp", count: MAXQ });
 const res = device.createBuffer({ size: MAXQ * 8, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
 const rd = device.createBuffer({ size: MAXQ * 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });

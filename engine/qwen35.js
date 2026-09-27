@@ -2116,23 +2116,43 @@ export class Qwen35Engine {
     return await this._readback(this.logits, this.stageLogits, vocab);
   }
 
-  // Whole token in one encoder + one submit; no hidden-state readback between
-  // the last layer and the head (that round trip cost a full pipeline drain).
-  async forwardToken(tokenId) {
-    this._pre = null;
+  // Whole token in one encoder + one submit; no hidden-state readback between the last layer and
+  // the head (that round trip cost a full pipeline drain), and the logits copy rides in the same
+  // command buffer. Encode-ahead: while the GPU runs token N and we wait for its logits, the command
+  // buffer for position N + 1 is recorded as well. A token's commands depend only on the position and
+  // the runtime switches (the embedding and the frame uniform are queue writes made at call time), so
+  // the next call submits at once instead of paying the CPU encode (~900 dispatches) on the critical
+  // path. Same commands, same bits. engine.encodeAhead = false for A/B.
+  _fwdKey() { return [this.attnGlue, this.fuseProj, this.dnFuse, this.softmaxWG, this.b4, this.skip ? 1 : 0, this._common ? 1 : 0].join(); }
+  _encodeForward(pos) {
     const { vocab } = this.dims;
-    this._setFrame(this.pos, this.pos + 1);
-    this.device.queue.writeBuffer(this.x, 0, this._embedRowF32(tokenId));
     const enc = this.device.createCommandEncoder();
-    for (let i = 0; i < this.layers.length; i++) this._encodeLayer(enc, i);
+    for (let i = 0; i < this.layers.length; i++) this._encodeLayerR(enc, this.layers[i], pos);
     {
       const p = enc.beginComputePass();
       this._d(p, "rmsnorm", this.bgFinalNorm, 256, 256);
       this._dop(p, this.headOp);
       p.end();
     }
-    this.device.queue.submit([enc.finish()]);
-    const logits = await this._readback(this.logits, this.stageLogits, vocab);
+    this._stageI = (this._stageI || 0) ^ 1;   // alternate staging buffers: one can still be mapped
+    const stage = this._stageI ? (this.stageLogits2 ||= this.device.createBuffer({ size: vocab * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })) : this.stageLogits;
+    enc.copyBufferToBuffer(this.logits, 0, stage, 0, vocab * 4);
+    return { pos, key: this._fwdKey(), cb: enc.finish(), stage };
+  }
+  async forwardToken(tokenId) {
+    this._pre = null;
+    const { vocab } = this.dims;
+    this._setFrame(this.pos, this.pos + 1);
+    this.device.queue.writeBuffer(this.x, 0, this._embedRowF32(tokenId));
+    const pre = this._fwdPre;
+    this._fwdPre = null;
+    const job = pre && pre.pos === this.pos && pre.key === this._fwdKey() ? pre : this._encodeForward(this.pos);
+    this.device.queue.submit([job.cb]);
+    const mapped = job.stage.mapAsync(GPUMapMode.READ);
+    if (this.encodeAhead !== false && this.pos + 1 < this.maxSeq) this._fwdPre = this._encodeForward(this.pos + 1);
+    await mapped;
+    const logits = Float32Array.from(new Float32Array(job.stage.getMappedRange(), 0, vocab));
+    job.stage.unmap();
     this.pos++;
     return logits;
   }
