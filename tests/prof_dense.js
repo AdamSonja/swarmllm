@@ -26,18 +26,18 @@ let t0 = performance.now(); for (let i = 0; i < 10; i++) await eng.forwardToken(
 const base = eng.pos;
 eng.encodeAhead = false; eng._fwdPre = null;   // the hook must see every recorded dispatch
 
-const MAXQ = 8192, qs = device.createQuerySet({ type: "timestamp", count: MAXQ });
+const MAXQ = 4096, qs = device.createQuerySet({ type: "timestamp", count: MAXQ });
 const res = device.createBuffer({ size: MAXQ * 8, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
 const rd = device.createBuffer({ size: MAXQ * 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
 let names = [], nq = 0, on = false;
 const pname = new Map(Object.entries(eng.pipes).map(([k, v]) => [v, k]));
 const origCreate = device.createCommandEncoder.bind(device);
-device.createCommandEncoder = (d) => { const enc = origCreate(d); if (!on) return enc; const ob = enc.beginComputePass.bind(enc);
+device.createCommandEncoder = (d) => { const enc = origCreate(d); if (!on) return enc; const ob = enc.beginComputePass.bind(enc); const q0 = nq;
   enc.beginComputePass = () => { let pipe = null, name = "?"; const bgs = {};
     return { setPipeline(p) { pipe = p; name = pname.get(p) || "?"; }, setBindGroup(i, b) { bgs[i] = b; },
       dispatchWorkgroups(x, y = 1, z = 1) { const p = ob({ timestampWrites: { querySet: qs, beginningOfPassWriteIndex: nq, endOfPassWriteIndex: nq + 1 } }); nq += 2; names.push(name);
         p.setPipeline(pipe); for (const i in bgs) p.setBindGroup(+i, bgs[i]); p.dispatchWorkgroups(x, y, z); p.end(); }, end() {} }; };
-  const ofin = enc.finish.bind(enc); enc.finish = () => { if (nq) { enc.resolveQuerySet(qs, 0, nq, res, 0); enc.copyBufferToBuffer(res, 0, rd, 0, nq * 8); } return ofin(); };
+  const ofin = enc.finish.bind(enc); enc.finish = () => { if (nq > q0) { enc.resolveQuerySet(qs, q0, nq - q0, res, q0 * 8); enc.copyBufferToBuffer(res, q0 * 8, rd, q0 * 8, (nq - q0) * 8); } return ofin(); };
   return enc; };
 const collect = async (fn, runs) => {
   const agg = {};

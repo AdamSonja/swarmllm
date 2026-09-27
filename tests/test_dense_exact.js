@@ -53,7 +53,8 @@ for (const mode of ["batched", "one"]) {
   runs.forEach((r, k) => {
     let diff = 0, first = -1;
     r.out.forEach((a, s2) => { const b = ref.out[s2]; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) { diff++; if (first < 0) first = s2; } });
-    console.log(`${mode} prefill of ${r.p - 1} ${JSON.stringify(VARIANTS[k])}: ${r.out.length} steps, ${diff ? `${diff} logits DIFFER (first at step ${first})` : "bit-identical"} · ${(r.ms / 1000).toFixed(2)} s`);
+    let hsh = 0x811c9dc5; for (const a of r.out) for (let i = 0; i < a.length; i++) hsh = Math.imul(hsh ^ a[i], 0x01000193) >>> 0;
+    console.log(`${mode} prefill of ${r.p - 1} ${JSON.stringify(VARIANTS[k])}: ${r.out.length} steps, ${diff ? `${diff} logits DIFFER (first at step ${first})` : "bit-identical"} · logits hash ${hsh.toString(16)} · ${(r.ms / 1000).toFixed(2)} s`);
     if (diff) fail++;
   });
 }
