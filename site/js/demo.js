@@ -91,7 +91,7 @@
     },
     breakout: {
       dir: "breakout", title: "Breakout", ask: "a breakout game", prompt: "build me a breakout game",
-      src: ['const ROWS = 6, COLS = 9;', 'const COLORS = ["#F28DB2", "#F08A6C", "#F2C14E", "#6CC5A1", "#5EB8E8", "#B18CF0"];', 'let bricks = grid(ROWS, COLS), paddle = 0.5;', 'let ball = { x: 0.5, y: 0.7, vx: 0.32, vy: -0.62 };', 'let score = 0, lives = 3;', '',
+      src: ['const ROWS = 6, COLS = 9;', 'const COLORS = ["#B9C6FF", "#7C8FFF", "#2A45E0", "#1C33B8", "#2A45E0", "#7C8FFF"];', 'let bricks = grid(ROWS, COLS), paddle = 0.5;', 'let ball = { x: 0.5, y: 0.7, vx: 0.32, vy: -0.62 };', 'let score = 0, lives = 3;', '',
         'function update(dt) {', '  ball.x += ball.vx * dt; ball.y += ball.vy * dt;', '  if (ball.x < 0 || ball.x > 1) ball.vx *= -1;', '  if (ball.y < 0.1) ball.vy *= -1;', '  if (onPaddle(ball)) bounce(ball, paddle);', '  const b = bricks.find(b => b.alive && inside(ball, b));', '  if (b) { b.alive = false; ball.vy *= -1; score += 10; }', '  if (ball.y > 1) { lives--; serve(); }', '}', '',
         'function draw() {', '  bricks.filter(b => b.alive).forEach(drawBrick);', '  drawPaddle(paddle);', '  drawBall(ball);', '}', '',
         'addEventListener("pointermove", e => paddle = e.clientX / innerWidth);', 'loop(update, draw);'],
@@ -114,27 +114,31 @@
   };
 
   /* ---------- the timeline's shape (timeline seconds; played at SPEED) ---------- */
-  const S1 = 2.1, S2 = 4.5, HOV1 = 5.1, HOV2 = 5.45, SEL = 5.8, TOAST = 6.2, JOIN3 = 6.45, TOAST_OFF = 7.55, DLH = 7.75, DLP = 8.1;
-  const S3 = 8.35, FILL0 = 8.9, CACHE1 = 9.6, FILL1 = 11.4, ETA0 = 9.55;
-  const CH = 12.1, A0 = CH + 1.55;
+  // every step lasts at least 2.5 s on screen (3.4 timeline seconds at SPEED); step 5 about 5 s
+  const S1 = 3.4, S2 = S1 + 3.4;
+  const HOV1 = S2 + .6, HOV2 = S2 + .95, SEL = S2 + 1.3, TOAST = S2 + 1.7, JOIN3 = S2 + 1.95, TOAST_OFF = S2 + 3.05, DLH = S2 + 3.25, DLP = S2 + 3.6;
+  const S3 = S2 + 3.85, FILL0 = S3 + .55, CACHE1 = S3 + 1.25, FILL1 = S3 + 3.05, ETA0 = S3 + 1.2;
+  const CH = S3 + 3.75, A0 = CH + 1.25;
   let ANSWER = $("a1").textContent, WORDS = ANSWER.split(" ");
-  const DUR = i => [2.3, 1.05, .62, .4][i] || .15;   // each word's trip; the first slow enough to follow
+  const DUR = i => [1.5, .75, .45, .3][i] || .08;    // each word's trip; the first slow enough to follow
   let WT = [], A1 = 0, C = 0, STEPS = [], END = 0;
+  const K = 1.65;                                      // step 6 (the ask) runs this much longer than steps 7, 8 assume
   const HOLD = 4;                                      // after the last step, before the next loop
   function timeWords() {
     WT = [A0]; WORDS.forEach((_, i) => WT.push(WT[i] + DUR(i)));
     A1 = WT[WORDS.length];
-    C = Math.ceil((A1 + .9) * 10) / 10;
-    STEPS = [0, S1, S2, S3, CH, C, C + 1.75, C + 7.05];
-    END = C + 12.4;
+    C = Math.ceil((A1 + .6) * 10) / 10;
+    STEPS = [0, S1, S2, S3, CH, C, C + K + 1.75, C + K + 7.05];
+    END = C + K + 12.4;
   }
   timeWords();
-  const c = x => C + x;
+  const c = x => C + x;                               // step 6
+  const d = x => C + K + x;                           // steps 7, 8
 
   /* ---------- the caption bar ---------- */
   const dotBtns = [...demo.querySelectorAll(".sb-dots button")];
   const CAPS = dotBtns.map(b => b.querySelector(".lbl").textContent);
-  const HOOKCAP = "An agent built this, on a model pooled across 3 devices. Here's how.";
+  const HOOKCAP = "An agent built this, on a big open model (35B) pooled across 3 devices. Here's how.";
   const sbN = $("sbN"), sbT = $("sbT");
   let shownStep = -2;
   const stepAt = t => { let k = 0; STEPS.forEach((s, i) => { if (t >= s - 1e-6) k = i; }); return k; };
@@ -210,15 +214,19 @@
     const all = segs[k].length, gb = (SEG_GB[k] * n / all).toFixed(1);
     const done = n >= all;
     hg[k].classList.toggle("ok", done);
-    if (k === 0) hg[k].innerHTML = done ? `${SEG_GB[0]} GB, <span class="cache">from cache</span>` : n > 0 ? `<span class="cache">loading from cache</span> · ${gb} GB` : `${SEG_GB[0]} GB`;
-    else hg[k].textContent = done ? `${SEG_GB[k]} GB, ready` : n > 0 ? `${gb} of ${SEG_GB[k]} GB` : `${SEG_GB[k]} GB`;
+    // .hx and .of drop out on phones, where "3.9/5.6 GB" replaces "3.9 of 5.6 GB"
+    if (k === 0) hg[k].innerHTML = done ? `${SEG_GB[0]} GB<span class="hx">, <span class="cache">from cache</span></span>` : n > 0 ? `<span class="hx"><span class="cache">loading from cache</span> · </span>${gb} GB` : `${SEG_GB[0]} GB`;
+    else hg[k].innerHTML = done ? `${SEG_GB[k]} GB<span class="hx">, ready</span>` : n > 0 ? `${gb}<span class="of"> of </span><span class="sl">/</span>${SEG_GB[k]} GB` : `${SEG_GB[k]} GB`;
   };
   const setMd = (txt, eta) => {
     const key = txt + "|" + (eta || "");
     if (key === mdKey) return;
     const fresh = eta && !mdKey.includes("left");
     mdKey = key;
-    mdS.textContent = txt;
+    // on phones the "Downloading · " prefix drops out and "16.9 of 22.5 GB" becomes "16.9/22.5 GB"
+    const m = /^Downloading · ([\d.]+) of (.*)$/.exec(txt);
+    if (m) mdS.innerHTML = `<span class="hx">Downloading · </span>${m[1]}<span class="of"> of </span><span class="sl">/</span>${m[2]}`;
+    else mdS.textContent = txt;
     if (eta) { const e = document.createElement("span"); e.className = "eta" + (fresh && !RM ? " in" : ""); e.textContent = " · " + eta; mdS.append(e); }
   };
   const loadAt = t => {
@@ -227,8 +235,9 @@
     fillSeg(0, Math.ceil(15 * p0)); fillSeg(1, Math.ceil(15 * p)); fillSeg(2, Math.ceil(10 * clamp01(p * 1.08)));
     if (p >= 1) { setMd("Ready on 3 devices · 40 layers, split by memory"); return; }
     const gb = (8.4 * p0 + 8.4 * p + 5.6 * clamp01(p * 1.08)).toFixed(1);
-    const secs = Math.max(5, Math.ceil(30 * (1 - clamp01((t - ETA0) / (FILL1 - ETA0))) / 5) * 5);
-    setMd(`Downloading · ${gb} of 22.5 GB`, t < ETA0 ? "estimating time" : `about ${secs} s left`);
+    // what is left, at about 50 MB/s: a believable home connection, not the demo's own pace
+    const left = (8.4 + 5.6) * (1 - clamp01((t - ETA0) / (FILL1 - ETA0)) * .75) * .85, mins = Math.round(left / .05 / 60);
+    setMd(`Downloading · ${gb} of 22.5 GB`, t < ETA0 ? "estimating time" : mins >= 1 ? `about ${mins} min left` : "under a minute left");
   };
 
   /* ---------- 5: a hidden state, through every layer, once per word ---------- */
@@ -302,10 +311,12 @@
   const at = k => demo.querySelector(`[data-at="${k}"]`);
   const saysText = new Map();
   let APP = "tetris", A = APPS.tetris, inst = null, lineOut = {};
+  // what a real app of each kind runs to; the live pane shows a few of those lines, the counts are the real size
+  const LINES = { tetris: 213, "2048": 148, shooter: 236, snake: 122, breakout: 184 };
   const useApp = name => {
     APP = name; A = APPS[name];
     $("fDir").textContent = A.dir;
-    lineOut = { "index.html": A.files["index.html"].length, "style.css": A.files["style.css"].length, "game.js": A.src.length };
+    lineOut = { "index.html": 24, "style.css": 60, "game.js": LINES[name] };
     const add = A.diff.filter(d => d[0] === "add").length, del = A.diff.length - add;
     lineOut.edit = lineOut["game.js"] + add - del;
     at("c-q").querySelector("p").textContent = A.prompt;
@@ -328,7 +339,9 @@
     if (k < liveShown || liveShown < 0) { lvPre.textContent = ""; liveShown = 0; }
     for (let i = liveShown; i < k; i++) { const sp = document.createElement("span"); sp.textContent = liveSrc[i] || " "; lvPre.append(sp); }
     while (lvPre.children.length > 6) lvPre.firstChild.remove();
-    liveShown = k; lvN.textContent = `${k} line${k === 1 ? "" : "s"}`;
+    liveShown = k;
+    const n = writing && liveSrc.length ? Math.round(writing[5] * k / liveSrc.length) : k;
+    lvN.textContent = `${n} line${n === 1 ? "" : "s"}`;
   };
   const fileState = (name, st, lines) => {
     const li = fItems[name];
@@ -342,7 +355,7 @@
     liveSrc = key === "edit" ? A.diff.filter(d => d[0] === "add").map(d => d[1]) : A.files[key];
     lvF.textContent = name; liveShown = -1; liveTo(0);
     lv.classList.remove("pending"); if (!RM) restart(lv, "enter");
-    writing = [t0, t1, liveSrc.length, name, key];
+    writing = [t0, t1, liveSrc.length, name, key, key === "edit" ? liveSrc.length : lineOut[key]];
     fileState(name, "w", key === "edit" ? null : 0);
     lv.parentNode.append(lv); logBottom();
   };
@@ -359,20 +372,21 @@
   const tl = { t: 0, fired: 0, done: false, started: false };
   const EVENTS = () => [
     // 1: the laptop has a name already; it starts a room
-    [.15, () => nmA.classList.add("fresh")],
-    [.62, () => nmA.classList.remove("fresh")],
-    [.75, () => press(aGo, 260)],
-    [1.0, () => { tabA.classList.add("done"); setDevices(1, true); }],
-    ...[0, 1, 2, 3].map(i => [1.08 + i * .1, () => letters(i + 1)]),
-    // 2: the desktop (named too) types the code and joins; the two tabs fold into one room
-    [1.35, () => nmB.classList.add("fresh")],
-    [1.95, () => nmB.classList.remove("fresh")],
-    [S1, () => setSlots(0, 0)],
-    [S1 + .18, () => setSlots(1, 1)], [S1 + .36, () => setSlots(2, 2)], [S1 + .54, () => setSlots(3, 3)],
-    [S1 + .72, () => { setSlots(4, -1); bBtn.classList.add("ready"); }],
-    [S1 + 1.0, () => press(bBtn, 260)],
-    [S1 + 1.25, () => { tabB.classList.add("done"); tabA.classList.add("met"); setDevices(2, true); }],
-    [S1 + 1.8, () => flag("merge", true)],
+    [.3, () => nmA.classList.add("fresh")],
+    [1.3, () => nmA.classList.remove("fresh")],
+    [1.55, () => press(aGo, 260)],
+    [1.8, () => { tabA.classList.add("done"); setDevices(1, true); }],
+    ...[0, 1, 2, 3].map(i => [1.9 + i * .12, () => letters(i + 1)]),
+    // 2: the desktop (named too) wakes, types the code and joins; the two tabs fold into one room
+    [S1, () => tabB.classList.remove("idle")],
+    [S1 + .15, () => nmB.classList.add("fresh")],
+    [S1 + .75, () => nmB.classList.remove("fresh")],
+    [S1 + .8, () => setSlots(0, 0)],
+    [S1 + .98, () => setSlots(1, 1)], [S1 + 1.16, () => setSlots(2, 2)], [S1 + 1.34, () => setSlots(3, 3)],
+    [S1 + 1.52, () => { setSlots(4, -1); bBtn.classList.add("ready"); }],
+    [S1 + 1.8, () => press(bBtn, 260)],
+    [S1 + 2.05, () => { tabB.classList.add("done"); tabA.classList.add("met"); setDevices(2, true); }],
+    [S1 + 2.6, () => flag("merge", true)],
     // 3: pick a model; a friend's laptop joins; Download
     [S2, () => scene("split")],
     [HOV1, () => pkHover(1)], [HOV2, () => pkHover(2)],
@@ -388,47 +402,47 @@
     // 5: chat
     [CH, () => scene("chat")],
     [CH + .45, () => { measure(); chatComposer.classList.add("hot"); }],
-    [CH + 1.4, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); a1.textContent = ""; toBottom(); }],
+    [CH + 1.2, () => { chatTyped.textContent = ""; chatComposer.classList.remove("hot"); show("q1"); show("a1"); a1.textContent = ""; toBottom(); }],
     // 6: Code: the tab switches itself
     [C, () => { press(modes, 300); mode("code"); }],
     [c(.2), () => scene("code")],
-    [c(.4), () => codeComposer.classList.add("hot")],
-    [c(1.3), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q"); }],
-    [c(1.5), () => reveal(tool("c-s1"), .035)],
+    [c(.6), () => codeComposer.classList.add("hot")],
+    [c(2.6), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q"); }],
+    [c(2.85), () => reveal(tool("c-s1"), .035)],
     // 7: it writes three files and serves them
-    [c(1.75), () => liveStart("index.html", "index.html", c(1.75), c(2.2))],
-    [c(2.3), () => { liveEnd(); tool("c-t0"); }],
-    [c(2.4), () => liveStart("style.css", "style.css", c(2.4), c(2.75))],
-    [c(2.85), () => { liveEnd(); tool("c-t1"); }],
-    [c(2.95), () => liveStart("game.js", "game.js", c(2.95), c(4.5))],
-    [c(4.6), () => { liveEnd(); tool("c-t2"); }],
-    [c(4.75), () => { setRun("c-t3", true); tool("c-t3"); }],
-    [c(5.1), () => { setRun("c-t3", false); openPreview(); }],
-    [c(5.3), reload],
-    [c(5.45), () => { app.classList.remove("blank"); runGame(.6, false); }],
-    [c(5.7), () => reveal(tool("c-s2"), .035)],
+    [d(1.75), () => liveStart("index.html", "index.html", d(1.75), d(2.2))],
+    [d(2.3), () => { liveEnd(); tool("c-t0"); }],
+    [d(2.4), () => liveStart("style.css", "style.css", d(2.4), d(2.75))],
+    [d(2.85), () => { liveEnd(); tool("c-t1"); }],
+    [d(2.95), () => liveStart("game.js", "game.js", d(2.95), d(4.5))],
+    [d(4.6), () => { liveEnd(); tool("c-t2"); }],
+    [d(4.75), () => { setRun("c-t3", true); tool("c-t3"); }],
+    [d(5.1), () => { setRun("c-t3", false); openPreview(); }],
+    [d(5.3), reload],
+    [d(5.45), () => { app.classList.remove("blank"); runGame(.6, false); }],
+    [d(5.7), () => reveal(tool("c-s2"), .035)],
     // 8: a change, an edit, a reload
-    [c(6.9), () => flag("app-on", false)],
-    [c(7.05), () => codeComposer.classList.add("hot")],
-    [c(8.25), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q2"); }],
-    [c(8.45), () => liveStart("game.js", "edit", c(8.45), c(8.9))],
-    [c(9.0), () => { liveEnd(); fileState("game.js", "mod"); tool("c-t4"); }],
-    [c(9.25), () => { flag("app-on", true); reload(); app.classList.add("blank"); }],
-    [c(9.5), () => { inst.v2(true); app.classList.remove("blank"); }],
-    [c(9.75), () => reveal(tool("c-s3"), .035)],
+    [d(6.9), () => flag("app-on", false)],
+    [d(7.05), () => codeComposer.classList.add("hot")],
+    [d(8.25), () => { codeTyped.textContent = ""; codeComposer.classList.remove("hot"); tool("c-q2"); }],
+    [d(8.45), () => liveStart("game.js", "edit", d(8.45), d(8.9))],
+    [d(9.0), () => { liveEnd(); fileState("game.js", "mod"); tool("c-t4"); }],
+    [d(9.25), () => { flag("app-on", true); reload(); app.classList.add("blank"); }],
+    [d(9.5), () => { inst.v2(true); app.classList.remove("blank"); }],
+    [d(9.75), () => reveal(tool("c-s3"), .035)],
   ].sort((a, b) => a[0] - b[0]);
   let EV = EVENTS();
 
   const frame = t => {
     if (t >= S3) loadAt(t);
-    if (t > CH + .5 && t < CH + 1.4) typeInto(chatTyped, Q1, CH + .55, CH + 1.15, t);
+    if (t > CH + .5 && t < CH + 1.2) typeInto(chatTyped, Q1, CH + .55, CH + 1.05, t);
     if (t >= CH) flow(t);
-    if (t > c(.4) && t < c(1.3)) typeInto(codeTyped, A.prompt, c(.5), c(1.12), t);
-    if (t > c(7.05) && t < c(8.25)) typeInto(codeTyped, A.prompt2, c(7.15), c(8.05), t);
+    if (t > c(.6) && t < c(2.6)) typeInto(codeTyped, A.prompt, c(.8), c(2.3), t);
+    if (t > d(7.05) && t < d(8.25)) typeInto(codeTyped, A.prompt2, d(7.15), d(8.05), t);
     if (writing) {
       const [a, b, n] = writing;
       liveTo(Math.max(0, Math.min(n, Math.ceil((t - a) / (b - a) * n))));
-      fileState(writing[3], "w", writing[4] === "edit" ? null : liveShown);
+      fileState(writing[3], "w", writing[4] === "edit" ? null : Math.round(writing[5] * liveShown / Math.max(1, writing[2])));
       tok(Math.floor(t * 7) % 3);
       logBottom();
     }
@@ -445,7 +459,7 @@
     tl.t = 0; tl.fired = 0; tl.done = false; streams = []; writing = null;
     flag("hook", false);
     scene("tabs"); mode("chat"); ["merge", "served", "app-on"].forEach(k => flag(k, false));
-    tabA.classList.remove("done", "met"); tabB.classList.remove("done"); letters(0);
+    tabA.classList.remove("done", "met"); tabB.classList.remove("done"); tabB.classList.add("idle"); letters(0);
     nmA.classList.remove("fresh"); nmB.classList.remove("fresh");
     setSlots(0, -1); bBtn.classList.remove("ready", "press"); aGo.classList.remove("press");
     setDevices(0); chips.forEach(ch => ch.classList.remove("in")); pkRoom(24);
@@ -467,7 +481,7 @@
   tl.final = () => {
     streams = []; writing = null; tl.done = true; tl.t = END; tl.fired = EV.length;
     scene("code"); mode("code"); flag("merge", true); flag("served", true); flag("app-on", true);
-    tabA.classList.add("done", "met"); tabB.classList.add("done"); letters(4); setSlots(4, -1);
+    tabA.classList.add("done", "met"); tabB.classList.add("done"); tabB.classList.remove("idle"); letters(4); setSlots(4, -1);
     setDevices(3); pkSelect(2); pkHover(-1); toast.classList.remove("on");
     model.classList.add("dl", "split"); loadAt(FILL1 + 1);
     words = -1; flowing = true; flow(END);
@@ -495,11 +509,11 @@
   };
 
   /* ---------- driver: one rAF, only while the window is on screen and the page is visible ---------- */
-  let raf = 0, last = 0, visible = false, frozen = false, hook = 0, hookHold = false;
+  let raf = 0, last = 0, visible = false, frozen = false, hook = 0;
   const needs = () => !frozen && visible && !document.hidden && tl.started && (hook > 0 || !tl.done);
   function loop(now) {
     const dt = last ? Math.min(.1, (now - last) / 1000) : .016; last = now;
-    if (hook > 0) { if (!hookHold) { hook -= dt; if (hook <= 0) endHook(); } }
+    if (hook > 0) { hook -= dt; if (hook <= 0) endHook(); }
     else tl.advance(dt * SPEED);
     raf = needs() ? requestAnimationFrame(loop) : 0;
   }
@@ -526,7 +540,7 @@
   const goStep = k => {
     if (RM) {
       if (k >= STEPS.length - 1) { tl.final(); return; }
-      const ends = [1.9, S2 - .3, DLP + .1, CH - .3, A1 + .5, c(1.6), c(6.6)];
+      const ends = [S1 - .3, S2 - .3, DLP + .1, CH - .3, A1 + .5, c(3.2), d(6.6)];
       seek(ends[k], true); tl.done = true; flow(A1 + 1); paintBar(STEPS[k]); return;
     }
     seek(STEPS[k]);
@@ -564,38 +578,6 @@
 
   useApp("tetris"); labelDots();
   if (RM) tl.final(); else { tl.reset(); tl.final(); }
-
-  /* ---------- first load: glide the demo to the middle of the screen, once, if the visitor hasn't scrolled ---------- */
-  (() => {
-    if (RM || location.hash || scrollY > 4) return;
-    let cancelled = false;
-    const stop = () => { cancelled = true; };
-    const evs = ["wheel", "touchstart", "keydown", "pointerdown"];
-    evs.forEach(e => addEventListener(e, stop, { passive: true, once: true }));
-    const go = () => {
-      evs.forEach(e => removeEventListener(e, stop));
-      if (cancelled || scrollY > 4) return;
-      const nav = document.querySelector(".nav"), navH = nav ? nav.offsetHeight : 0;
-      const r = demo.getBoundingClientRect(), room = innerHeight - navH;
-      const target = Math.max(0, Math.round(scrollY + r.top - navH - Math.max(8, (room - r.height) / 2)));
-      if (target < 24) return;
-      const from = scrollY, t0 = performance.now(), dur = 950;
-      const ease = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
-      let hooked = false;
-      const cancel = () => { cancelled = true; };
-      evs.forEach(e => addEventListener(e, cancel, { passive: true, once: true }));
-      if (hook > 0) { hookHold = true; hooked = true; }
-      const tick = now => {
-        const k = Math.min(1, (now - t0) / dur);
-        if (!cancelled) scrollTo(0, from + (target - from) * ease(k));
-        if (k < 1 && !cancelled) requestAnimationFrame(tick);
-        else { hookHold = false; if (hooked) hook = Math.max(hook, 2.2); evs.forEach(e => removeEventListener(e, cancel)); }
-      };
-      requestAnimationFrame(tick);
-    };
-    const ready = document.fonts && document.fonts.ready ? Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 700))]) : Promise.resolve();
-    ready.then(() => setTimeout(go, 150));
-  })();
 
   // tests and screenshots: jump to a moment, pick an app
   window.__demo = {

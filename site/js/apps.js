@@ -6,7 +6,7 @@
   "use strict";
   const TAU = Math.PI * 2;
   const BG = "#0B0F1F", PANEL = "#121834", CELL = "#18204A", DOT = "rgba(147,166,255,.09)";
-  const INK = "#EEF0F6", MUTED = "#A9B0C4";
+  const INK = "#EEF0F6", MUTED = "#A9B0C4", ACC = "#E08A2A";   // ACC: the one warm accent next to the blue ramp
   const WARM = ["#F08A6C", "#F2C14E", "#6CC5A1", "#B18CF0", "#5EB8E8", "#F28DB2", "#9BD16B"];
   const BLUE = ["#2A45E0", "#6E86FF", "#A5B4FC", "#C9D1F7", "#8EA2FF", "#4A5FD0", "#DCE2FF"];
   const MONO = '"Geist Mono",ui-monospace,Menlo,monospace';
@@ -209,7 +209,7 @@
 
   /* ---------------- Space shooter ---------------- */
   const INV = [["..X..X..", "...XX...", "..XXXX..", ".XX..XX.", "XXXXXXXX", "X.X..X.X"], ["...XX...", "..XXXX..", ".XXXXXX.", "XX.XX.XX", "XXXXXXXX", ".X.XX.X."], ["X......X", ".X.XX.X.", ".XXXXXX.", "XX.XX.XX", "XXXXXXXX", "X.X..X.X"]];
-  const ROWC = ["#F28DB2", "#B18CF0", "#5EB8E8", "#6CC5A1", "#F2C14E"];
+  const ROWC = ["#B9C6FF", "#7C8FFF", "#2A45E0", "#7C8FFF", "#B9C6FF"];   // the blue ramp; the one warm accent is ACC
   const shooter = {
     init(r) {
       const S = { r, t: 0, ship: .5, vx: 0, shots: [], bombs: [], fx: [], score: 0, lives: 3, wave: 0, cool: 0, hit: 0, stars: [] };
@@ -247,7 +247,7 @@
       // they fire back
       const alive = S.en.filter(e => e.alive);
       if (alive.length && S.r() < dt * 1.3) { const e = alive[(S.r() * alive.length) | 0]; S.bombs.push({ x: G.ox + e.gx * G.cw + G.cw / 2, y: G.oy + e.gy * G.ch + G.ch }); }
-      S.bombs.forEach(b => { if (!S.hit && Math.abs(b.x - S.ship * W) < sw * .5 && Math.abs(b.y - shipY) < 12 * G.u) { b.y = H + 20; S.hit = 1.2; S.lives--; if (S.v2) burst(S.fx, S.ship * W, shipY, "#F08A6C", 22, 160 * G.u); } });
+      S.bombs.forEach(b => { if (!S.hit && Math.abs(b.x - S.ship * W) < sw * .5 && Math.abs(b.y - shipY) < 12 * G.u) { b.y = H + 20; S.hit = 1.2; S.lives--; if (S.v2) burst(S.fx, S.ship * W, shipY, ACC, 22, 160 * G.u); } });
       if (S.lives <= 0) { const v2 = S.v2; Object.assign(S, this.init(S.r)); S.v2 = v2; }
       if (!alive.length) this.wave(S);
       stepFx(S.fx, dt);
@@ -274,8 +274,8 @@
         if (frame) { c.fillRect(x0, y0 + 4 * px, px, px); c.fillRect(x0 + 7 * px, y0 + 4 * px, px, px); }
       });
       drawFx(c, S.fx);
-      c.fillStyle = "#F2C14E"; S.shots.forEach(s => { rr(c, s.x - 1.5, s.y - 8, 3, 12, 1.5); c.fill(); });
-      c.fillStyle = "#F08A6C"; S.bombs.forEach(b => { c.beginPath(); c.arc(b.x, b.y, 3, 0, TAU); c.fill(); });
+      c.fillStyle = "#B9C6FF"; S.shots.forEach(s => { rr(c, s.x - 1.5, s.y - 8, 3, 12, 1.5); c.fill(); });
+      c.fillStyle = ACC; S.bombs.forEach(b => { c.beginPath(); c.arc(b.x, b.y, 3, 0, TAU); c.fill(); });
       // the ship
       const sx = S.ship * W, sy = H - 34 * G.u, u = G.u;
       if (!(S.hit && Math.floor(S.t * 12) % 2)) {
@@ -362,7 +362,7 @@
   };
 
   /* ---------------- Breakout ---------------- */
-  const BRC = ["#F28DB2", "#F08A6C", "#F2C14E", "#6CC5A1", "#5EB8E8", "#B18CF0"];
+  const BRC = ["#B9C6FF", "#7C8FFF", "#2A45E0", "#1C33B8", "#2A45E0", "#7C8FFF"];   // the blue ramp; the ball is the warm accent
   const breakout = {
     init(r) { const S = { r, px: .5, pv: 0, score: 0, lives: 3, level: 1, fx: [], trail: [], t: 0, aim: 0 }; this.bricks(S); this.serve(S); return S; },
     bricks(S) { S.br = []; for (let y = 0; y < 6; y++) for (let x = 0; x < 9; x++) S.br.push({ x, y, alive: true }); },
@@ -416,10 +416,10 @@
       rr(c, X(S.px) - pw / 2, py, pw, 8, 4); c.fillStyle = INK; c.fill();
       const bx = X(S.b.x), by = S.b.y * H;
       if (v2) {
-        S.trail.forEach(([x, y], i) => { c.globalAlpha = i / S.trail.length * .5; c.fillStyle = "#6E86FF"; c.beginPath(); c.arc(X(x), y * H, 5 * i / S.trail.length + 1, 0, TAU); c.fill(); }); c.globalAlpha = 1;
-        c.shadowColor = "rgba(110,134,255,.9)"; c.shadowBlur = 16;
+        S.trail.forEach(([x, y], i) => { c.globalAlpha = i / S.trail.length * .5; c.fillStyle = ACC; c.beginPath(); c.arc(X(x), y * H, 5 * i / S.trail.length + 1, 0, TAU); c.fill(); }); c.globalAlpha = 1;
+        c.shadowColor = "rgba(224,138,42,.8)"; c.shadowBlur = 16;
       }
-      c.fillStyle = v2 ? "#DCE2FF" : "#F2C14E"; c.beginPath(); c.arc(bx, by, 5.5, 0, TAU); c.fill(); c.shadowBlur = 0;
+      c.fillStyle = ACC; c.beginPath(); c.arc(bx, by, 5.5, 0, TAU); c.fill(); c.shadowBlur = 0;
       label(c, "SCORE", 16, 24); big(c, fmt(S.score), 16, 44, "left", 16);
       label(c, "LEVEL " + S.level, W - 16, 24, "right");
       for (let i = 0; i < S.lives; i++) { c.fillStyle = MUTED; c.beginPath(); c.arc(W - 20 - i * 14, 40, 4, 0, TAU); c.fill(); }
