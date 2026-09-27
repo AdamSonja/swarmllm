@@ -163,11 +163,11 @@ function peerCard(id, name, meta, self) {
     <button class="pchip" type="button" aria-expanded="false"><span class="dot ${self || meta.webgpu ? "ok" : "warn"}"></span><span class="pic">${iconFor(meta)}</span><span class="pname"></span><span class="cg"></span><span class="cst"></span></button>
     <div class="pop" hidden>
       <div class="pop-h"><span class="pic2">${iconFor(meta)}</span><span class="pn"></span><span class="pst"></span></div>
-      <div class="peer-sub"><span class="pkind"></span><span aria-hidden="true">\u00b7</span><span class="buf">\u2014</span><span class="play"></span></div>
+      <div class="peer-sub"><span class="pkind"></span><span aria-hidden="true">\u00b7</span><span class="buf">-</span><span class="play"></span></div>
       <div class="peer-gpu dev-only"></div>
       <div class="peer-stats dev-only">
-        <span>rtt <b class="rtt">\u2014</b></span>
-        <span>bw <b class="bw">\u2014</b></span>
+        <span>rtt <b class="rtt">-</b></span>
+        <span>bw <b class="bw">-</b></span>
       </div>
       ${self ? '<button class="compute-btn" id="compute-btn-self" type="button"><span class="cdots" aria-hidden="true"><i></i><i></i><i></i></span>Lend this device</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}
     </div>`;
@@ -208,7 +208,7 @@ function paintCard(card, name, meta, self) {
   card.querySelector(".peer-gpu").textContent = meta.webgpu
     ? `${meta.ua} · ${meta.gpu}` : `${meta.ua} · no WebGPU`;
   const budget = meta.budgetGB || meta.maxBufGB;
-  card.querySelector(".buf").textContent = meta.webgpu === false ? "no WebGPU" : meta.contribGB ? lends(meta.contribGB) : (budget ? budget + " GB" : "\u2014");
+  card.querySelector(".buf").textContent = meta.webgpu === false ? "no WebGPU" : meta.contribGB ? lends(meta.contribGB) : (budget ? budget + " GB" : "-");
   card.querySelector(".cg").textContent = meta.webgpu === false ? "asks" : meta.contribGB ? meta.contribGB + " GB" : "";
   card.querySelector(".pchip").title = `${name}: ${card.querySelector(".buf").textContent}`;
   peerStatus(card, meta.webgpu === false ? "asks only" : self ? "this device" : "connected");
@@ -1205,7 +1205,7 @@ function sendLabel() {
 const kfmt = (n) => n >= 10000 ? (n / 1000).toFixed(0) + "k" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
 function setCtx(used, max) {
   const sm = $("sm-ctx");
-  if (sm) { sm.textContent = used ? `${kfmt(used)} / ${kfmt(max)}` : "-"; sm.classList.toggle("warn", !!used && used > max * 0.8); }
+  if (sm) { sm.textContent = used ? `${kfmt(used)} / ${max % 1024 === 0 && max >= 1024 ? max / 1024 + "k" : kfmt(max)}` : "-"; sm.classList.toggle("warn", !!used && used > max * 0.8); }
   const el = $("ctx-meter"); if (!el) return;
   if (!used) { el.textContent = ""; return; }
   el.textContent = `context ${used} / ${max}`;

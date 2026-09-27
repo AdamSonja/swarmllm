@@ -542,6 +542,7 @@
   #queue-note:empty { display: none; }
   #queue-note:not(:empty) + #ctx-meter { margin-left: 10px; }
   #ctx-meter { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  #room-screen:has(#swarm-map:not([hidden])) #ctx-meter { display: none; }   /* the band shows the context */
   #ctx-meter.warn { color: var(--warn-text); }
   .bubble.drafts { white-space: pre-wrap; font-family: var(--mono); font-size: 12.5px; }
   .bubble .dr { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text); border-radius: 3px; }
@@ -825,8 +826,9 @@
   @container pane (max-width: 760px) {
     .sm-head { flex-wrap: wrap; row-gap: 8px; }
     .sm-stats { flex-basis: 100%; margin: 0; }
-    .sm-stats > div { flex: 1 1 0; min-width: 0; justify-content: center; padding: 0 6px; gap: 4px; }
-    .sm-stats dt { overflow: hidden; text-overflow: ellipsis; }
+    .sm-stats > div { flex: 1 1 0; min-width: 0; flex-direction: column; align-items: center; justify-content: center; height: auto; padding: 5px 4px; gap: 3px; }
+    .sm-stats dd { line-height: 1.1; }
+    .sm-stats dt { line-height: 1.1; font-size: 10.5px; }
     .hl .lr { display: none; }
   }
   @container pane (max-width: 700px) { .sm-track { display: none; } }
