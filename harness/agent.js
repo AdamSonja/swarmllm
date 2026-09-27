@@ -59,7 +59,7 @@ export class Agent {
     const req = ++this.req;
     const R = this.reqs[req] = { calls: [], done: false, answer: "" };
     this.turns.push({ role: "user", text: userText, req });
-    let calls = 0, shown = "";
+    let calls = 0, shown = "", failRun = 0, lastFail = "";
     // never leave two user turns in a row: an untouched request is taken back, anything else gets
     // a closing assistant turn
     const close = () => {
@@ -132,7 +132,8 @@ export class Agent {
           if (u && (u.reason === "max" || u.reason === "ctx")) c.error = `your answer was cut at ${u.generated} tokens before the call was complete; write long files in parts (write_file with append: true)`;
           else {
             // ended mid-call for another reason (end of turn, a stop, a device hiccup): say which, so it can be traced
-            c.error = `your answer ended in the middle of a tool call${u ? ` (${u.reason || "stop"} after ${u.generated} tokens)` : ""}. Close every call with </parameter>, </function> and </tool_call>; write long files in parts with append: true`;
+            const tail = String(c.raw || "").slice(-160).replace(/\s+/g, " ").trim();
+            c.error = `your answer ended in the middle of a tool call${u ? ` (${u.reason || "stop"} after ${u.generated} tokens)` : ""}. Close every call with </parameter>, </function> and </tool_call>; write long files in parts with append: true.${tail ? ` The call ended with: "${tail}"` : ""}`;
             try { console.warn("[code] call ended early", u, JSON.stringify(String(c.raw || "").slice(-300))); } catch {}
           }
         }
@@ -155,6 +156,17 @@ export class Agent {
       }
       this.turns.push({ role: "user", text: toolResponses(results), req, calls: briefs });
       if (signal?.aborted) return stopped(step);
+      // the same failure three steps in a row: the model (or the room) is stuck, so stop and say so
+      // instead of burning the context on retries
+      const failed = results.length && results.every((r) => /^error/.test(r));
+      const sig = failed ? results.map((r) => r.replace(/\d+/g, "#").slice(0, 80)).join("|") : "";
+      failRun = failed && (sig === lastFail || failRun === 0) ? failRun + 1 : failed ? 1 : 0;
+      lastFail = sig;
+      if (failRun >= 3) {
+        finish(); close();
+        this.onEvent({ type: "stuck", step, error: results[0] });
+        return { text: "Stopped: the same tool call failed three times in a row.", steps: step, calls, reason: "stuck" };
+      }
     }
     finish(); close();
     this.onEvent({ type: "limit", steps: this.maxSteps });

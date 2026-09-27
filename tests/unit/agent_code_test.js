@@ -247,3 +247,11 @@ Deno.test("agent: a write_file that ends early for any reason keeps its lines; t
   await B.run("go");
   ok(/ended in the middle of a tool call \(stop after 12 tokens\)/.test(B.turns[2].text), B.turns[2].text);
 });
+
+Deno.test("agent: the same failing call three steps in a row stops the run as stuck", async () => {
+  const bad = "<tool_call>\n<function=write_file>\n<parameter=path>";
+  const A = new Agent({ generate: scripted([bad, bad, bad, bad, bad, "ok"]), tools: tools([]), usage: () => ({ reason: "stop", generated: 207, prompt: 10 }) });
+  const r = await A.run("go");
+  eq(r.reason, "stuck");
+  eq(r.steps, 3);
+});
