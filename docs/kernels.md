@@ -74,7 +74,7 @@ A generated token on the 27B = ~111 ms on the GB10: **82 ms streaming 15 GB of w
 
 ## Open items
 - Prefill GEMM: `benchmarks/bench_gemm.js` is correct and 1.25× over the batched GEMV path; still latency-bound at ~30 GB/s. Next: register prefetch tuning, split-K for small matrices, 256-thread workgroups.
-- Register-resident `dn_delta` (see [deltanet-prefill-spec.md](archive/deltanet-prefill-spec.md)): ~4% of a pass, bit-identical.
+- Register-resident `dn_delta` (see [deltanet-prefill-spec.md](deltanet-prefill-spec.md)): ~4% of a pass, bit-identical.
 - MoE expert GEMV layout (`engine/wgsl/moe.js`, engine option `moeKernel`): the expert kernels are generated from
   `{ WG, TPR, R, U, wide, xsh }` per kernel (threads per workgroup, threads per row group, rows per group,
   unroll, 16 B whole-block loads, input staged transposed in workgroup memory). `MOE_DEFAULT` (wide 16 B loads,
