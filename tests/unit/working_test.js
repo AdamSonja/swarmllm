@@ -1,5 +1,5 @@
 // room/working.js: the words of the "working" line shown before a model's first token.
-import { verbs, elapsed } from "../../room/working.js";
+import { verbs } from "../../room/working.js";
 
 Deno.test("verbs: one word at a time, never the same twice in a row, every verb before a repeat", () => {
   const next = verbs();
@@ -11,7 +11,3 @@ Deno.test("verbs: one word at a time, never the same twice in a row, every verb 
   if (first.size !== 16) throw new Error(`the first 16 are not all different: ${[...first]}`);
 });
 
-Deno.test("elapsed: seconds, then minutes and padded seconds", () => {
-  const cases = [[0, "0s"], [999, "0s"], [4200, "4s"], [59999, "59s"], [60000, "1m 00s"], [65000, "1m 05s"], [-5, "0s"]];
-  for (const [ms, want] of cases) if (elapsed(ms) !== want) throw new Error(`${ms}: ${elapsed(ms)} != ${want}`);
-});

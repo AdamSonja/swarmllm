@@ -265,8 +265,8 @@ async function session(browser, modelBytes, peerjsJs, nDev, label) {
       if (arg("reload-after") !== undefined && +arg("reload-after") === r && r + 1 < ROUNDS) {
         const t0 = Date.now();
         await tabs.host.reload();
-        await tabs.host.waitForSelector("#resume-btn:not([hidden])", { timeout: 30000 });
-        await tabs.host.click("#resume-btn");
+        // the join screen no longer shows a resume note (removed from the UI); --reload-after has no way back in
+        throw new Error("--reload-after: the join screen's resume note was removed, so a reloaded host can't pick its room back up");
         await tabs.host.waitForFunction(() => /cluster online/.test(document.getElementById("ai-status").textContent), null, { timeout: TIMEOUT });
           for (const p of Object.values(tabs).slice(1)) await p.waitForFunction(() => document.getElementById("ai-row").style.display === "flex", null, { timeout: 60000 });
         log(`[${label}] host reloaded and resumed after round ${r} in ${((Date.now() - t0) / 1000).toFixed(1)}s: ${await tabs.host.textContent("#ai-status")}`);

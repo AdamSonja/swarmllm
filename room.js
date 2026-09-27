@@ -27,6 +27,7 @@ import { drawCard } from "./room/card.js";
 import { probe as preflight, deviceKind } from "./room/preflight.js";
 import { computeScreen } from "./room/compute.js";
 import { working } from "./room/working.js";
+import { stars } from "./room/stars.js";
 
 // Hidden-state transport (room/transport.js). ?wire=off falls back to PeerJS messages;
 // ?wire=slice uses one sliced channel; ?wire=stripeN spreads slices over N peer connections.
@@ -158,16 +159,14 @@ function log(from, text) {
   $("chat-log").scrollTop = $("chat-log").scrollHeight;
 }
 
-// A device card: name, what kind of device, the memory it lends, its status. The link numbers
-// (rtt, bandwidth, GPU) and the bandwidth test show with ?dev=1.
-const lends = (gb) => "lends " + gb + " GB";
+// A device card: name, what kind of device, the memory it gives the room, its status. This device's
+// card has a quiet -/+ on its GB. The link numbers (rtt, bandwidth, GPU) and the bandwidth test show with ?dev=1.
+const lends = (gb) => gb + " GB";
 const ICONS = {
   laptop: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M3 3.5h10v7H3zM1.2 12.5h13.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
   desk: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M1.8 2.8h12.4v8.4H1.8zM8 11.2v2.6M5.2 13.8h5.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
   phone: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="4.5" y="1.5" width="7" height="13" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 12.2h2" stroke="currentColor" stroke-width="1.3"/></svg>',
 };
-// the Pooled dots mark (site/logo/mark.svg), for the buttons that open this device's screen
-const MARK_SVG = '<svg class="mk" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8"/><circle cx="10.2" cy="3.4" r="1.99"/><circle cx="18.5" cy="3.4" r="2.38"/><circle cx="3.4" cy="10.2" r="1.99"/><circle cx="10.2" cy="10.2" r="2.38"/><circle cx="18.5" cy="10.2" r="2.94"/><circle cx="3.4" cy="18.5" r="2.38"/><circle cx="10.2" cy="18.5" r="2.94"/><circle cx="18.5" cy="18.5" r="3.9" fill="#2A45E0"/></svg>';
 const iconFor = (meta) => meta.phone || /iPhone|Android$/.test(meta.ua || "") ? ICONS.phone : /Mac|iPad/.test(meta.ua || "") ? ICONS.laptop : ICONS.desk;
 // "0–19" (what the deal sends) -> "1–20", the way people count layers
 const humanRange = (r) => { const m = /^(\d+)\D+(\d+)$/.exec(String(r || "")); return m ? `${+m[1] + 1}\u2013${+m[2] + 1}` : String(r || ""); };
@@ -206,13 +205,12 @@ function peerCard(id, name, meta, self) {
         <span>rtt <b class="rtt">-</b></span>
         <span>bw <b class="bw">-</b></span>
       </div>
-      ${self ? '<button class="compute-btn" id="compute-btn-self" type="button">' + MARK_SVG + 'Open this device\'s screen</button>' : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}
+      ${self ? "" : '<button class="bw-btn dev-only" type="button">test bandwidth</button>'}
     </div>`;
   paintCard(card, name, meta, self);
   $("peers").appendChild(card);
   card.querySelector(".pchip").addEventListener("click", (e) => { e.stopPropagation(); chipPop(card); });
   if (!self) card.querySelector(".bw-btn").addEventListener("click", () => bwTest(id));
-  else card.querySelector(".compute-btn").addEventListener("click", () => { chipPop(null); compute.open(); });
   return card;
 }
 // one device card open at a time, placed under its chip (fixed, so the scrolling chip row never clips it)
@@ -255,9 +253,9 @@ function paintCard(card, name, meta, self) {
   card.querySelector(".peer-gpu").textContent = meta.webgpu
     ? `${meta.ua} · ${meta.gpu}` : `${meta.ua} · no WebGPU`;
   const budget = meta.budgetGB || meta.maxBufGB;
-  card.querySelector(".buf").textContent = meta.webgpu === false ? "no WebGPU" : meta.contribGB ? lends(meta.contribGB) : (budget ? budget + " GB" : "-");
+  setBuf(card, meta.webgpu === false ? "no WebGPU" : meta.contribGB ? lends(meta.contribGB) : (budget ? budget + " GB" : "-"));
   card.querySelector(".cg").textContent = meta.webgpu === false ? "chat only" : meta.contribGB ? meta.contribGB + " GB" : "";
-  card.querySelector(".pchip").title = meta.webgpu === false ? `${name}: this device can ask but can't hold model layers` : `${name}: ${card.querySelector(".buf").textContent}`;
+  card.querySelector(".pchip").title = meta.webgpu === false ? `${name}: this device can ask but can't hold model layers` : `${name}: ${card.querySelector(".buf").textContent.replace(/[\u2212+]/g, "").trim()}`;
   card.style.setProperty("--sw", devColor(name));
   peerStatus(card, meta.webgpu === false ? "chat only" : self ? "this device" : "connected");
 }
@@ -269,7 +267,9 @@ function peerStatus(card, text, ok = false) {
   card.classList.toggle("loading", !!pct && +pct[1] < 100);
   card.querySelector(".cst").textContent = pct ? pct[1] + "%" : "";
 }
-function setLends(card, gb) { card.querySelector(".buf").textContent = lends(gb); card.querySelector(".cg").textContent = gb + " GB"; }
+function setLends(card, gb) { setBuf(card, lends(gb)); card.querySelector(".cg").textContent = gb + " GB"; }
+// the GB on a card (this device's card keeps its -/+ around the number)
+function setBuf(card, text) { const b = card.querySelector(".buf"); (b.querySelector(".bv") || b).textContent = text; }
 
 let wasReady = false;
 // The model ladder: every model with what this room still needs for it, smallest first. Until
@@ -351,13 +351,14 @@ function renderPool(pledged) {
   if (can) { $("ap-gb").textContent = myMeta.contribGB; $("ap-minus").disabled = myMeta.contribGB <= lendMin(); $("ap-plus").disabled = myMeta.contribGB >= 64; }
 }
 const lendMin = () => (myMeta.phone ? 0.5 : 1);
+function selfSteps(card) { const s = card.querySelectorAll(".gbstep .step"); if (s.length) { s[0].disabled = myMeta.contribGB <= lendMin(); s[1].disabled = myMeta.contribGB >= 64; } }
 // lend a different amount: this device's card, the room's total, and every other device hear it
 function lendGB(v) {
   v = Math.round(Math.min(64, Math.max(lendMin(), v)) * 10) / 10;
   if (!myMeta.webgpu || v === myMeta.contribGB) return;
   myMeta.contribGB = v;
   const selfCard = document.querySelector(".peer-card.self");
-  if (selfCard) { setLends(selfCard, v); const i = selfCard.querySelector(".pledge input"); if (i) i.value = v; }
+  if (selfCard) { setLends(selfCard, v); selfSteps(selfCard); }
   updateCluster(); broadcastAll({ t: "pledge", gb: v });
 }
 $("ap-minus").addEventListener("click", () => lendGB(myMeta.contribGB - (myMeta.phone ? 0.5 : 1)));
@@ -383,17 +384,21 @@ function enterRoom() {
   $("ai-panel").style.display = "flex";
   aiStatus("");
   emptyText("Pick a model and press Start. Anyone in the room can.");
+  selfStepper();
+}
+// a quiet -/+ around this device's GB on its card, the same steps as the model card's
+function selfStepper() {
   const selfCard = document.querySelector(".peer-card.self");
-  if (selfCard && myMeta.webgpu) {
-    const row = document.createElement("div");
-    row.className = "pledge";
-    row.innerHTML = `Lend <input type="number" min="1" max="64" step="1" value="${myMeta.contribGB}" aria-label="Gigabytes of memory to lend"> GB`;
-    selfCard.querySelector(".pop").appendChild(row);
-    row.querySelector("input").addEventListener("change", (e) => {
-      const v = parseFloat(e.target.value);
-      if (v >= lendMin()) lendGB(v);
-    });
+  if (!selfCard || !myMeta.webgpu) return;
+  const buf = selfCard.querySelector(".buf");
+  if (!buf.classList.contains("gbstep")) {
+    const text = buf.textContent;
+    buf.classList.add("gbstep");
+    buf.innerHTML = '<button class="step" type="button" data-d="-1" aria-label="Less memory">\u2212</button><span class="bv"></span><button class="step" type="button" data-d="1" aria-label="More memory">+</button>';
+    buf.querySelector(".bv").textContent = text;
+    buf.addEventListener("click", (e) => { const b = e.target.closest(".step"); if (b) lendGB(myMeta.contribGB + +b.dataset.d * (myMeta.phone ? 0.5 : 1)); });
   }
+  selfSteps(selfCard);
 }
 
 // --- connection wiring ---
@@ -436,7 +441,7 @@ function ensureCard(id, name, meta) {
     updateCluster();
     log("room", `${name || id} joined`);
     presence(name || id, true);
-    if ($("ai-output").style.display === "block") sysNote(`${name || id} joined${meta?.contribGB && meta?.webgpu ? `, lends ${meta.contribGB} GB` : ""}`, "join");
+    if ($("ai-output").style.display === "block") sysNote(`${name || id} joined${meta?.contribGB && meta?.webgpu ? ` with ${meta.contribGB} GB` : ""}`, "join");
     mascot(`${name || id} joined! ${members.size + 1} devices in the room.`);
   }
   const e = conns.get(id);
@@ -758,11 +763,11 @@ $("compute-open").addEventListener("click", () => compute.open());
 function deviceMark() {
   const s = computeState(), b = $("compute-open");
   const on = s.lo != null && s.hi != null && s.phase !== "idle";
-  const tip = on ? (s.phase === "loading" ? `Loading layers ${s.lo + 1}\u2013${s.hi}` : `Holding layers ${s.lo + 1}\u2013${s.hi}`) : "This device's screen";
+  const tip = on ? (s.phase === "loading" ? `This device \u00b7 loading layers ${s.lo + 1}\u2013${s.hi}` : `This device \u00b7 holds layers ${s.lo + 1}\u2013${s.hi}`) : "This device";
   if (b.dataset.tip === tip && b.classList.contains("on") === on) return;
   b.classList.toggle("on", on);
   b.dataset.tip = tip;
-  b.setAttribute("aria-label", on ? `This device is working: ${tip.toLowerCase()}. Open its screen` : "Open this device's screen");
+  b.setAttribute("aria-label", tip.replace(" \u00b7 ", ": "));
 }
 setInterval(deviceMark, 1000);
 $("create-btn").addEventListener("click", () => { keepAwake(); start(true); });
@@ -821,18 +826,10 @@ $("share-close").addEventListener("click", closeShare);
 $("share").addEventListener("click", (e) => { if (e.target === $("share")) closeShare(); });
 $("room-over-close").addEventListener("click", () => { $("room-over").hidden = true; });
 $("share-copy").addEventListener("click", copyRoomLink);
-$("share-native").addEventListener("click", () => navigator.share?.({ title: "Join my Pooled room", text: `Room ${roomCode}: lend this device to the AI model we run together`, url: roomLink() }).catch(() => {}));
+$("share-native").addEventListener("click", () => navigator.share?.({ title: "Join my Pooled room", text: `Room ${roomCode}: add this device to the AI model we run together`, url: roomLink() }).catch(() => {}));
 $("room-over-new").addEventListener("click", () => { location.href = location.pathname.startsWith("/r/") ? "/room" : location.pathname.replace(/\?.*$/, ""); });
-// a host whose tab reloaded (or closed by accident) can pick its room back up for 15 minutes
-{
-  const r = savedHost();
-  if (r && !codeFromLocation(location.pathname, location.search, location.hash)) {
-    const mins = Math.max(1, Math.round((Date.now() - r.t) / 60000));
-    $("resume-btn").hidden = false;
-    $("resume-btn").textContent = `resume room ${r.code} (you were its host ${mins} min ago)`;
-    $("resume-btn").addEventListener("click", () => { keepAwake(); $("resume-btn").disabled = true; start(true, r); });
-  }
-}
+stars();   // the header's Star button: the repo's star count (room/stars.js)
+// (the join screen no longer offers to resume a room this tab hosted; saveHost/resumeHost stay for the session)
 // a link with a room code fills it in and joins once the GPU probe is done
 const linkCode = codeFromLocation(location.pathname, location.search, location.hash);
 // a virtual device (an iframe the host added, see addVirtual): its name, pledge and a compact page
@@ -1312,9 +1309,12 @@ const kfmt = (n) => n >= 10000 ? (n / 1000).toFixed(0) + "k" : n >= 1000 ? (n / 
 function setCtx(used, max) {
   const sm = $("sm-ctx");
   if (sm) { sm.textContent = used ? `${kfmt(used)} / ${max % 1024 === 0 && max >= 1024 ? max / 1024 + "k" : kfmt(max)}` : "-"; sm.classList.toggle("warn", !!used && used > max * 0.8); }
+  // by the composer: the same ring as Code's (room/code-ui.js ctx), how much of the context the chat uses
   const el = $("ctx-meter"); if (!el) return;
-  if (!used) { el.textContent = ""; return; }
-  el.textContent = `context ${used} / ${max}`;
+  if (!used || !max) { el.replaceChildren(); el.removeAttribute("title"); el.classList.remove("warn"); return; }
+  const pct = Math.min(100, Math.max(1, Math.round(used / max * 100)));
+  el.innerHTML = `<i style="--p:${pct}" aria-hidden="true"></i>${pct}% of context`;
+  el.title = `${used.toLocaleString("en-US")} of ${max.toLocaleString("en-US")} tokens`;
   el.classList.toggle("warn", used > max * 0.8);
 }
 
@@ -2011,8 +2011,9 @@ function renderMap(nodes, st, live) {
     strip.style.setProperty("--cells", n);
     el.style.setProperty("--lanes", Math.max(1, sorted.length));
     el.toggleAttribute("data-many", sorted.length > 4);
-    // folded: the same split as one thin bar
-    el.querySelector(".sm-mini").innerHTML = sorted.map((sp, k) => { const c = devColor(sp.name); return `<i style="--sw:${c};--on-sw:${onSwatch(c)};--n:${Math.max(1, sp.hi - sp.lo)};--k:${k}" title="${esc(String(sp.name))}: layers ${sp.lo + 1}\u2013${sp.hi}"><span>${esc(String(sp.name))}</span></i>`; }).join("");
+    // folded: the same split as a row of small blocks
+    miniSpans = sorted.map((sp) => ({ name: sp.name, lo: sp.lo, hi: sp.hi })); miniTotal = total;
+    paintMini(true);
   }
   // each lane's own time per token (what its GPU spends on its layers)
   for (const lane of strip.querySelectorAll(".sm-half")) {
@@ -2043,6 +2044,28 @@ function renderMap(nodes, st, live) {
   el.querySelector(".sm-meta").title = `${nodes.length} device${nodes.length > 1 ? "s" : ""}: every token takes a lap through all of them`;
   deviceMark();
 }
+// The folded band's split: one small block per layer, in the colour of the device that holds it, with
+// small gaps, so it reads as layers dealt out even with one device. On a narrow bar a block stands for a
+// few layers (at least 5 px a block); it is redrawn when the bar changes width.
+let miniSpans = [], miniTotal = 0, miniW = -1;
+function paintMini(force = false) {
+  const mini = $("swarm-map").querySelector(".sm-mini");
+  const w = mini.clientWidth;
+  if (!w || (!force && w === miniW)) return;
+  miniW = w;
+  if (!miniTotal) { mini.innerHTML = ""; return; }
+  const n = Math.max(1, Math.min(miniTotal, Math.floor((w + 2) / 7))), per = miniTotal / n;
+  let html = "";
+  for (let c = 0; c < n; c++) {
+    const lo = Math.floor(c * per), hi = Math.max(lo + 1, Math.floor((c + 1) * per));
+    const k = miniSpans.findIndex((sp) => lo >= sp.lo && lo < sp.hi), sp = miniSpans[k];
+    const range = hi - lo > 1 ? `layers ${lo + 1}\u2013${hi}` : `layer ${lo + 1}`;
+    html += sp ? `<i style="--sw:${devColor(sp.name)};--k:${k}" title="${esc(String(sp.name))}: ${range}"></i>` : `<i class="none" title="${range}: not dealt"></i>`;
+  }
+  mini.innerHTML = html;
+  mini.title = miniSpans.map((sp) => `${sp.name}: layers ${sp.lo + 1}\u2013${sp.hi}`).join(" \u00b7 ");
+}
+if (typeof ResizeObserver === "function") new ResizeObserver(() => paintMini()).observe($("swarm-map").querySelector(".sm-mini"));
 // The band folds to one line (the model, its state, a thin bar of the split). Each viewer's choice is
 // kept in this browser, separately for Chat and Code.
 const bandMode = () => ($("chatpane").classList.contains("code-mode") ? "code" : "chat");
@@ -2525,7 +2548,7 @@ function hostGone() {
   codeRoleChanged();
   $("ai-row").style.display = "none";
   $("room-over").hidden = false;
-  $("room-over-why").textContent = "The host's tab closed. Waiting a minute in case it comes back (a reloaded host resumes the room)…";
+  $("room-over-why").textContent = "The host's tab closed. Waiting a minute in case it comes back…";
   aiStatus("the host left; waiting for it to come back…");
   const t0 = Date.now();
   clearInterval(hostGone.timer);
@@ -2754,6 +2777,7 @@ async function aiOnData(from, d) {
       if (MODELS[d.model]) { setModelValue(d.model); ai.model = d.model; }
       $("ai-row").style.display = "flex";
       $("chat-tools").hidden = false;
+      $("mode-bar").hidden = false;   // Chat | Code for every device, not only the host (a phone guest had no way to Code)
       emptyText("The model is ready. Ask anything.");
       sysNote("Model ready");
       aiStatus(ai.range ? `cluster online · serving layers ${ai.range[0]}–${ai.range[1] - 1}` : "cluster online · this device asks, the others think");
@@ -2911,7 +2935,7 @@ const SEG_HELP = {
   "ai-visibility": { all: "Everyone in the room sees the questions and the answers.", host: "Only this device sees the text. Every device still helps write it.", asker: "Each answer goes to whoever asked it. Every device still helps write it." },
   "ai-length": { short: "About a paragraph at most (150 tokens).", normal: "A few paragraphs (400 tokens).", long: "Room for long answers and code (1,200 tokens)." },
   "ai-sampling": { creative: "Varied wording: ask twice, get two different answers.", focused: "Steadier wording, fewer surprises.", exact: "Always the likeliest word: the same question gets the same answer." },
-  "ai-split": { memory: "Every device holds some layers, sized by what it lends.", speed: "The fastest devices hold the layers, with the fewest hops. Takes effect when the layers are dealt again." },
+  "ai-split": { memory: "Every device holds some layers, sized by the memory it gives.", speed: "The fastest devices hold the layers, with the fewest hops. Takes effect when the layers are dealt again." },
 };
 const segLabel = (id, o) => SEG_LABEL[id]?.[o.value] || o.text.replace(/\s*\(.*\)$/, "").replace(/^./, (c) => c.toUpperCase());
 function buildSegs() {
@@ -3041,6 +3065,7 @@ if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "lo
         for (const [id, e] of conns) if (e.name === nm) { e.meta = { ...e.meta, ...m }; if (members.has(id)) members.get(id).meta = e.meta; }
         paintCard(card, nm, m, card.classList.contains("self"));
       }
+      selfStepper();
       updateCluster();
     },
     // loading(p, { cache: true }) pictures a load from the browser cache; { early: true } one that
@@ -3084,7 +3109,7 @@ if (new URLSearchParams(location.search).get("sim") === "1" && ["127.0.0.1", "lo
       chatBotStart(1);
       botEl.pieces = [{ t: "Pooled runs one open AI model across the devices in this room. Each one holds some of my layers, and **every word I write passes through all of them**, right here in your browser tabs.", d: 0 }];
       chatBotEnd(null, "21.4 tok/s · 3 devices");
-      sysNote(`${ns[ns.length - 1]} joined, lends 2 GB`, "join");
+      sysNote(`${ns[ns.length - 1]} joined with 2 GB`, "join");
       chatUser(ns[ns.length - 1], "can it write code?");
       chatBotStart(2);
       chatBotPiece("Yes. Open **Code** and tell me what to build. I write the files, run them, and you watch it ", 0);

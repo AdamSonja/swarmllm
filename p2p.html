@@ -146,7 +146,7 @@
   body:has(#room-screen.sweep) .peer-card.holds .pchip { animation: cardtok var(--lap) var(--ease) both; animation-delay: calc(var(--lap) * var(--k, 0) / 4); }
   @keyframes cardtok { 0%, 100% { box-shadow: none; border-color: var(--chip-bd); } 20% { box-shadow: 0 0 0 3px var(--accent-soft); border-color: var(--sw); } }
 
-  /* a device's card: what it is, what it lends, the layers it holds (fixed, placed by room.js under its chip) */
+  /* a device's card: what it is, the memory it gives, the layers it holds (fixed, placed by room.js under its chip) */
   .pop { position: fixed; z-index: 60; width: 272px; padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 1px 2px rgba(20,22,29,.05), 0 18px 40px -16px rgba(20,22,29,.28); animation: popin .22s var(--ease); cursor: default; }
   @keyframes popin { from { opacity: 0; transform: translateY(-4px); } }
   @keyframes sheetup { from { transform: translateY(100%); } }
@@ -159,16 +159,18 @@
   .peer-sub .buf { color: var(--text); }
   .play { margin-left: auto; font: 400 12px/1 var(--mono); color: var(--accent-text); }
   .play:empty { display: none; }
+  .peer-card.self .play { flex-basis: 100%; margin: 4px 0 0; }   /* under the -/+, not squeezed beside it */
   .peer-sub .dot { display: none; }
   .peer-gpu { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; overflow-wrap: anywhere; }
   .peer-stats { font-family: var(--mono); font-size: 11px; margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); }
   .peer-stats b { color: var(--text); font-weight: 500; }
   .pop .bw-btn { margin-top: 10px; font: 500 12px/1 var(--sans); padding: 7px 10px; color: var(--ink-2); }
-  .compute-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 12px; height: 36px; padding: 0 10px; font: 500 13px/1 var(--sans); color: var(--text); border-color: var(--rule-3); background: var(--panel); }
-  .compute-btn:hover:not(:disabled) { background: var(--panel-3); border-color: var(--ink-3); color: var(--text); }
-  .compute-btn .mk { flex: none; fill: currentColor; }
-  .pledge { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; color: var(--muted); }
-  .pledge input { width: 60px; padding: 5px 6px; font: 500 13px/1.2 var(--mono); border-radius: 8px; text-align: center; }
+  /* this device's GB, with a quiet -/+ */
+  .buf.gbstep { display: inline-flex; align-items: center; gap: 2px; }
+  .buf.gbstep .bv { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+  .buf.gbstep .step { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; display: grid; place-items: center; font: 400 14px/1 var(--sans); color: var(--muted); background: transparent; }
+  .buf.gbstep .step:hover:not(:disabled) { background: var(--panel-2); color: var(--text); transform: none; }
+  .buf.gbstep .step:disabled { opacity: .35; }
 
   #hdr-sum { position: relative; flex: none; font: 400 12px/1 var(--mono); color: var(--muted); white-space: nowrap; background: var(--panel-3); padding: 8px 0 8px 4px; margin: -8px 0; }
   #hdr-sum::before { content: ""; position: absolute; top: 0; bottom: 0; right: 100%; width: 24px; background: linear-gradient(90deg, transparent, var(--panel-3)); pointer-events: none; }
@@ -178,8 +180,19 @@
   .hbtn svg { flex: none; }
   #share-btn { background: var(--accent); color: #fff; box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(42,69,224,.7); }
   #share-btn:hover:not(:disabled) { background: var(--accent-hover); box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(42,69,224,.7); }
-  #gh-link { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 8px; color: var(--ink-2); transition: background .15s, color .15s; }
-  #gh-link:hover { background: var(--panel-2); color: var(--text); }
+  /* ---------- Star button (the landing's block, site/css/site.css "Star button"; room/stars.js fills .st-n) ----------
+     white, 1px --rule-3 outline, the GitHub mark in ink, a gold star glyph (the only gold), "Star", the count after a hairline */
+  .btn-star { display: inline-flex; align-items: center; flex: none; gap: 6px; height: 36px; padding: 0 12px; border-radius: 999px; font: 500 13px/1 var(--sans); white-space: nowrap; text-decoration: none; background: var(--white); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule-3); transition: background .15s, box-shadow .15s; }
+  .btn-star:hover { background: var(--bg-2); box-shadow: inset 0 0 0 1px var(--ink-3); }
+  .btn-star .gh { flex: none; color: var(--ink); }
+  .btn-star .star { flex: none; fill: #E3B341; margin-left: 1px; }
+  .btn-star .st-n { margin-left: 3px; padding-left: 9px; border-left: 1px solid var(--rule-3); line-height: 18px; font-variant-numeric: tabular-nums; }
+  @media (max-width: 640px) {
+    .btn-star { padding: 0 10px; gap: 5px; }
+    .btn-star.has-n .st-l { display: none; }
+    .btn-star .st-n { margin-left: 1px; padding-left: 7px; }
+  }
+  /* ---------- end Star button ---------- */
   /* this device's screen (room/compute.js): the dots mark on a black button, no words. While this
      device holds layers it is "on": an accent ring, and the mark's dots breathe in the logo's wave */
   #compute-open { position: relative; width: 34px; padding: 0; justify-content: center; background: var(--ink); box-shadow: none; color: #fff; }
@@ -341,7 +354,6 @@
   #code-input::placeholder { color: var(--faint); }
   #code-input:focus { box-shadow: none; }
   .code-slots:focus-within i { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--panel); }
-  #resume-btn { margin-top: 14px; font-size: 13px; border-color: var(--accent); color: var(--accent-text); padding: 9px 16px; }
   #join-status { font-size: 13px; color: var(--ink-2); min-height: 20px; max-width: 560px; text-align: center; margin-top: 16px; }
   #join-status:not(:empty) { padding: 9px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-3); }
   /* no WebGPU here: one calm line, the remedy behind Details */
@@ -371,7 +383,7 @@
   #join-wait[hidden] { display: none; }
   #join-wait .dl { width: 64px; height: 64px; }
   #jw-t { font: 400 26px/1.15 var(--display); letter-spacing: -.02em; color: var(--text); text-align: center; }
-  #join-screen.waiting > :is(h1, .lede, .jpanel, #resume-btn, .jfoot, #join-gpu) { display: none; }
+  #join-screen.waiting > :is(h1, .lede, .jpanel, .jfoot, #join-gpu) { display: none; }
   #join-screen.waiting { justify-content: center; padding-bottom: 12vh; }
   #join-screen.waiting #join-wait { margin-top: 0; }
   #join-screen.waiting #join-status { margin-top: 10px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 15px; }
@@ -411,13 +423,11 @@
   .sm-stats dt { font: 400 12px/26px var(--sans); color: var(--muted); }
   .sm-stats dd.warn { color: var(--warn-text); }
   .sm-meta { margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
-  /* the collapsed band: one thin bar of every device's layers next to the model's name */
-  /* folded: the split as blocks, one per device, as wide as its share of the layers, its name inside
-     when there is room (a block too narrow for a name is just its colour) */
-  .sm-mini { display: none; flex: 1 1 0; min-width: 40px; height: 18px; gap: 3px; }
-  .sm-mini i { container-type: inline-size; flex: var(--n) 1 0; min-width: 8px; display: flex; align-items: center; padding: 0 7px; border-radius: 4px; background: var(--sw); box-shadow: inset 0 0 0 1px rgba(20,22,29,.06); color: var(--on-sw, #fff); font: 500 11px/1 var(--sans); font-style: normal; letter-spacing: .005em; text-transform: lowercase; overflow: hidden; }
-  .sm-mini i span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  @container (max-width: 26px) { .sm-mini i span { display: none; } }
+  /* folded: the split as small blocks, one per layer (or per few on a narrow bar), each in the colour
+     of the device holding it, with small gaps (room.js paintMini) */
+  .sm-mini { display: none; flex: 1 1 0; min-width: 40px; height: 16px; gap: 2px; align-items: stretch; }
+  .sm-mini i { flex: 1 1 0; min-width: 0; border-radius: 2px; background: var(--sw); box-shadow: inset 0 0 0 1px rgba(20,22,29,.06); }
+  .sm-mini i.none { background: var(--rule-2); }
   #swarm-map.folded .sm-mini { display: flex; }
   #swarm-map.folded .sm-strip { display: none; }
   #swarm-map.folded { gap: 0; padding-top: 8px; padding-bottom: 8px; }
@@ -663,13 +673,12 @@
   .m .bubble code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
   .m .bubble pre { font-family: var(--mono); font-size: 12px; background: var(--panel-3); border: 1px solid var(--rule-2); padding: 10px 12px; border-radius: 12px; overflow-x: auto; margin: 8px 0; }
   .m .stats { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; }
-  /* the wait before the first token (room/working.js): the dots in their loading wave, a verb, the seconds */
+  /* the wait before the first token (room/working.js): the dots in their loading wave and a verb */
   .working { display: inline-flex; align-items: center; gap: 8px; font: 400 13px/1.3 var(--sans); color: var(--ink-2); white-space: nowrap; vertical-align: middle; }
   .working .wk-mk { flex: none; fill: var(--ink-2); overflow: visible; }
   .working .wk-mk circle { transform-box: fill-box; transform-origin: center; animation: dlwave 1.6s var(--ease) infinite; animation-delay: calc(var(--rc) * .12s); }
   .working .wk-mk .lit { fill: var(--accent); }
   .working .wk-v { display: inline-block; }
-  .working .wk-s { font: 400 11px/1 var(--mono); color: var(--ink-4); font-variant-numeric: tabular-nums; }
   .m.bot .bubble > .working { min-height: 24px; }
   .cm-working { display: flex; padding: 2px 0; }
   @media (prefers-reduced-motion: reduce) { .working .wk-mk circle { animation: none !important; } }
@@ -716,9 +725,6 @@
   #queue-note { margin-left: auto; font-size: 12px; color: var(--accent-text); }
   #queue-note:empty { display: none; }
   #queue-note:not(:empty) + #ctx-meter { margin-left: 10px; }
-  #ctx-meter { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
-  #room-screen:has(#swarm-map:not([hidden])) #ctx-meter { display: none; }   /* the band shows the context */
-  #ctx-meter.warn { color: var(--warn-text); }
   .bubble.drafts { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; }
   .bubble .dr { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text); border-radius: 3px; }
   .bubble .dr.lk { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
@@ -971,6 +977,19 @@
   #code-pane #pv-reload { order: -1; justify-content: center; width: 30px; height: 30px; padding: 0; }
   #code-pane #pv-reload:hover, #code-pane #pv-open:hover { color: var(--text); background: var(--panel); border-color: var(--border); }
   #pv-frame-wrap { position: relative; height: 380px; background: #fff; overflow: hidden; }
+  /* the edit window: a file the agent writes again, streaming over the running app (room/code-ui.js editWin) */
+  .ew { position: absolute; z-index: 3; right: 12px; bottom: 12px; width: min(460px, calc(100% - 24px)); max-height: calc(100% - 24px); display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 1px 2px rgba(20,22,29,.06), 0 16px 36px -14px rgba(20,22,29,.32); overflow: hidden; animation: ewin .22s var(--ease); }
+  .ew.out { opacity: 0; transform: translateY(6px); transition: opacity .18s var(--ease), transform .18s var(--ease); }
+  @keyframes ewin { from { opacity: 0; transform: translateY(8px); } }
+  .ew-bar { flex: none; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 10px; font: 400 12px/1.2 var(--mono); color: var(--muted); background: var(--panel-2); border-bottom: 1px solid var(--rule-2); }
+  .ew-bar b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 500; }
+  .ew-bar .ew-n { margin-left: auto; flex: none; }
+  .ew-dots { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: cmpulse 1s ease-in-out infinite; }
+  .ew.done .ew-dots { animation: none; background: var(--ink-4); }
+  .ew-code { flex: 1 1 auto; min-height: 0; max-height: 260px; margin: 0; padding: 10px 12px; overflow: hidden; font: 400 12px/1.6 var(--mono); color: var(--text); white-space: pre; tab-size: 2; -moz-tab-size: 2; font-variant-ligatures: none; }
+  .ew:not(.done) .ew-code::after { content: ""; display: inline-block; width: 6px; height: 12px; margin-left: 2px; vertical-align: -2px; background: var(--accent); animation: cmblink 1s steps(1) infinite; }
+  @media (max-width: 820px) { .ew { right: 8px; bottom: 8px; width: calc(100% - 16px); max-height: calc(100% - 16px); } .ew-code { font-size: 11px; padding: 8px 10px; } }
+  @media (prefers-reduced-motion: reduce) { .ew, .ew.out { animation: none; transition: none; } .ew-dots, .ew-code::after { animation: none !important; } }
   .pv-view { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
   .pv-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; padding: 20px; font: 400 13px/1.5 var(--sans); color: var(--muted); background: var(--panel-3); background-image: radial-gradient(circle at 1px 1px, var(--rule-2) 1px, transparent 0); background-size: 16px 16px; text-wrap: balance; }
   .pv-empty .dl { width: 28px; height: 28px; margin-bottom: 8px; }
@@ -1025,12 +1044,13 @@
   #ed-text::selection { background: rgba(42,69,224,.18); -webkit-text-fill-color: transparent; }
   #ed-text:focus { box-shadow: none; }
   #ed-text[readonly] { caret-color: transparent; }
-  #ed-hl .t-k, #ed-hl .t-t { color: var(--accent-hover); }
-  #ed-hl .t-s { color: #1F7A45; }
-  #ed-hl .t-c { color: #8A8D96; font-style: italic; }
-  #ed-hl .t-n { color: #B0520A; }
-  #ed-hl .t-f, #ed-hl .t-p { color: #0E6E8C; }
-  #ed-hl .t-a { color: #7446B8; }
+  /* token colours: the editor and the edit window over the preview (no orange: numbers are indigo) */
+  :is(#ed-hl, .ew-code) :is(.t-k, .t-t) { color: var(--accent-hover); }
+  :is(#ed-hl, .ew-code) .t-s { color: #1F7A45; }
+  :is(#ed-hl, .ew-code) .t-c { color: #8A8D96; font-style: italic; }
+  :is(#ed-hl, .ew-code) .t-n { color: #5B4BD6; }
+  :is(#ed-hl, .ew-code) :is(.t-f, .t-p) { color: #0E6E8C; }
+  :is(#ed-hl, .ew-code) .t-a { color: #7446B8; }
   #ed-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 28px; text-align: center; font-size: 13px; line-height: 1.5; color: var(--muted); text-wrap: balance; background: var(--panel-3); background-image: radial-gradient(circle at 1px 1px, var(--rule-2) 1px, transparent 0); background-size: 16px 16px; }
   #ed-empty b { color: var(--text); font-weight: 500; }
   #ed-empty[hidden] { display: none; }
@@ -1052,11 +1072,13 @@
   #code-pane .cm-jump:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
   .cm-jump[hidden] { display: none; }
   /* context: a ring and a percentage next to the composer */
-  #code-ctx { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font: 400 12px/1 var(--mono); color: var(--muted); }
-  #code-ctx:empty { display: none; }
-  #code-ctx i { width: 14px; height: 14px; border-radius: 50%; background: conic-gradient(var(--accent) calc(var(--p) * 1%), var(--border) 0); -webkit-mask: radial-gradient(circle, transparent 3.6px, #000 4.2px); mask: radial-gradient(circle, transparent 3.6px, #000 4.2px); }
-  #code-ctx.warn { color: var(--warn-text); }
-  #code-ctx.warn i { background: conic-gradient(var(--warn) calc(var(--p) * 1%), var(--border) 0); }
+  /* the context ring by the composer, the same in Chat (#ctx-meter) and Code (#code-ctx) */
+  :is(#code-ctx, #ctx-meter) { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font: 400 12px/1 var(--mono); color: var(--muted); }
+  :is(#code-ctx, #ctx-meter):empty { display: none; }
+  #ctx-meter { padding: 0 6px; }
+  :is(#code-ctx, #ctx-meter) i { flex: none; width: 14px; height: 14px; border-radius: 50%; background: conic-gradient(var(--accent) calc(var(--p) * 1%), var(--border) 0); -webkit-mask: radial-gradient(circle, transparent 3.6px, #000 4.2px); mask: radial-gradient(circle, transparent 3.6px, #000 4.2px); }
+  :is(#code-ctx, #ctx-meter).warn { color: var(--warn-text); }
+  :is(#code-ctx, #ctx-meter).warn i { background: conic-gradient(var(--warn) calc(var(--p) * 1%), var(--border) 0); }
   #code-view { flex: 1; min-height: 160px; overflow: auto; background: var(--panel); font: 400 12px/1.6 var(--mono); padding: 12px 0; margin: 0; scrollbar-width: thin; scrollbar-color: var(--faint) transparent; }
   #code-view .hint { display: block; color: var(--muted); padding: 0 16px 6px; font: 400 12px/1.5 var(--sans); }
   #code-view .ln { display: inline-block; width: 46px; padding-right: 14px; text-align: right; color: var(--faint); user-select: none; }
@@ -1105,7 +1127,10 @@
   .hbrk { display: none; }
 
   @media (max-width: 1180px) {
-    body.in-room #gh-link { display: none; }
+    /* the room bar has less room: the marks and the count (the word shows when there is no count) */
+    body.in-room #gh-link.has-n .st-l { display: none; }
+    body.in-room #gh-link { padding: 0 10px; gap: 5px; }
+    body.in-room #gh-link .st-n { margin-left: 1px; padding-left: 7px; }
     .pchip .pname { max-width: 110px; }
   }
   @media (max-width: 1000px) {
@@ -1125,6 +1150,9 @@
     .pchip .pname { max-width: 96px; }
     #compute-open { width: 36px; height: 36px; }
     #share-btn { padding: 0 12px; }
+    /* phones: the Star button in the first row, before Invite */
+    body.in-room #gh-link { order: 1; }
+    body.in-room :is(#share-btn, #compute-open, #room-menu) { order: 2; }
     #join-pledge input { width: 32px !important; flex: none; }
     #join-pledge .ap-step .step { width: 34px; height: 34px; }
     .pledge input { font-size: 16px; }
@@ -1172,7 +1200,13 @@
     :is(.pchip, #band-toggle, .copy-ans, #menu-close, #name-shuffle, #share-close, #code-auto-l, #code-newtask, #pv-reload)::before { content: ""; position: absolute; inset: -8px; }
     #name-shuffle, #share-close { position: absolute; }
   }
+  @media (max-width: 420px) {
+    /* the first row holds the code, the star, Invite, this device and settings: the code goes without "Room" */
+    body.in-room #room-badge::before { display: none; }
+    body.in-room #room-badge { padding: 0 6px 0 8px; }
+  }
   @media (max-width: 370px) {
+    body.in-room #gh-link .gh { display: none; }   /* the star and the count */
     body.in-room #hdr-sum { width: 0; padding: 0; font-size: 0; }   /* no total; its fade still ends the chip row */
     #share-btn .lbl { display: none; }
     #share-btn { width: 36px; padding: 0; justify-content: center; }
@@ -1219,7 +1253,7 @@
   <span class="hbrk" aria-hidden="true"></span>
   <span id="hdr-sum"></span>
   <button id="share-btn" class="hbtn" type="button" title="Invite a device: a link, a QR code or the room code"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg><span class="lbl">Invite</span></button>
-  <button id="compute-open" class="hbtn tip-l" type="button" hidden aria-label="Open this device's screen" data-tip="This device's screen"><svg class="mk" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:2"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:3"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:2"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:3"/><circle class="lit" cx="18.5" cy="18.5" r="3.9" style="--rc:4"/></svg></button>
+  <button id="compute-open" class="hbtn tip-l" type="button" hidden aria-label="This device" data-tip="This device"><svg class="mk" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:2"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:3"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:2"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:3"/><circle class="lit" cx="18.5" cy="18.5" r="3.9" style="--rc:4"/></svg></button>
   <details id="room-menu">
     <summary aria-label="Room settings" data-tip="Room settings" class="tip-l"><svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M3 6h8M15 6h2M3 14h2M9 14h8"/><circle cx="13" cy="6" r="2"/><circle cx="7" cy="14" r="2"/></svg></summary>
     <div class="menu-pop" role="dialog" aria-labelledby="mp-t">
@@ -1278,16 +1312,16 @@
       </section>
     </div>
   </details>
-  <a id="gh-link" href="https://github.com/Nehanth/pooled" target="_blank" rel="noopener" aria-label="Source on GitHub" title="Source on GitHub"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor"><path d="M8 0C3.580 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.530-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  <a id="gh-link" class="btn-star" href="https://github.com/Nehanth/pooled" target="_blank" rel="noopener" data-stars aria-label="Star pooled on GitHub"><svg class="gh" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><svg class="star" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .67.42l1.88 3.8 4.2.61a.75.75 0 0 1 .42 1.28l-3.04 2.96.72 4.18a.75.75 0 0 1-1.09.79L8 12.33l-3.76 1.98a.75.75 0 0 1-1.09-.79l.72-4.18L.83 6.38a.75.75 0 0 1 .42-1.28l4.2-.61L7.33.67A.75.75 0 0 1 8 .25z"/></svg><span class="st-l">Star</span><span class="st-n" hidden></span></a>
 </header>
 
 <div id="join-screen">
   <h1>Start a room, <span>or join one.</span></h1>
-  <p class="lede">Each device in a room lends some memory, and together they run one open AI model in your browser tabs.</p>
+  <p class="lede">Each device in a room shares some memory, and together they run one open AI model in your browser tabs.</p>
   <div class="jpanel">
     <div class="jd" role="group" aria-label="This device">
       <label class="jd-name"><span class="jd-l">This device</span><span class="name-box"><input id="name-input" placeholder="Name, e.g. laptop" maxlength="20" autocomplete="off" spellcheck="false"><button id="name-shuffle" type="button" aria-label="Pick another name" data-tip="Another name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.5h2.5c3 0 4 7 7 7H14M12 9.5l2 2-2 2M2 11.5h2.5c1.2 0 2-1 2.6-2.2M9.3 6.5c.6-1.1 1.3-2 2.2-2H14M12 2.5l2 2-2 2"/></svg></button></span></label>
-      <div id="join-pledge"><span class="jd-l">Lends</span><span class="ap-step jp-step"><button class="step" id="gb-minus" type="button" aria-label="Lend less memory">&minus;</button><input id="join-gb" type="number" min="1" max="64" step="1" value="1" inputmode="numeric" aria-label="Gigabytes of memory to lend"><span class="u">GB</span><button class="step" id="gb-plus" type="button" aria-label="Lend more memory">+</button></span><span class="jp-ask" data-tip="This device can ask but can't hold model layers">Joins to ask</span></div>
+      <div id="join-pledge"><span class="jd-l">Memory</span><span class="ap-step jp-step"><button class="step" id="gb-minus" type="button" aria-label="Less memory">&minus;</button><input id="join-gb" type="number" min="1" max="64" step="1" value="1" inputmode="numeric" aria-label="Gigabytes of memory to share"><span class="u">GB</span><button class="step" id="gb-plus" type="button" aria-label="More memory">+</button></span><span class="jp-ask" data-tip="This device can ask but can't hold model layers">Joins to ask</span></div>
     </div>
     <div class="jcards">
       <section class="jc" aria-labelledby="jc-start">
@@ -1303,7 +1337,6 @@
     </div>
   </div>
   <div id="join-wait" hidden><svg class="dl" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:2"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:3"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:2"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:3"/><circle cx="18.5" cy="18.5" r="3.9" style="--rc:4"/></svg><p id="jw-t">Joining the room</p></div>
-  <button id="resume-btn" type="button" hidden></button>
   <div id="join-gpu" hidden><p><i aria-hidden="true"></i><span id="join-gpu-t"></span></p><details><summary>Details</summary><p id="join-gpu-d"></p></details></div>
   <div id="join-status" role="status" aria-live="polite"></div>
   <p class="jfoot">Works best in Chrome or Edge. Devices without WebGPU can still join and ask.</p>
@@ -1349,11 +1382,11 @@
         <section class="ap-pool" aria-label="The room's memory">
           <p class="ap-k"><span>The room pools</span><b id="ap-total">0 GB</b></p>
           <div id="ap-meter" aria-hidden="true"><div class="apm-fill"></div><div class="apm-ticks"></div></div>
-          <ul id="ap-devs" aria-label="What each device lends"></ul>
+          <ul id="ap-devs" aria-label="What each device gives"></ul>
         </section>
         <section class="ap-me" id="ap-me" aria-label="This device">
-          <p class="ap-k"><span>This device lends</span></p>
-          <div class="ap-step" id="ap-step"><button class="step" id="ap-minus" type="button" aria-label="Lend less memory">&minus;</button><output id="ap-gb" aria-live="polite">1</output><span class="u">GB</span><button class="step" id="ap-plus" type="button" aria-label="Lend more memory">+</button></div>
+          <p class="ap-k"><span>This device gives</span></p>
+          <div class="ap-step" id="ap-step"><button class="step" id="ap-minus" type="button" aria-label="Less memory">&minus;</button><output id="ap-gb" aria-live="polite">1</output><span class="u">GB</span><button class="step" id="ap-plus" type="button" aria-label="More memory">+</button></div>
           <p class="ap-no" id="ap-no" hidden>This browser can't use its graphics chip, so this device can chat but not help run the model.</p>
         </section>
         <section class="ap-room" id="side-room" aria-label="Invite more devices">
@@ -1435,7 +1468,7 @@
   <div class="sheet invite" role="dialog" aria-labelledby="share-h">
     <button id="share-close" class="x" type="button" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8"/></svg></button>
     <h2 id="share-h">Invite a device</h2>
-    <div class="k">Open the link or scan the code on another device. It joins this room and lends its memory.</div>
+    <div class="k">Open the link or scan the code on another device. It joins this room and adds its memory.</div>
     <div id="share-qr"></div>
     <p class="scan">On your phone? Scan with the camera app.</p>
     <div class="or">or type the room code</div>
