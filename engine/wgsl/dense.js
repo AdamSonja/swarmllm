@@ -219,3 +219,78 @@ fn rmsnorm_dmc(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_i
   for (var i: u32 = t; i < n; i += 256u) { drn_y[yo + i] = drn_x[xo + i] * inv * drn_w[i]; }
 }
 `;
+
+// The same glue as three plain kernels for every column at once, each a copy of the reference kernel
+// with the column in gid.y (head_norm, rope) plus a cache store, so the arithmetic compiles like the
+// reference: head_norm_dmc (q heads then k heads), rope_dmc (q pairs then k pairs, at frame.pos + column),
+// kv_store_d (the rotated K row and the V row into the caches at frame.pos + column).
+export const DENSE_GLUE3_WGSL = /* wgsl */ `
+@group(1) @binding(0) var<storage, read_write> hnd_q: array<f32>;
+@group(1) @binding(1) var<storage, read_write> hnd_k: array<f32>;
+@group(1) @binding(2) var<storage, read> hnd_qw: array<f32>;
+@group(1) @binding(3) var<storage, read> hnd_kw: array<f32>;
+@group(1) @binding(4) var<uniform> hnd: DGL;
+@compute @workgroup_size(32)
+fn head_norm_dmc(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let hh = gid.x; let col = gid.y;
+  if (hh >= cfg.nH + cfg.nKV) { return; }
+  if (hh < cfg.nH) {
+    let off = col * hnd.qs + hh * cfg.headDim;
+    var ss: f32 = 0.0;
+    for (var i: u32 = 0u; i < cfg.headDim; i++) { let v = hnd_q[off + i]; ss += v * v; }
+    let inv = inverseSqrt(ss / f32(cfg.headDim) + cfg.eps);
+    for (var i: u32 = 0u; i < cfg.headDim; i++) { hnd_q[off + i] *= inv * hnd_qw[i]; }
+  } else {
+    let off = col * hnd.ks + (hh - cfg.nH) * cfg.headDim;
+    var ss: f32 = 0.0;
+    for (var i: u32 = 0u; i < cfg.headDim; i++) { let v = hnd_k[off + i]; ss += v * v; }
+    let inv = inverseSqrt(ss / f32(cfg.headDim) + cfg.eps);
+    for (var i: u32 = 0u; i < cfg.headDim; i++) { hnd_k[off + i] *= inv * hnd_kw[i]; }
+  }
+}
+@group(1) @binding(0) var<storage, read_write> rpd_q: array<f32>;
+@group(1) @binding(1) var<storage, read_write> rpd_k: array<f32>;
+@group(1) @binding(2) var<uniform> rpd: DGL;
+@compute @workgroup_size(64)
+fn rope_dmc(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let half = cfg.headDim / 2u;
+  let nq = cfg.nH * half;
+  let idx = gid.x; let col = gid.y;
+  if (idx >= nq + cfg.nKV * half) { return; }
+  let pos = frame.pos + col;
+  if (idx < nq) {
+    let h = idx / half;
+    let i = idx % half;
+    let off = col * rpd.qs + h * cfg.headDim;
+    let freq = pow(cfg.theta, -f32(2u * i) / f32(cfg.headDim));
+    let ang = f32(pos) * freq;
+    let c = cos(ang); let s = sin(ang);
+    let a = rpd_q[off + i]; let b = rpd_q[off + i + half];
+    rpd_q[off + i] = a * c - b * s;
+    rpd_q[off + i + half] = b * c + a * s;
+  } else {
+    let h = (idx - nq) / half;
+    let i = (idx - nq) % half;
+    let off = col * rpd.ks + h * cfg.headDim;
+    let freq = pow(cfg.theta, -f32(2u * i) / f32(cfg.headDim));
+    let ang = f32(pos) * freq;
+    let c = cos(ang); let s = sin(ang);
+    let a = rpd_k[off + i]; let b = rpd_k[off + i + half];
+    rpd_k[off + i] = a * c - b * s;
+    rpd_k[off + i + half] = b * c + a * s;
+  }
+}
+@group(1) @binding(0) var<storage, read> kvd_k: array<f32>;
+@group(1) @binding(1) var<storage, read> kvd_v: array<f32>;
+@group(1) @binding(2) var<storage, read_write> kvd_kc: array<f32>;
+@group(1) @binding(3) var<storage, read_write> kvd_vc: array<f32>;
+@group(1) @binding(4) var<uniform> kvd: DGL;
+@compute @workgroup_size(64)
+fn kv_store_d(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x; let col = gid.y;
+  if (i >= cfg.kvDim) { return; }
+  let cb = (frame.pos + col) * cfg.kvDim + i;
+  kvd_kc[cb] = kvd_k[col * kvd.ks + i];
+  kvd_vc[cb] = kvd_v[col * kvd.vs + i];
+}
+`;

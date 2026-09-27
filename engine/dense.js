@@ -3,7 +3,7 @@ import { weightsFromSafetensors } from "./safetensors.js";
 import { WGSL } from "./wgsl/base.js";
 import { probeUnpack, coopWGSL } from "./wgsl/coop.js";
 import { f16ToF32 } from "./gguf.js";
-import { denseAttnWGSL, DENSE_GLUE_WGSL } from "./wgsl/dense.js";
+import { denseAttnWGSL, DENSE_GLUE_WGSL, DENSE_GLUE3_WGSL } from "./wgsl/dense.js";
 
 export class DenseEngine {
   // opts: { device, cfg, tensors?|weights?, layerRange, hasEmbed, hasHead, maxSeq }
@@ -15,7 +15,7 @@ export class DenseEngine {
     return e;
   }
 
-  async _init({ device, cfg, tensors, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, matvecVariant = "coop", coopWG = 256, coopRows = 4, attnFast = true, fuse = true, fuseGlue = false }) {
+  async _init({ device, cfg, tensors, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, matvecVariant = "coop", coopWG = 256, coopRows = 4, attnFast = true, fuse = true, fuseGlue = false, glue3 = true }) {
     this.device = device;
     this.cfg = cfg;
     this.maxSeq = maxSeq;
@@ -55,8 +55,9 @@ export class DenseEngine {
     // exact parts are fused (residual adds in the GEMVs, one rmsnorm for all columns). fuseGlue: true
     // turns the glue on (about -0.5 ms per token, changes the bits). fuseAcc / fuseRms = false for A/B.
     this.fuseGlue = fuseGlue === true;
+    this.glue3 = glue3 !== false && !this.fuseGlue;   // the glue as 3 reference-shaped kernels (see DENSE_GLUE3_WGSL)
     const mod = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, coopRows, 64, 4, this.rowsB, await probeUnpack(device))
-      + (this.attnFastOn ? denseAttnWGSL({ G, hd: headDim }) : "") + (this.fuseOn ? DENSE_GLUE_WGSL : "") });
+      + (this.attnFastOn ? denseAttnWGSL({ G, hd: headDim }) : "") + (this.fuseOn ? DENSE_GLUE_WGSL + DENSE_GLUE3_WGSL : "") });
     const C = GPUShaderStage.COMPUTE;
     const layout0 = device.createBindGroupLayout({
       entries: [
@@ -81,7 +82,8 @@ export class DenseEngine {
       attn_out: ["ro", "ro", "rw"], silu_mul: ["rw", "ro"], add_res: ["rw", "ro"],
     };
     if (this.attnFastOn) Object.assign(G1, { attn_scores_d: ["ro", "ro", "rw", "u"], attn_softmax_d: ["rw"], attn_out_d: ["ro", "ro", "rw", "u"] });
-    if (this.fuseOn) Object.assign(G1, { attn_glue_d: ["rw", "ro", "ro", "ro", "ro", "rw", "rw", "u"], rmsnorm_dmc: ["ro", "ro", "rw", "u"] });
+    if (this.fuseOn) Object.assign(G1, { attn_glue_d: ["rw", "ro", "ro", "ro", "ro", "rw", "rw", "u"], rmsnorm_dmc: ["ro", "ro", "rw", "u"],
+      head_norm_dmc: ["rw", "rw", "ro", "ro", "u"], rope_dmc: ["rw", "rw", "u"], kv_store_d: ["ro", "ro", "rw", "rw", "u"] });
     const bufType = { u: "uniform", ro: "read-only-storage", rw: "storage" };
     this.pipes = {};
     // compile every pipeline in parallel (async): overlaps shader compilation
@@ -190,6 +192,9 @@ export class DenseEngine {
     this.layerBGs = this.layers.map((L2) => ({
       glue: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [this.q, this.k, this.v, (L2.qNorm || { buf: this.x }).buf, (L2.kNorm || { buf: this.x }).buf, L2.kCache, L2.vCache, uGlue]) : null,
       glueNN: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [this.q, this.k, this.v, (L2.qNorm || { buf: this.x }).buf, (L2.kNorm || { buf: this.x }).buf, L2.kCache, L2.vCache, uGlueNoNorm]) : null,
+      hn3: this.fuseOn && L2.qNorm ? this._bg(this.pipes.head_norm_dmc, 1, [this.q, this.k, L2.qNorm.buf, L2.kNorm.buf, uGlue]) : null,
+      rope3: this.fuseOn ? this._bg(this.pipes.rope_dmc, 1, [this.q, this.k, uGlue]) : null,
+      kv3: this.fuseOn ? this._bg(this.pipes.kv_store_d, 1, [this.k, this.v, L2.kCache, L2.vCache, uGlue]) : null,
       oAcc: this.fuseOn ? mv(L2.wo, this.attnOut, this.x, dim, qDim, true) : null,
       downAcc: this.fuseOn ? mv(L2.wdown, this.g, this.x, dim, inter, true) : null,
       norm1: bgNorm(this.x, L2.inNorm, this.xn),
@@ -280,7 +285,12 @@ export class DenseEngine {
       this._dispatchOp(pass, BG.q);
       this._dispatchOp(pass, BG.k);
       this._dispatchOp(pass, BG.v);
-      if (this.fuseGlue !== false) {
+      if (this.glue3 !== false && BG.rope3) {   // three exact multi-head kernels, no copies, one pass
+        const g3 = (name, bg, x) => { pass.setPipeline(this.pipes[name]); pass.setBindGroup(0, this.bgCommonFor[name]); pass.setBindGroup(1, bg); pass.dispatchWorkgroups(x, 1); };
+        if (BG.hn3) g3("head_norm_dmc", BG.hn3, Math.ceil((nH + nKV) / 32));
+        g3("rope_dmc", BG.rope3, Math.ceil((nH + nKV) * headDim / 2 / 64));
+        g3("kv_store_d", BG.kv3, Math.ceil(kvDim / 64));
+      } else if (this.fuseGlue !== false) {
         if (this.fuseNorm === false) {
           if (BG.qNorm) this._dispatch(pass, "head_norm", BG.qNorm, nH, 32);
           if (BG.kNorm) this._dispatch(pass, "head_norm", BG.kNorm, nKV, 32);
@@ -461,7 +471,7 @@ export class DenseEngine {
     // per-column frame uniforms + per-column group0 for the per-token kernels
     this.frameBufsB = [0, 1, 2, 3].map(() => dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
     const colPipes = ["rmsnorm", "head_norm", "rope", "attn_scores", "attn_softmax", "attn_out", "silu_mul", "add_res",
-      ...(this.attnFastOn ? ["attn_scores_d", "attn_softmax_d", "attn_out_d"] : []), ...(this.fuseOn ? ["attn_glue_d", "rmsnorm_dmc"] : [])];
+      ...(this.attnFastOn ? ["attn_scores_d", "attn_softmax_d", "attn_out_d"] : []), ...(this.fuseOn ? ["attn_glue_d", "rmsnorm_dmc", "head_norm_dmc", "rope_dmc", "kv_store_d"] : [])];
     this.bgCommonB = [0, 1, 2, 3].map((c) => {
       const m = {};
       for (const name of colPipes)
@@ -491,6 +501,9 @@ export class DenseEngine {
       return {
         glue: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [B.q.buf, B.k.buf, B.v.buf, (L.qNorm || { buf: this.x }).buf, (L.kNorm || { buf: this.x }).buf, L.kCache, L.vCache, uGlueB]) : null,
         glueNN: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [B.q.buf, B.k.buf, B.v.buf, (L.qNorm || { buf: this.x }).buf, (L.kNorm || { buf: this.x }).buf, L.kCache, L.vCache, uGlueBNN]) : null,
+        hn3: this.fuseOn && L.qNorm ? this._bg(this.pipes.head_norm_dmc, 1, [B.q.buf, B.k.buf, L.qNorm.buf, L.kNorm.buf, uGlueB]) : null,
+        rope3: this.fuseOn ? this._bg(this.pipes.rope_dmc, 1, [B.q.buf, B.k.buf, uGlueB]) : null,
+        kv3: this.fuseOn ? this._bg(this.pipes.kv_store_d, 1, [B.k.buf, B.v.buf, L.kCache, L.vCache, uGlueB]) : null,
         norm1MC: this.fuseOn ? this._bg(this.pipes.rmsnorm_dmc, 1, [B.x.buf, L.inNorm.buf, B.xn.buf, uNormB]) : null,
         norm2MC: this.fuseOn ? this._bg(this.pipes.rmsnorm_dmc, 1, [B.x.buf, L.postNorm.buf, B.xn.buf, uNormB]) : null,
         oAcc: this.fuseOn ? mvB(L.wo, B.attnOut, B.x, dim, qDim, true) : null,
@@ -548,7 +561,11 @@ export class DenseEngine {
       const rms = (bgMC, which) => { if (this.fuseRms !== false) mc("rmsnorm_dmc", bgMC, 1); else for (let c = 0; c < 4; c++) this._dCol(pass, "rmsnorm", c, LB.cols[c][which], 256, 256); };
       rms(LB.norm1MC, "norm1");
       for (const op of LB.qkv) this._dispatchOp(pass, op);
-      if (this.fuseGlue === false) {   // the reference head_norm / rope dispatches and cache copies
+      if (this.glue3 !== false && LB.rope3) {   // three exact kernels for all columns, no copies
+        if (LB.hn3) mc("head_norm_dmc", LB.hn3, Math.ceil((nH + nKV) / 32));
+        mc("rope_dmc", LB.rope3, Math.ceil((nH + nKV) * headDim / 2 / 64));
+        mc("kv_store_d", LB.kv3, Math.ceil(kvDim / 64));
+      } else if (this.fuseGlue === false) {   // the reference head_norm / rope dispatches and cache copies
         for (let c = 0; c < 4; c++) {
           const C = LB.cols[c];
           if (C.qNorm) this._dCol(pass, "head_norm", c, C.qNorm, nH, 32);
