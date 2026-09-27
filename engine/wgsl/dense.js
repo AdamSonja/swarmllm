@@ -142,7 +142,7 @@ fn attn_out_d(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id
 //     and the two cache copies, which also split the layer into two compute passes).
 //   rmsnorm_dmc: base.js rmsnorm for column wg.y (strided x / y), one dispatch for every column.
 export const DENSE_GLUE_WGSL = /* wgsl */ `
-struct DGL { qs: u32, ks: u32, vs: u32, norm: u32 };   // column strides (f32s) of q, k, v; norm: 1 = QK-norm
+struct DGL { qs: u32, ks: u32, vs: u32, norm: u32 };   // norm: 1 = apply QK-norm here, 0 = already applied (or none)   // column strides (f32s) of q, k, v; norm: 1 = QK-norm
 @group(1) @binding(0) var<storage, read_write> dgl_q: array<f32>;
 @group(1) @binding(1) var<storage, read> dgl_k: array<f32>;
 @group(1) @binding(2) var<storage, read> dgl_v: array<f32>;
@@ -170,7 +170,10 @@ fn attn_glue_d(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_i
     workgroupBarrier();
   }
   let inv = dgl_inv;
-  for (var i: u32 = j; i < half; i += 64u) {
+  // one pair per thread (hd / 2 <= 64), straight-line like the rope kernel: inside a loop the compiler
+  // may hoist 1 / headDim out of the division and change the frequencies' rounding
+  let i = j;
+  if (i < half) {
     var a: f32; var b: f32;
     if (isQ) { a = dgl_q[off + i]; b = dgl_q[off + i + half]; } else { a = dgl_k[off + i]; b = dgl_k[off + i + half]; }
     if (dgl.norm != 0u) {

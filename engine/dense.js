@@ -15,7 +15,7 @@ export class DenseEngine {
     return e;
   }
 
-  async _init({ device, cfg, tensors, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, matvecVariant = "coop", coopWG = 256, coopRows = 4, attnFast = true, fuse = true }) {
+  async _init({ device, cfg, tensors, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, matvecVariant = "coop", coopWG = 256, coopRows = 4, attnFast = true, fuse = true, fuseGlue = false }) {
     this.device = device;
     this.cfg = cfg;
     this.maxSeq = maxSeq;
@@ -49,6 +49,12 @@ export class DenseEngine {
     // pass. engine.fuse = false restores the old dispatches at runtime (A/B).
     this.fuseOn = fuse !== false && matvecVariant === "coop" && headDim % 2 === 0 && headDim / 2 <= 64;
     this.fuse = this.fuseOn;
+    // The glue kernel (qk-norm + rope + cache writes in one dispatch) is NOT bit-identical on the GB10
+    // (NVIDIA Vulkan): the same rope expression compiles to differently rounded code in the bigger
+    // kernel. So by default the reference head_norm / rope dispatches and cache copies stay, and only the
+    // exact parts are fused (residual adds in the GEMVs, one rmsnorm for all columns). fuseGlue: true
+    // turns the glue on (about -0.5 ms per token, changes the bits). fuseAcc / fuseRms = false for A/B.
+    this.fuseGlue = fuseGlue === true;
     const mod = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, coopRows, 64, 4, this.rowsB, await probeUnpack(device))
       + (this.attnFastOn ? denseAttnWGSL({ G, hd: headDim }) : "") + (this.fuseOn ? DENSE_GLUE_WGSL : "") });
     const C = GPUShaderStage.COMPUTE;
@@ -180,8 +186,10 @@ export class DenseEngine {
 
     const U = (a) => this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM);
     const uGlue = this.fuseOn ? U([0, 0, 0, this.layers[0]?.qNorm ? 1 : 0]) : null;
+    const uGlueNoNorm = this.fuseOn ? U([0, 0, 0, 0]) : null;
     this.layerBGs = this.layers.map((L2) => ({
       glue: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [this.q, this.k, this.v, (L2.qNorm || { buf: this.x }).buf, (L2.kNorm || { buf: this.x }).buf, L2.kCache, L2.vCache, uGlue]) : null,
+      glueNN: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [this.q, this.k, this.v, (L2.qNorm || { buf: this.x }).buf, (L2.kNorm || { buf: this.x }).buf, L2.kCache, L2.vCache, uGlueNoNorm]) : null,
       oAcc: this.fuseOn ? mv(L2.wo, this.attnOut, this.x, dim, qDim, true) : null,
       downAcc: this.fuseOn ? mv(L2.wdown, this.g, this.x, dim, inter, true) : null,
       norm1: bgNorm(this.x, L2.inNorm, this.xn),
@@ -267,15 +275,31 @@ export class DenseEngine {
     const L = this.layers[i], BG = this.layerBGs[i];
     const seqLen = this.pos + 1;
     if (this.fuse && BG.glue) {   // one pass: the glue kernel writes the K/V cache rows itself
-      const pass = enc.beginComputePass();
+      let pass = enc.beginComputePass();
       this._dispatch(pass, "rmsnorm", BG.norm1, 256, 256);
       this._dispatchOp(pass, BG.q);
       this._dispatchOp(pass, BG.k);
       this._dispatchOp(pass, BG.v);
-      pass.setPipeline(this.pipes.attn_glue_d); pass.setBindGroup(0, this.bgCommonFor.attn_glue_d); pass.setBindGroup(1, BG.glue);
-      pass.dispatchWorkgroups(nH + nKV, 1);
+      if (this.fuseGlue !== false) {
+        if (this.fuseNorm === false) {
+          if (BG.qNorm) this._dispatch(pass, "head_norm", BG.qNorm, nH, 32);
+          if (BG.kNorm) this._dispatch(pass, "head_norm", BG.kNorm, nKV, 32);
+        }
+        pass.setPipeline(this.pipes.attn_glue_d); pass.setBindGroup(0, this.bgCommonFor.attn_glue_d); pass.setBindGroup(1, this.fuseNorm === false ? BG.glueNN : BG.glue);
+        pass.dispatchWorkgroups(nH + nKV, 1);
+      } else {
+        if (BG.qNorm) this._dispatch(pass, "head_norm", BG.qNorm, nH, 32);
+        if (BG.kNorm) this._dispatch(pass, "head_norm", BG.kNorm, nKV, 32);
+        this._dispatch(pass, "rope", this.bgRopeQ, nH * headDim / 2);
+        this._dispatch(pass, "rope", this.bgRopeK, nKV * headDim / 2);
+        pass.end();
+        enc.copyBufferToBuffer(this.k, 0, L.kCache, this.pos * kvDim * 4, kvDim * 4);
+        enc.copyBufferToBuffer(this.v, 0, L.vCache, this.pos * kvDim * 4, kvDim * 4);
+        pass = enc.beginComputePass();
+      }
       this._encodeAttn(pass, BG, seqLen);
-      this._dispatchOp(pass, BG.oAcc);
+      if (this.fuseAcc !== false) this._dispatchOp(pass, BG.oAcc);
+      else { this._dispatchOp(pass, BG.o); this._dispatch(pass, "add_res", this.bgAddTmp, dim); }
       this._dispatch(pass, "rmsnorm", BG.norm2, 256, 256);
       if (BG.gu) this._dispatchOp(pass, BG.gu);
       else {
@@ -283,7 +307,8 @@ export class DenseEngine {
         this._dispatchOp(pass, BG.up);
         this._dispatch(pass, "silu_mul", this.bgSilu, inter);
       }
-      this._dispatchOp(pass, BG.downAcc);
+      if (this.fuseAcc !== false) this._dispatchOp(pass, BG.downAcc);
+      else { this._dispatchOp(pass, BG.down); this._dispatch(pass, "add_res", this.bgAddTmp, dim); }
       pass.end();
       return;
     }
@@ -457,6 +482,7 @@ export class DenseEngine {
     };
     const U = (a) => this._buf(new Uint32Array(a), GPUBufferUsage.UNIFORM);
     const uGlueB = this.fuseOn ? U([B.q.stride / 4, B.k.stride / 4, B.v.stride / 4, this.layers[0]?.qNorm ? 1 : 0]) : null;
+    const uGlueBNN = this.fuseOn ? U([B.q.stride / 4, B.k.stride / 4, B.v.stride / 4, 0]) : null;
     const uNormB = this.fuseOn ? U([dim, B.x.stride / 4, B.xn.stride / 4, 0]) : null;
     // per-layer batched resources
     this.layerB = this.layers.map((L) => {
@@ -464,6 +490,7 @@ export class DenseEngine {
         [slice(xB, c), { buffer: w.buf }, slice(yB, c), { buffer: this.nBufDim }]);
       return {
         glue: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [B.q.buf, B.k.buf, B.v.buf, (L.qNorm || { buf: this.x }).buf, (L.kNorm || { buf: this.x }).buf, L.kCache, L.vCache, uGlueB]) : null,
+        glueNN: this.fuseOn ? this._bg(this.pipes.attn_glue_d, 1, [B.q.buf, B.k.buf, B.v.buf, (L.qNorm || { buf: this.x }).buf, (L.kNorm || { buf: this.x }).buf, L.kCache, L.vCache, uGlueBNN]) : null,
         norm1MC: this.fuseOn ? this._bg(this.pipes.rmsnorm_dmc, 1, [B.x.buf, L.inNorm.buf, B.xn.buf, uNormB]) : null,
         norm2MC: this.fuseOn ? this._bg(this.pipes.rmsnorm_dmc, 1, [B.x.buf, L.postNorm.buf, B.xn.buf, uNormB]) : null,
         oAcc: this.fuseOn ? mvB(L.wo, B.attnOut, B.x, dim, qDim, true) : null,
@@ -516,20 +543,44 @@ export class DenseEngine {
     const { qDim, nH, nKV, headDim, kvDim, inter, dim } = this.dims;
     const L = this.layers[i], LB = this.layerB[i], B = this.B;
     if (this.fuse && LB.glue) {   // one pass, one dispatch per stage for all 4 columns (glue writes the caches)
-      const pass = enc.beginComputePass();
+      let pass = enc.beginComputePass();
       const mc = (name, bg, x) => { pass.setPipeline(this.pipes[name]); pass.setBindGroup(0, this.bgCommonB[0][name]); pass.setBindGroup(1, bg); pass.dispatchWorkgroups(x, 4); };
-      mc("rmsnorm_dmc", LB.norm1MC, 1);
+      const rms = (bgMC, which) => { if (this.fuseRms !== false) mc("rmsnorm_dmc", bgMC, 1); else for (let c = 0; c < 4; c++) this._dCol(pass, "rmsnorm", c, LB.cols[c][which], 256, 256); };
+      rms(LB.norm1MC, "norm1");
       for (const op of LB.qkv) this._dispatchOp(pass, op);
-      mc("attn_glue_d", LB.glue, nH + nKV);
+      if (this.fuseGlue === false) {   // the reference head_norm / rope dispatches and cache copies
+        for (let c = 0; c < 4; c++) {
+          const C = LB.cols[c];
+          if (C.qNorm) this._dCol(pass, "head_norm", c, C.qNorm, nH, 32);
+          if (C.kNorm) this._dCol(pass, "head_norm", c, C.kNorm, nKV, 32);
+          this._dCol(pass, "rope", c, C.ropeQ, nH * headDim / 2);
+          this._dCol(pass, "rope", c, C.ropeK, nKV * headDim / 2);
+        }
+        pass.end();
+        for (let c = 0; c < 4; c++) {
+          enc.copyBufferToBuffer(B.k.buf, c * B.k.stride, L.kCache, (basePos + c) * kvDim * 4, kvDim * 4);
+          enc.copyBufferToBuffer(B.v.buf, c * B.v.stride, L.vCache, (basePos + c) * kvDim * 4, kvDim * 4);
+        }
+        pass = enc.beginComputePass();
+      } else {
+        if (this.fuseNorm === false) for (let c = 0; c < 4; c++) {
+          const C = LB.cols[c];
+          if (C.qNorm) this._dCol(pass, "head_norm", c, C.qNorm, nH, 32);
+          if (C.kNorm) this._dCol(pass, "head_norm", c, C.kNorm, nKV, 32);
+        }
+        mc("attn_glue_d", this.fuseNorm === false ? LB.glueNN : LB.glue, nH + nKV);
+      }
       this._encodeAttnBatch(pass, LB, basePos);
-      this._dispatchOp(pass, LB.oAcc);
-      mc("rmsnorm_dmc", LB.norm2MC, 1);
+      if (this.fuseAcc !== false) this._dispatchOp(pass, LB.oAcc);
+      else { this._dispatchOp(pass, LB.o); for (let c = 0; c < 4; c++) this._dCol(pass, "add_res", c, LB.cols[c].addTmp, dim); }
+      rms(LB.norm2MC, "norm2");
       if (LB.gu) this._dispatchOp(pass, LB.gu);
       else {
         for (const op of LB.gateUp) this._dispatchOp(pass, op);
         for (let c = 0; c < 4; c++) this._dCol(pass, "silu_mul", c, LB.cols[c].silu, inter);
       }
-      this._dispatchOp(pass, LB.downAcc);
+      if (this.fuseAcc !== false) this._dispatchOp(pass, LB.downAcc);
+      else { this._dispatchOp(pass, LB.down); for (let c = 0; c < 4; c++) this._dCol(pass, "add_res", c, LB.cols[c].addTmp, dim); }
       pass.end();
       return;
     }
