@@ -1,11 +1,11 @@
 {
   "name": "pooled",
   "version": "0.2.0",
-  "description": "Pool your devices to run big open models in a browser tab, for chat and for coding agents: each device holds some of the layers, tabs talk over WebRTC, and our own WebGPU kernels do the math. Formerly SwarmLLM.",
+  "description": "Peer-to-peer LLM inference in the browser: each device holds some of the layers, tabs talk over WebRTC, and our own WebGPU kernels do the math.",
   "homepage": "https://pooled.run",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Nehanth/swarmllm.git"
+    "url": "https://github.com/Nehanth/pooled.git"
   },
   "license": "MIT",
   "author": "Nehanth Narendrula",
