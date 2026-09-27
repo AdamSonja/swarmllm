@@ -6,12 +6,32 @@
 // (validated line-by-line against llama.cpp eval-callback dumps).
 import { WGSL } from "./wgsl/base.js";
 import { gemmWGSL, GEMM_S, GEMM_TILE } from "./wgsl/gemm.js";
+import { gemmSgmWGSL, pickSgmConfig, sgmPlan, SGM_FEATURES, SGM_FEATURES_OPT, SGM_SYNTAX, SGM_DEFAULT } from "./wgsl/gemm_sgm.js";
 import { coopWGSL, probeUnpack } from "./wgsl/coop.js";
 import { WGSL2 } from "./wgsl/qwen35.js";
 import { moeWGSL, moeFusedWGSL, moeKernelConfig } from "./wgsl/moe.js";
-import { f16ToF32 } from "./gguf.js";
+import { f16ToF32, f32ToF16 } from "./gguf.js";
 
-
+// Prefill GEMM operand precision (docs/research/prefill-f16-subgroup.md):
+//   "f32"      default: the row-stationary f32 GEMM (engine/wgsl/gemm.js), the pinned numerics
+//   "f16"      same kernels, weights and activations rounded to f16 on the way in (ALU, any device)
+//   "sgmatrix" tensor cores via Chrome's chromium-experimental-subgroup-matrix (engine/wgsl/gemm_sgm.js),
+//              f16 operands, f32 accumulation; feature-probed and self-tested, else the f32 GEMM
+// Only full-width prefill passes use a GEMM, so decode and verify never change. Both opt-in modes
+// change prefill logits (off by default). Deno tests: PREFILL_MATH=f16|sgmatrix (needs --allow-env).
+export const PREFILL_MATH = ["f32", "f16", "sgmatrix"];
+function envPrefillMath() {
+  try {
+    const D = globalThis.Deno;
+    if (!D?.env || D.permissions?.querySync?.({ name: "env", variable: "PREFILL_MATH" })?.state !== "granted") return undefined;
+    return D.env.get("PREFILL_MATH") || undefined;
+  } catch { return undefined; }
+}
+// Features to request on the device for a prefillMath mode (only those the adapter has).
+export function prefillMathFeatures(adapter, mode = envPrefillMath()) {
+  if (mode !== "sgmatrix" || !adapter?.features) return [];
+  return [...SGM_FEATURES, ...SGM_FEATURES_OPT].filter((f) => adapter.features.has(f));
+}
 
 export class Qwen35Engine {
   static async create(opts) {
@@ -41,7 +61,9 @@ export class Qwen35Engine {
   }
   // What a saved state must match to be loaded here.
   stateSignature() {
-    return { v: 1, lo: this.lo, hi: this.hi, mtp: !!this.mtpLayer, flash: !!this.flash, kvQ8: !!this.kvQ8, dims: [this.dims.dim, this.dims.kvDim, this.dims.nVH, this.dims.convDim] };
+    // pm only when prefill ran with f16 operands, so f32-made states keep their old signature
+    return { v: 1, lo: this.lo, hi: this.hi, mtp: !!this.mtpLayer, flash: !!this.flash, kvQ8: !!this.kvQ8, dims: [this.dims.dim, this.dims.kvDim, this.dims.nVH, this.dims.convDim],
+      ...(this.prefillMath && this.prefillMath !== "f32" && this._pmAvail?.[this.prefillMath] ? { pm: this.prefillMath } : {}) };
   }
   // Read the state back to the CPU: { sig, pos, parts: [ArrayBuffer] }. One part at a time through
   // one staging buffer, so a long context never needs one giant mapping.
@@ -124,7 +146,7 @@ export class Qwen35Engine {
   }
 
   // opts: { device, meta (gguf meta), weights, layerRange, hasEmbed, hasHead, maxSeq }
-  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true }) {
+  async _init({ device, meta, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, vocab: vocabOpt, matvecVariant = "coop", coopWG = 256, coopRows = 4, batchCols = 4, coopRowsB = coopRows, gemm = true, draftVocab = 0, replayRollback = true, gemm8 = true, softmaxWG = true, draftChain = true, specFuse = true, attnGlue = true, dnFuse = true, attnMC = true, attnFlash = true, kvQ8 = false, attnTile = true, fuseProj = true, moeFuse = true, moeDnRows = 1, moeKernel, draftVocabAuto = true, prefillMath, prefillSgm, adapterInfo }) {
     this.replay = replayRollback !== false;
     // longest draft run one verify can take: with replay rollback the limit is the replay buffers
     // (max(batchCols, 8) columns), so prompt-lookup drafts can run to 15 tokens when code is being copied
@@ -272,13 +294,21 @@ export class Qwen35Engine {
     this._gemmSplits = [...new Set(this._gemmShapes.values())];
     this._gemmPairs = [...new Set([...this._gemmShapes].map(([k, S]) => `${k.split("x")[1]}:${S}`))].map((x) => x.split(":").map(Number));
     this.gemm = this.gemmOn;   // runtime kill switch: engine.gemm = false reproduces the GEMV path
+    // prefill GEMM operand precision (see PREFILL_MATH above). _pmAvail: the modes built for this
+    // engine; engine.prefillMath can be switched at runtime among them (A/B), anything else runs f32.
+    let pm = prefillMath ?? envPrefillMath() ?? "f32";
+    if (!PREFILL_MATH.includes(pm)) { console.warn(`prefillMath "${pm}" unknown (${PREFILL_MATH.join(" | ")}): using f32`); pm = "f32"; }
+    this.prefillMathReq = pm;
+    this._pmAvail = { f32: true, f16: false, sgmatrix: false };
+    this._pmR16 = this.gemmOn && pm === "f16";
+    this.sgmWhy = pm === "sgmatrix" && !this.gemmOn ? "no prefill GEMM on this engine (batchCols < 16 or gemm: false)" : "";
 
     // ---- pipelines with explicit layouts ----
     const unpack = await probeUnpack(device);
     const mod = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, coopRows, 64, batchCols, coopRowsB, unpack)
       + (this.moe ? moeWGSL(this.moeK) : "")
       + (this.moeFuse ? moeFusedWGSL({ K: this.moe.K, R: this.moe.R, gu: this.moe.guPairs.map((p) => p.split("_")), dn: this.moe.dnPairs.map((p) => p.split("_")) }) : "")
-      + (this.gemmOn ? gemmWGSL({ N: batchCols, pairs: this._gemmPairs, pairs8: this._gemm8Pairs, UNPACK: unpack }) : "") + WGSL2 });
+      + (this.gemmOn ? gemmWGSL({ N: batchCols, pairs: this._gemmPairs, pairs8: this._gemm8Pairs, UNPACK: unpack, R16: this._pmR16 }) : "") + WGSL2 });
     const C = GPUShaderStage.COMPUTE;
     const layout0 = device.createBindGroupLayout({
       entries: [
@@ -345,6 +375,11 @@ export class Qwen35Engine {
       for (const [dIn, S] of this._gemm8Pairs) G1[`gemm_q8_${dIn}_s${S}`] = G1.matvec_q4_coop_b;
       for (const S of this._gemmSplits) { G1[`gemm_red_s${S}`] = G1.matvec_q4_coop_b; G1[`gemm_red_s${S}_acc`] = G1.matvec_q4_coop_b; }
       G1.gemm_xpose = G1.matvec_q4_coop_b;
+      if (this._pmR16) {
+        for (const [dIn, S] of this._gemmPairs) G1[`gemm_q4_${dIn}_s${S}_r16`] = G1.matvec_q4_coop_b;
+        for (const [dIn, S] of this._gemm8Pairs) G1[`gemm_q8_${dIn}_s${S}_r16`] = G1.matvec_q4_coop_b;
+        G1.gemm_xpose_r16 = G1.matvec_q4_coop_b;
+      }
     }
     const bufType = { u: "uniform", ro: "read-only-storage", rw: "storage" };
     this.pipes = {};
@@ -359,6 +394,15 @@ export class Qwen35Engine {
         compute: { module: mod, entryPoint: name },
       });
     }));
+    this._pmAvail.f16 = this._pmR16;
+    if (pm === "sgmatrix" && this.gemmOn) {
+      const spec = G1.matvec_q4_coop_b;
+      const layout1 = device.createBindGroupLayout({ entries: spec.map((t, i) => ({ binding: i, visibility: C, buffer: { type: bufType[t] } })) });
+      this._pmAvail.sgmatrix = await this._initSgm(device, device.createPipelineLayout({ bindGroupLayouts: [layout0, layout1] }), layout0, adapterInfo,
+        { ...SGM_DEFAULT, ...(prefillSgm || {}) });
+    }
+    this.prefillMath = this._pmAvail[pm] ? pm : "f32";
+    if (pm !== "f32" && this.prefillMath !== pm) console.warn(`prefillMath ${pm} unavailable${this.sgmWhy ? ": " + this.sgmWhy : ""}; prefill uses the f32 GEMM`);
 
     // ---- uniforms ----
     const cfgData = new ArrayBuffer(48);
@@ -788,6 +832,93 @@ export class Qwen35Engine {
     this.specFuse = specFuse !== false;
   }
 
+  // ---- tensor-core prefill GEMM (prefillMath "sgmatrix", engine/wgsl/gemm_sgm.js) ----
+  // Builds its own shader module (it needs `enable` directives), compiles one pipeline per GEMM
+  // shape with the f32 GEMM's bind group layout, then checks one Q4 (and one Q8) kernel against a
+  // CPU reference on random data. Any failure (feature missing, no usable MMA shape, compile
+  // error, wrong numbers) leaves the f32 GEMM in place and records why in this.sgmWhy.
+  async _initSgm(device, layout, layout0, adapterInfo, tune) {
+    const no = (why) => { this.sgmWhy = why; return false; };
+    const missing = SGM_FEATURES.filter((f) => !device.features?.has(f));
+    if (missing.length) return no(`device lacks ${missing.join(", ")} (request them: prefillMathFeatures(adapter, "sgmatrix"); Chrome only, --enable-unsafe-webgpu)`);
+    const info = adapterInfo ?? device.adapterInfo;
+    const { TM, KB, PAD } = tune;
+    const { cfg, why } = pickSgmConfig(info, { N: this.NC, TM, KB });
+    if (!cfg) return no(why);
+    if (why) console.warn("prefillMath sgmatrix: " + why);
+    const smem = 2 * (TM * (32 * KB + PAD) + 32 * KB * this.NC);
+    if (smem > device.limits.maxComputeWorkgroupStorageSize) return no(`TM ${TM} KB ${KB} needs ${smem} B of workgroup memory, device limit ${device.limits.maxComputeWorkgroupStorageSize}`);
+    const ok = (dIn, S, q8) => { try { sgmPlan({ q8, dIn, S, N: this.NC, TM, KB, PAD, ...cfg }); return true; } catch { return false; } };
+    const pairs = this._gemmPairs.filter(([dIn, S]) => ok(dIn, S, false)), pairs8 = this._gemm8Pairs.filter(([dIn, S]) => ok(dIn, S, true));
+    if (!pairs.length && !pairs8.length) return no("no GEMM shape fits the MMA tiling");
+    const names = [...pairs.map(([dIn, S]) => `gemm_sgm_q4_${dIn}_s${S}`), ...pairs8.map(([dIn, S]) => `gemm_sgm_q8_${dIn}_s${S}`)];
+    const pipes = {};
+    try {
+      let mod = null, err = "";
+      for (const syntax of SGM_SYNTAX) {   // current builtin spelling first, then the first Chrome releases'
+        device.pushErrorScope("validation");
+        const m = device.createShaderModule({ code: gemmSgmWGSL({ N: this.NC, TM, KB, PAD, cfg, pairs, pairs8, syntax }) });
+        const errs = (await m.getCompilationInfo()).messages.filter((x) => x.type === "error");
+        const scope = await device.popErrorScope();
+        if (!errs.length && !scope) { mod = m; this.sgmSyntax = syntax; break; }
+        err ||= `shader (${syntax}): ${errs[0] ? `L${errs[0].lineNum}: ${errs[0].message}` : scope.message}`.slice(0, 400);
+      }
+      if (!mod) return no(err);
+      device.pushErrorScope("validation");
+      await Promise.all(names.map(async (n) => { pipes[n] = await device.createComputePipelineAsync({ layout, compute: { module: mod, entryPoint: n } }); }));
+      const pe = await device.popErrorScope();
+      if (pe) return no("pipeline: " + pe.message.slice(0, 300));
+    } catch (e) { return no("pipeline: " + String(e?.message || e).slice(0, 300)); }
+    // self-test: dOut = 2 tiles, every split, against float64 with f16-rounded operands
+    for (const [dIn, S, q8] of [pairs[0] && [...pairs[0], false], pairs8[0] && [...pairs8[0], true]].filter(Boolean)) {
+      const rel = await this._sgmSelfTest(device, pipes[`gemm_sgm_${q8 ? "q8" : "q4"}_${dIn}_s${S}`], layout0, dIn, S, q8, TM);
+      if (!(rel < 2e-3)) return no(`self-test ${q8 ? "q8" : "q4"} dIn ${dIn} S ${S}: rel L2 ${rel} vs CPU (want < 2e-3)`);
+    }
+    Object.assign(this.pipes, pipes);
+    this._sgmPipes = new Set(names);
+    this.sgmCfg = { ...cfg, TM, KB, PAD, syntax: this.sgmSyntax };
+    return true;
+  }
+  async _sgmSelfTest(device, pipe, layout0, dIn, S, q8, TM) {
+    const N = this.NC, dOut = 2 * TM, nb = dIn / 32, U = GPUBufferUsage;
+    let seed = 12345; const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+    const qs = Uint32Array.from({ length: dOut * nb * (q8 ? 8 : 4) }, () => (rnd() * 4294967296) >>> 0);
+    const sch = Uint16Array.from({ length: dOut * nb }, () => f32ToF16((0.005 + rnd() * 0.03) * (rnd() < 0.5 ? -1 : 1)));
+    const xT = Float32Array.from({ length: dIn * N }, () => rnd() * 2 - 1);
+    const h = Math.f16round ?? ((v) => f16ToF32(f32ToF16(v)));
+    const mk = (data, usage) => { const b = device.createBuffer({ size: Math.max(16, Math.ceil(data.byteLength / 16) * 16), usage: usage | U.COPY_DST }); device.queue.writeBuffer(b, 0, data); return b; };
+    const bQ = mk(qs, U.STORAGE), bS = mk(new Uint32Array(sch.buffer), U.STORAGE), bX = mk(xT, U.STORAGE);
+    const bY = device.createBuffer({ size: S * N * dOut * 4, usage: U.STORAGE | U.COPY_SRC });
+    const bSh = mk(new Uint32Array([dOut, dIn, 0, dOut]), U.UNIFORM), bC = mk(new Uint32Array(12), U.UNIFORM), bF = mk(new Uint32Array(4), U.UNIFORM);
+    const st = device.createBuffer({ size: S * N * dOut * 4, usage: U.COPY_DST | U.MAP_READ });
+    const enc = device.createCommandEncoder(), pass = enc.beginComputePass();
+    pass.setPipeline(pipe);
+    pass.setBindGroup(0, device.createBindGroup({ layout: layout0, entries: [bC, bF].map((b, i) => ({ binding: i, resource: { buffer: b } })) }));
+    pass.setBindGroup(1, device.createBindGroup({ layout: pipe.getBindGroupLayout(1), entries: [bQ, bS, bX, bY, bSh].map((b, i) => ({ binding: i, resource: { buffer: b } })) }));
+    pass.dispatchWorkgroups(Math.ceil(dOut / TM) * S);
+    pass.end(); enc.copyBufferToBuffer(bY, 0, st, 0, st.size);
+    device.queue.submit([enc.finish()]);
+    await st.mapAsync(GPUMapMode.READ);
+    const p = new Float32Array(st.getMappedRange().slice(0)); st.unmap();
+    for (const b of [bQ, bS, bX, bY, bSh, bC, bF, st]) b.destroy();
+    const w = (r, k) => {   // dequantized weight in f32, then rounded to f16 (what the kernel stages)
+      const b = Math.floor(k / 32), kk = k % 32, sc = f16ToF32(sch[r * nb + b]);
+      let q;
+      if (!q8) { const wd = qs[(r * nb + b) * 4 + ((kk % 16) >> 2)]; q = ((wd >>> (8 * (kk % 4) + (kk >= 16 ? 4 : 0))) & 15) - 8; }
+      else { const wd = qs[(r * nb + b) * 8 + (kk >> 2)]; q = (wd << (24 - 8 * (kk % 4))) >> 24; }
+      return h(Math.fround(q * sc));
+    };
+    let num = 0, den = 0;
+    for (let r = 0; r < dOut; r++) {
+      const wr = Array.from({ length: dIn }, (_, k) => w(r, k));
+      for (let c = 0; c < N; c++) {
+        let ref = 0; for (let k = 0; k < dIn; k++) ref += wr[k] * h(xT[k * N + c]);
+        let got = 0; for (let s = 0; s < S; s++) got += p[(s * N + c) * dOut + r];
+        num += (got - ref) ** 2; den += ref * ref;
+      }
+    }
+    return Math.sqrt(num / Math.max(den, 1e-30));
+  }
   _shape(dOut, dIn) {
     const key = dOut + "," + dIn;
     if (!this._shapes[key])
@@ -886,11 +1017,13 @@ export class Qwen35Engine {
   }
   _dop(pass, op, nCols = 0) {
     if (this.skip && this.skip.has(op.pipe)) return;
+    if (op.r16 && this.prefillMath === "f16") op = op.r16;   // GEMM activation transposes (prefillMath f16)
     // full-width prefill passes go through the row-stationary GEMM; anything
     // narrower (decode, speculative verify, prompt tail) uses the GEMV ladder
     if (this._gemmAt(op, nCols)) {
-      const g = op.gemm, z = (this._gz ^= 1);
-      this._d3(pass, g.pipe, g.bg[z], g.wgs);
+      const g = op.gemm, z = (this._gz ^= 1), pm = this.prefillMath;
+      const v = (pm === "sgmatrix" && g.sgm) || (pm === "f16" && g.r16) || g;   // same grid, partials and reduce
+      this._d3(pass, v.pipe, v.bg[z], v.wgs ?? g.wgs);
       this._d3(pass, g.red, g.redBg[z], g.redWgs);
       return;
     }
@@ -1139,8 +1272,13 @@ export class Qwen35Engine {
       const maxPart = Math.max(...[...this._gemmShapes].map(([k, sp]) => sp * NC * +k.split("x")[0]));
       this.gemmP = [0, 1].map(() => dev.createBuffer({ size: maxPart * 4, usage: S }));
       this._gz = 0;
-      const xp = (src, dst, dIn) => ({ pipe: "gemm_xpose", wgs: Math.ceil(dIn * NC / 64),
-        bg: this._bg(this.pipes.gemm_xpose, 1, [src.buf, src.buf, src.buf, dst, this._shapeB(0, dIn, src.stride / 16, 0)]) });
+      const xp = (src, dst, dIn) => {
+        const bufs = [src.buf, src.buf, src.buf, dst, this._shapeB(0, dIn, src.stride / 16, 0)], wgs = Math.ceil(dIn * NC / 64);
+        const op = { pipe: "gemm_xpose", wgs, bg: this._bg(this.pipes.gemm_xpose, 1, bufs) };
+        // prefillMath "f16": the transposed activations are stored rounded to f16 (only GEMMs read them)
+        if (this._pmR16) op.r16 = { pipe: "gemm_xpose_r16", wgs, bg: this._bg(this.pipes.gemm_xpose_r16, 1, bufs) };
+        return op;
+      };
       this.xposeXn = xp(B.xn, B.xnT, D.dim);
       this.xposeG = xp(B.g, B.gT, D.inter);
       this.xposeGated = xp(B.gated, B.aoT, D.dInner);
@@ -1205,6 +1343,12 @@ export class Qwen35Engine {
           red: rp, redBg: [0, 1].map((z) => this._bg(this.pipes[rp], 1, [this.gemmP[z], w.sc, w.sc, yv(yB), shp])),
           redWgs: Math.ceil(this.NC * dOut / 64),
         };
+        // opt-in operand precisions (prefillMath): same buffers, grid and split-K partials, same reduce
+        const sgp = `gemm_sgm_${w.kind}_${dIn}_s${S2}`;
+        if (this._sgmPipes?.has(sgp) && dOut % this.sgmCfg.TM === 0)
+          op.gemm.sgm = { pipe: sgp, wgs: dOut / this.sgmCfg.TM * S2, bg: [0, 1].map((z) => this._bg(this.pipes[sgp], 1, [w.qs, w.sc, xT, this.gemmP[z], shp])) };
+        if (this._pmR16)
+          op.gemm.r16 = { pipe: gp + "_r16", bg: [0, 1].map((z) => this._bg(this.pipes[gp + "_r16"], 1, [w.qs, w.sc, xT, this.gemmP[z], shp])) };
       }
       return op;
     };

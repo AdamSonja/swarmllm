@@ -27,8 +27,13 @@ export const GEMM_S = {
   "6144x5120": 4, "12288x5120": 2, "1024x5120": 16, "5120x5120": 4,
 };
 
+// R16: also emit the prefillMath "f16" twins (gemm_q4_{dIn}_s{S}_r16, gemm_q8_..._r16 and
+// gemm_xpose_r16): the same kernels with every dequantized weight and every activation rounded to
+// f16 (pack2x16float, core WGSL), products and sums still f32. That is the operand precision of the
+// tensor-core path (engine/wgsl/gemm_sgm.js) on the ALU, so its numerics can be A/B'd anywhere.
+// Off by default; it changes prefill logits (docs/research/prefill-f16-subgroup.md).
 export function gemmWGSL({ N = 16, T = 64, R = 2, KB = 2, splits = [2, 4, 8, 16],
-                          dIns = [5120, 6144, 17408], pairs = null, pairs8 = [], UNPACK = true } = {}) {
+                          dIns = [5120, 6144, 17408], pairs = null, pairs8 = [], UNPACK = true, R16 = false } = {}) {
   // pairs: [[dIn, S], ...] to emit exactly the kernels a model needs (each is
   // fully unrolled, so the module size and shader compile time scale with it)
   const rng = (n) => Array.from({ length: n }, (_, i) => i);
@@ -40,14 +45,15 @@ export function gemmWGSL({ N = 16, T = 64, R = 2, KB = 2, splits = [2, 4, 8, 16]
     ? `(vec4<f32>(unpack4xU8(${m})) - vec4<f32>(8.0)) * ${s}`
     : `(vec4<f32>(f32(${m} & 0xFFu), f32((${m} >> 8u) & 0xFFu), f32((${m} >> 16u) & 0xFFu), f32(${m} >> 24u)) - vec4<f32>(8.0)) * ${s}`;
 
-  const kernel = (dIn, S) => {
+  const r16 = (e, on) => (on ? `gm_r16(${e})` : e);
+  const kernel = (dIn, S, F16 = false) => {
     const nb = dIn / 32, nStages = nb / KB;
     if (nb % 2) throw new Error("gemm: dIn must be a multiple of 64 (f16 scales are paired)");
     if (nStages % S) throw new Error(`gemm: S=${S} must divide ${nStages} stages for dIn=${dIn}`);
     const stPerWG = nStages / S;
     return `
 @compute @workgroup_size(${T})
-fn gemm_q4_${dIn}_s${S}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+fn gemm_q4_${dIn}_s${S}${F16 ? "_r16" : ""}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
   let t = lid.x;
   let dOut = qb_shape.dOut;
   let wgl = wg.y * 32768u + wg.x;                     // 2-D dispatch (trick 21)
@@ -73,7 +79,7 @@ fn gemm_q4_${dIn}_s${S}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_inv
       ${RR.map((r) => `let sv${r} = unpack2x16float(sw${r}_${b >> 1})[${b & 1}u];`).join(" ")}
       ${RR.map((r) => `let wa${r} = gm_W[(t * ${R}u + ${r}u) * ${KB}u + ${b}u];`).join("\n      ")}
       ${rng(4).map((j) => `
-      { ${RR.map((r) => `let lo${r} = ${dq(`(wa${r}[${j}] & 0x0F0F0F0Fu)`, `sv${r}`)}; let hi${r} = ${dq(`((wa${r}[${j}] >> 4u) & 0x0F0F0F0Fu)`, `sv${r}`)};`).join(" ")}
+      { ${RR.map((r) => `let lo${r} = ${r16(dq(`(wa${r}[${j}] & 0x0F0F0F0Fu)`, `sv${r}`), F16)}; let hi${r} = ${r16(dq(`((wa${r}[${j}] >> 4u) & 0x0F0F0F0Fu)`, `sv${r}`), F16)};`).join(" ")}
         ${rng(4).map((i) => { const kl = 32 * b + 4 * j + i, kh = kl + 16; return `
         { ${QN.map((q) => `let xl${q} = gm_X[${kl * (N / 4) + q}u];`).join(" ")} ${RR.map((r) => QN.map((q) => `a${r}_${q} += lo${r}[${i}] * xl${q};`).join(" ")).join(" ")} }
         { ${QN.map((q) => `let xh${q} = gm_X[${kh * (N / 4) + q}u];`).join(" ")} ${RR.map((r) => QN.map((q) => `a${r}_${q} += hi${r}[${i}] * xh${q};`).join(" ")).join(" ")} }`; }).join("")}
@@ -94,14 +100,14 @@ fn gemm_q4_${dIn}_s${S}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_inv
   const dq8 = (m, s) => UNPACK
     ? `vec4<f32>(unpack4xI8(${m})) * ${s}`
     : `vec4<f32>(f32(bitcast<i32>(${m} << 24u) >> 24u), f32(bitcast<i32>(${m} << 16u) >> 24u), f32(bitcast<i32>(${m} << 8u) >> 24u), f32(bitcast<i32>(${m}) >> 24u)) * ${s}`;
-  const kernel8 = (dIn, S) => {
+  const kernel8 = (dIn, S, F16 = false) => {
     const nb = dIn / 32, nStages = nb / KB;
     if (nb % 2) throw new Error("gemm q8: dIn must be a multiple of 64 (f16 scales are paired)");
     if (nStages % S) throw new Error(`gemm q8: S=${S} must divide ${nStages} stages for dIn=${dIn}`);
     const stPerWG = nStages / S, W2 = 2 * KB;   // vec4 words per row per stage
     return `
 @compute @workgroup_size(${T})
-fn gemm_q8_${dIn}_s${S}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+fn gemm_q8_${dIn}_s${S}${F16 ? "_r16" : ""}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
   let t = lid.x;
   let dOut = qb_shape.dOut;
   let wgl = wg.y * 32768u + wg.x;
@@ -127,7 +133,7 @@ fn gemm_q8_${dIn}_s${S}(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_inv
       ${RR.map((r) => `let sv${r} = unpack2x16float(sw${r}_${b >> 1})[${b & 1}u];`).join(" ")}
       ${RR.map((r) => `let wa${r} = gm_W8[(t * ${R}u + ${r}u) * ${W2}u + ${2 * b}u]; let wb${r} = gm_W8[(t * ${R}u + ${r}u) * ${W2}u + ${2 * b + 1}u];`).join("\n      ")}
       ${rng(8).map((j) => `
-      { ${RR.map((r) => `let d${r} = ${dq8(`w${j < 4 ? "a" : "b"}${r}[${j % 4}]`, `sv${r}`)};`).join(" ")}
+      { ${RR.map((r) => `let d${r} = ${r16(dq8(`w${j < 4 ? "a" : "b"}${r}[${j % 4}]`, `sv${r}`), F16)};`).join(" ")}
         ${rng(4).map((i) => { const k = 32 * b + 4 * j + i; return `
         { ${QN.map((q) => `let x${q} = gm_X[${k * (N / 4) + q}u];`).join(" ")} ${RR.map((r) => QN.map((q) => `a${r}_${q} += d${r}[${i}] * x${q};`).join(" ")).join(" ")} }`; }).join("")}
       }`).join("")}
@@ -152,12 +158,18 @@ fn gemm_red_s${S}${ACC ? "_acc" : ""}(@builtin(global_invocation_id) gid: vec3<u
 
   // Column-major staging of the activations the GEMM broadcast-reads.
   // src is the engine's [col][dIn] layout with a 256-byte-aligned column stride.
-  const xpose = `
+  const xpose = (F16) => `
 @compute @workgroup_size(64)
-fn gemm_xpose(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn gemm_xpose${F16 ? "_r16" : ""}(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x; let dIn = qb_shape.dIn;
   if (i >= dIn * ${N}u) { return; }
-  q4_y[i] = gm_p[(i % ${N}u) * (qb_shape.xs4 * 4u) + i / ${N}u];
+  ${F16 ? `q4_y[i] = unpack2x16float(pack2x16float(vec2<f32>(gm_p[(i % ${N}u) * (qb_shape.xs4 * 4u) + i / ${N}u], 0.0))).x;`
+    : `q4_y[i] = gm_p[(i % ${N}u) * (qb_shape.xs4 * 4u) + i / ${N}u];`}
+}`;
+  const r16fn = `
+// round each component to the nearest f16 and back (the "f16" prefillMath operand precision)
+fn gm_r16(v: vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(unpack2x16float(pack2x16float(v.xy)), unpack2x16float(pack2x16float(v.zw)));
 }`;
 
   const kernels = [];
@@ -165,12 +177,12 @@ fn gemm_xpose(@builtin(global_invocation_id) gid: vec3<u32>) {
   const seen = new Set();
   for (const [dIn, S] of want) {
     const key = `${dIn}:${S}`; if (seen.has(key)) continue; seen.add(key);
-    if (((dIn / 32) / KB) % S === 0) kernels.push(kernel(dIn, S));
+    if (((dIn / 32) / KB) % S === 0) { kernels.push(kernel(dIn, S)); if (R16) kernels.push(kernel(dIn, S, true)); }
   }
   const seen8 = new Set();
   for (const [dIn, S] of pairs8) {
     const key = `${dIn}:${S}`; if (seen8.has(key)) continue; seen8.add(key);
-    if (((dIn / 32) / KB) % S === 0) kernels.push(kernel8(dIn, S));
+    if (((dIn / 32) / KB) % S === 0) { kernels.push(kernel8(dIn, S)); if (R16) kernels.push(kernel8(dIn, S, true)); }
   }
   const usedSplits = [...new Set([...want, ...pairs8].map(([, S]) => S))];
   return /* wgsl */ `
@@ -183,8 +195,8 @@ fn gemm_xpose(@builtin(global_invocation_id) gid: vec3<u32>) {
 var<workgroup> gm_W: array<vec4<u32>, ${WV}>;
 ${pairs8.length ? `var<workgroup> gm_W8: array<vec4<u32>, ${WV8}>;` : ""}
 var<workgroup> gm_X: array<vec4<f32>, ${XV}>;
-${kernels.join("\n")}
+${R16 ? r16fn + "\n" : ""}${kernels.join("\n")}
 ${usedSplits.map((S) => reduce(S, false) + reduce(S, true)).join("\n")}
-${xpose}
-`;
+${xpose(false)}
+${R16 ? xpose(true) + "\n" : ""}`;
 }

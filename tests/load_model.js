@@ -14,6 +14,7 @@ import fs from "node:fs";
 import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF, gpuUploadEntry } from "../engine/gguf.js";
 import { makeTokenizer } from "../engine/engine.js";
 import { attachWeightCache } from "./weight_cache.js";
+import { prefillMathFeatures } from "../engine/qwen35.js";
 
 export const Q38_PATH = new URL("../models/q38/model.gguf", import.meta.url).pathname;
 export const MOE_PATH = new URL("../models/q36moe/Qwen_Qwen3.6-35B-A3B-Q4_0.gguf", import.meta.url).pathname;
@@ -47,7 +48,8 @@ export function openGGUF(path, { skipTokenizer = false, cache = true, headerByte
 
 export async function gpuDevice() {
   const adapter = await navigator.gpu.requestAdapter();
-  const device = await adapter.requestDevice({ requiredLimits: {
+  // PREFILL_MATH=sgmatrix asks for the tensor-core features where the adapter has them (Chrome only; none in Deno)
+  const device = await adapter.requestDevice({ requiredFeatures: prefillMathFeatures(adapter), requiredLimits: {
     maxBufferSize: adapter.limits.maxBufferSize,
     maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
   return { adapter, device };

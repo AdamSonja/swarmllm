@@ -47,7 +47,7 @@ const eng = await Qwen35Engine.create({ device, meta: m, weights, layerRange: [0
 eng.mtpFill = env("MTP_FILL", "1") !== "0";
 const D = eng.dims;
 console.log(`${MODEL}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s · layers ${L} (${eng.layers.filter((x) => x.isFull).length} full attn) · dims ${JSON.stringify(D)}`);
-console.log(`  moe ${JSON.stringify(eng.moe)} · gemmOn ${eng.gemmOn} shapes ${JSON.stringify([...eng._gemmShapes])} q8pairs ${JSON.stringify(eng._gemm8Pairs)} · flash ${eng.flash} faSplit ${eng.faSplit} · mtp ${!!eng.mtp} fill ${eng.mtpFill}`);
+console.log(`  prefillMath ${eng.prefillMath} · moe ${JSON.stringify(eng.moe)} · gemmOn ${eng.gemmOn} shapes ${JSON.stringify([...eng._gemmShapes])} q8pairs ${JSON.stringify(eng._gemm8Pairs)} · flash ${eng.flash} faSplit ${eng.faSplit} · mtp ${!!eng.mtp} fill ${eng.mtpFill}`);
 
 // prompt: this repo's source (same recipe as bench_ctx.js)
 let ids = [];

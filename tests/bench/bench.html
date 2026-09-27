@@ -1,7 +1,7 @@
 <!doctype html><title>engine bench</title><pre id="log"></pre>
 <script type="module">
 // Decode benchmark in a real browser tab (Chrome): same checks as tests/test_moe.js / test_mtp.js.
-import { Qwen35Engine } from "../../engine/qwen35.js";
+import { Qwen35Engine, prefillMathFeatures } from "../../engine/qwen35.js";
 import { makeTokenizer, argmax } from "../../engine/engine.js";
 import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF, streamEntryToGPU } from "../../engine/gguf.js";
 const q = new URLSearchParams(location.search), MODEL = q.get("model"), N = +(q.get("tokens") || 40), K = +(q.get("k") || 3), GOLD = JSON.parse(q.get("gold") || "[]");
@@ -45,7 +45,12 @@ async function wcacheEntry(device, info) {
   return { kind, shape: info.shape, gpu: { kind, qs, sc } };
 }
 try {
-  const ad = await navigator.gpu.requestAdapter(); const device = await ad.requestDevice({ requiredLimits: { maxBufferSize: ad.limits.maxBufferSize, maxStorageBufferBindingSize: ad.limits.maxStorageBufferBindingSize } });
+  // ?prefillmath=f32|f16|sgmatrix (prefill GEMM operand precision, engine/qwen35.js PREFILL_MATH); sgmatrix
+  // requests Chrome's subgroup-matrix + shader-f16 features when the adapter has them, else the engine falls back
+  const PM = q.get("prefillmath") || undefined, SGM = q.get("sgm") ? JSON.parse(q.get("sgm")) : undefined;
+  const ad = await navigator.gpu.requestAdapter(); const device = await ad.requestDevice({ requiredFeatures: prefillMathFeatures(ad, PM),
+    requiredLimits: { maxBufferSize: ad.limits.maxBufferSize, maxStorageBufferBindingSize: ad.limits.maxStorageBufferBindingSize, ...(PM ? { maxComputeWorkgroupStorageSize: ad.limits.maxComputeWorkgroupStorageSize } : {}) } });
+  if (PM) log(`adapter features: ${[...ad.features].filter((f) => /f16|subgroup/.test(f)).join(", ") || "(no f16 / subgroup features)"}; subgroupMatrixConfigs ${JSON.stringify([...(ad.info?.subgroupMatrixConfigs || [])].map((c) => [c.componentType, c.resultComponentType, c.M, c.N, c.K]))}; subgroup ${ad.info?.subgroupMinSize}..${ad.info?.subgroupMaxSize}`);
   const G = parseGGUFHeader((await readAt(0, 64 << 20)).buffer); const tok = makeTokenizer(tokenizerFromGGUF(G.meta));
   const arch = G.meta["general.architecture"], L = G.meta[arch + ".block_count"] - (G.meta[arch + ".nextn_predict_layers"] || 0);
   // stream Q4_0/Q8_0 tensors straight into GPU buffers, as the room does (a 21 GB model does not fit in a tab's JS heap)
@@ -60,14 +65,38 @@ try {
   // dvauto=0 (small head always, no language fallback), mtprefill=0 (one refill submit per row),
   // predraft=0 (no pre-run of the next step's first draft), batchcols=N, draftchain=0, specfuse=0
   const opt = (k, d) => (q.has(k) ? +q.get(k) : d);
-  const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: 512,
+  const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRange: [0, L], hasEmbed: true, hasHead: true, maxSeq: Math.max(512, (+q.get("prefill") || 0) + 256),
     draftVocab: opt("draftvocab", 0), draftVocabAuto: opt("dvauto", 1) !== 0, ...(q.has("batchcols") ? { batchCols: +q.get("batchcols"), coopRowsB: +q.get("batchcols") >= 16 ? 1 : 4 } : {}),
     draftChain: q.get("draftchain") !== "0", specFuse: q.get("specfuse") !== "0",
     moeFuse: q.get("moefuse") !== "0", moeDnRows: +(q.get("moednrows") || 1),
-    moeKernel: MOEK });   // ?moefuse=0: unfused MoE (A/B); ?moe=legacy|default|JSON: unfused expert GEMV layout
+    moeKernel: MOEK, prefillMath: PM, prefillSgm: SGM, adapterInfo: ad.info });   // ?moefuse=0: unfused MoE (A/B); ?moe=legacy|default|JSON: unfused expert GEMV layout
   eng.mtpBatchRefill = opt("mtprefill", 1) !== 0; eng.mtpPreDraft = opt("predraft", 1) !== 0;
+  if (PM) log(`prefillMath requested ${PM}, running ${eng.prefillMath}${eng.sgmWhy ? " (" + eng.sgmWhy + ")" : ""}${eng.sgmCfg ? ", sgm " + JSON.stringify(eng.sgmCfg) : ""}, GEMM ${eng.gemmOn ? "on" : "off (needs batchcols=16)"}`);
   log(`${arch}: loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s${G.entryCache ? " (pre-converted tensors from serve.mjs)" : ""}, mtp ${!!eng.mtp}, adapter ${ad.info?.vendor}, draftVocab ${eng.draftVocab || "off"}, refill ${eng.mtpBatchRefill ? "batched" : "per-row"}, predraft ${eng.mtpPreDraft}`);
   log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}, fuseProj ${eng.fuseProj}, moeFuse ${!!eng.moeFuse} R ${eng.moe?.R}, moeKernel ${JSON.stringify(eng.moeK)}`);
+  // ?prefill=N: prefill tok/s on an N-token prompt (this page's own source, repeated) before the decode checks,
+  // with ?prefillmath=... A/B'd against the f32 GEMM in the same tab (engine.prefillMath is a runtime switch).
+  // Also reports the next-token logits' relDiff vs the f32 GEMM and whether greedy argmax agrees.
+  if (q.has("prefill")) {
+    const src = await (await fetch(location.pathname)).text(); let pids = tok.encode(src);
+    const NP = +q.get("prefill"); while (pids.length < NP + 1) pids = pids.concat(pids); pids = pids.slice(0, NP + 1);
+    const res = {};
+    for (const pm of [...new Set(["f32", eng.prefillMath])]) {
+      eng.prefillMath = pm;
+      if (eng.mtp) eng.mtpFill = true;
+      for (let rep = 0; rep < 2; rep++) {   // first run warms pipelines up
+        eng.reset(); const t1 = performance.now(); await eng.prefillTokens(pids.slice(0, -1)); const lg = await eng.forwardToken(pids.at(-1));
+        res[pm] = { tps: NP / ((performance.now() - t1) / 1000), lg: Float32Array.from(lg) };
+      }
+      log(`prefill ${NP} tokens, prefillMath ${pm}: ${res[pm].tps.toFixed(1)} tok/s`);
+    }
+    if (res.f32 && eng.prefillMath !== "f32") {
+      const a = res.f32.lg, b = res[eng.prefillMath].lg; let md = 0, sc = 1e-6;
+      for (let i = 0; i < a.length; i++) { md = Math.max(md, Math.abs(a[i] - b[i])); sc = Math.max(sc, Math.abs(a[i])); }
+      log(`prefill logits ${eng.prefillMath} vs f32: relDiff ${(md / sc).toExponential(2)}, argmax ${argmax(a)} vs ${argmax(b)} ${argmax(a) === argmax(b) ? "same" : "DIFFERENT"}`);
+    }
+    eng.prefillMath = PM && eng._pmAvail?.[PM] ? PM : "f32";
+  }
   const V = tok.vocab, chat = (s) => [V["<|im_start|>"], ...tok.encode("user\n" + s), V["<|im_end|>"], ...tok.encode("\n"), V["<|im_start|>"], ...tok.encode("assistant\n"), V["<think>"], ...tok.encode("\n\n"), V["</think>"], ...tok.encode("\n\n")];
   const out = [];
   for (const [i, prompt] of ["Write the Python code for two sum. Code only.", "Explain what a hash map is in two sentences."].entries()) {

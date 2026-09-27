@@ -1,6 +1,8 @@
 // Run tests/bench/bench.html in Chrome with the real GPU. node tests/bench/chrome_bench.mjs <model path under repo> [tokens] [extra query]
 // extra query: e.g. "draftvocab=65536&predraft=0&specfuse=0" (see the knobs at the top of bench.html)
 // env: MOE_FUSE=0, MOE_DN_ROWS=1|2|4, MOE_KERNEL=legacy|default|JSON (unfused expert GEMV layout)
+//      PREFILL_MATH=f32|f16|sgmatrix (prefill GEMM operand precision), PREFILL=N (prefill tok/s on N tokens, A/B vs f32),
+//      SGM='{"TM":128,"KB":1,"PAD":8}' (tensor-core GEMM tuning). The prefill GEMM needs 16 columns: add "batchcols=16".
 // Loading (not part of the tok/s numbers) is made cheap for repeated runs:
 //   WCACHE=1 (default): the page takes pre-converted tensors from serve.mjs's weight cache
 //     (tests/weight_cache.js, ~/.cache/swarmllm-weights) instead of repacking in JS; WCACHE=0 = old path.
@@ -18,6 +20,6 @@ if (prof && prof !== "0") { ctx = await chromium.launchPersistentContext(prof, {
 else { b = await chromium.launch({ headless: false, args }); ctx = await b.newContext(); }
 const p = await ctx.newPage(); p.on("console", (m) => console.log("  tab:", m.text())); p.on("crash", () => console.log("TAB CRASHED"));
 const gold = GOLD[Object.keys(GOLD).find((k) => model.includes(k))] || [];
-await p.goto(`http://127.0.0.1:8791/tests/bench/bench.html?model=/${model}&tokens=${N}&wcache=${wcache ? 1 : 0}&gold=${encodeURIComponent(JSON.stringify(gold))}${EXTRA}${process.env.MOE_FUSE === "0" ? "&moefuse=0" : ""}${process.env.MOE_DN_ROWS ? "&moednrows=" + process.env.MOE_DN_ROWS : ""}${MOEK ? "&moe=" + encodeURIComponent(MOEK) : ""}`);
+await p.goto(`http://127.0.0.1:8791/tests/bench/bench.html?model=/${model}&tokens=${N}&wcache=${wcache ? 1 : 0}&gold=${encodeURIComponent(JSON.stringify(gold))}${EXTRA}${process.env.MOE_FUSE === "0" ? "&moefuse=0" : ""}${process.env.MOE_DN_ROWS ? "&moednrows=" + process.env.MOE_DN_ROWS : ""}${MOEK ? "&moe=" + encodeURIComponent(MOEK) : ""}${process.env.PREFILL_MATH ? "&prefillmath=" + process.env.PREFILL_MATH : ""}${process.env.PREFILL ? "&prefill=" + process.env.PREFILL : ""}${process.env.SGM ? "&sgm=" + encodeURIComponent(process.env.SGM) : ""}`);
 await p.waitForFunction(() => window.RESULT, null, { timeout: 30 * 60e3, polling: 2000 }).catch((e) => console.log("timeout", e.message));
 await ctx.close(); if (b) await b.close(); srv.kill();
