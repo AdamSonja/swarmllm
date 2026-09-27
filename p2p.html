@@ -190,9 +190,8 @@
   #compute-open:active:not(:disabled) { transform: scale(.94); }
   #compute-open .mk { display: block; fill: currentColor; overflow: visible; }
   #compute-open .mk circle { transform-box: fill-box; transform-origin: center; }
+  /* holding layers: the dots pulse (no ring around the button) */
   #compute-open .mk .lit { fill: var(--blue-400); }
-  #compute-open.on { box-shadow: 0 0 0 2px var(--panel-3), 0 0 0 3.5px var(--accent); }
-  #compute-open.on:hover:not(:disabled) { box-shadow: 0 0 0 2px var(--panel-3), 0 0 0 3.5px var(--accent); }
   #compute-open.on .mk circle { animation: mkbeat 2.4s var(--ease) infinite; animation-delay: calc(var(--rc) * .16s); }
   @keyframes mkbeat { 0%, 100% { opacity: 1; transform: none; } 40% { opacity: .5; transform: scale(.82); } }
   #compute-open:not(.on):hover .mk circle { animation: dlwave 1.4s var(--ease) 1; animation-delay: calc(var(--rc) * .08s); }
