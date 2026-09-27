@@ -14,7 +14,7 @@ export class DenseEngine {
     return e;
   }
 
-  async _init({ device, cfg, tensors, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, matvecVariant = "coop", coopWG = 256, coopRows = 4 }) {
+  async _init({ device, cfg, tensors, weights, layerRange, hasEmbed = true, hasHead = true, maxSeq = 512, matvecVariant = "coop", coopWG = 256, coopRows = 4, headRows = 8 }) {
     this.device = device;
     this.cfg = cfg;
     this.maxSeq = maxSeq;
@@ -75,6 +75,17 @@ export class DenseEngine {
       });
     }));
 
+    // LM head GEMV with its own rows-per-workgroup (headRows): rows per workgroup never enter a row's
+    // arithmetic (same per-thread sums, same tree over the WG slots), so this is bit-identical to the
+    // coopRows kernel; at dIn = 2048 the head is ~20% faster with 8 rows (tests/bench_wide.js q17)
+    this.headRows = hasHead && matvecVariant === "coop" && headRows > 0 && headRows !== coopRows ? headRows : 0;
+    if (this.headRows) {
+      const modH = device.createShaderModule({ code: WGSL + coopWGSL(coopWG, this.headRows, 64, 4, this.rowsB, await probeUnpack(device)) });
+      for (const [name, spec] of [["matvec_q8_coop", G1.matvec_q8_coop], ["matvec_q4_coop", G1.matvec_q4_coop], ["matvec_coop", G1.matvec_coop]]) {
+        const layout1 = device.createBindGroupLayout({ entries: spec.map((t, i) => ({ binding: i, visibility: C, buffer: { type: bufType[t] } })) });
+        this.pipes[name + "_h"] = await device.createComputePipelineAsync({ layout: device.createPipelineLayout({ bindGroupLayouts: [layout0, layout1] }), compute: { module: modH, entryPoint: name } });
+      }
+    }
     // uniforms
     const cfgData = new ArrayBuffer(48);
     const cu = new Uint32Array(cfgData), cf = new Float32Array(cfgData);
@@ -185,6 +196,7 @@ export class DenseEngine {
     if (hasHead) {
       this.bgFinalNorm = bgNorm(this.x, this.finalNorm, this.xn);
       this.headOp = mv(this.headEntry, this.xn, this.logits, vocab, dim);
+      if (this.headRows) this.headOp = { pipe: this.headOp.pipe + "_h", wgs: Math.ceil(vocab / this.headRows), bg: this._bg(this.pipes[this.headOp.pipe + "_h"], 1, this.headEntry.kind === "f32" ? [this.headEntry.buf, this.xn, this.logits, this._shape(vocab, dim)] : [this.headEntry.qs, this.headEntry.sc, this.xn, this.logits, this._shape(vocab, dim)]) };
     }
   }
 
