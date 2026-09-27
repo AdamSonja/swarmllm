@@ -31,12 +31,11 @@
   const gbs = x => (Math.round(x * 10) / 10) + " GB";
 
   /* ---------- friendly names: every device gets one, and you can change it ---------- */
-  const ADJ = ["Amber", "Calm", "Quiet", "Swift", "Bright", "Lucky", "Misty", "Sunny", "Cozy", "Brave", "Mellow", "Nimble"];
-  const ANI = ["Fox", "Heron", "Lynx", "Otter", "Panda", "Robin", "Koala", "Falcon", "Badger", "Owl", "Wren", "Moose"];
-  let NAMES = ["Amber Fox", "Calm Heron", "Quiet Lynx"];
+  const ANI = ["fox", "heron", "lynx", "otter", "panda", "robin", "koala", "falcon", "badger", "owl", "wren", "moose"];   // one lowercase word, as the room names devices
+  let NAMES = ["fox", "heron", "lynx"];
   const newNames = () => {
-    const a = ADJ.slice().sort(() => Math.random() - .5), b = ANI.slice().sort(() => Math.random() - .5);
-    NAMES = [0, 1, 2].map(i => `${a[i]} ${b[i]}`);
+    const b = ANI.slice().sort(() => Math.random() - .5);
+    NAMES = [0, 1, 2].map(i => b[i]);
     demo.querySelectorAll("[data-name]").forEach(el => { el.textContent = NAMES[+el.dataset.name]; });
     ANSWER = `Pooled splits one open model across this room. ${NAMES[0]} runs layers 1 to 17, ${NAMES[1]} 18 to 37, ${NAMES[2]} 38 to 40. Every word passes through all three.`;
     WORDS = ANSWER.split(" "); timeWords();
