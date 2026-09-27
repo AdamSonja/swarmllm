@@ -180,19 +180,9 @@
   .hbtn svg { flex: none; }
   #share-btn { background: var(--accent); color: #fff; box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(42,69,224,.7); }
   #share-btn:hover:not(:disabled) { background: var(--accent-hover); box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(42,69,224,.7); }
-  /* ---------- Star button (the landing's block, site/css/site.css "Star button"; room/stars.js fills .st-n) ----------
-     white, 1px --rule-3 outline, the GitHub mark in ink, a gold star glyph (the only gold), "Star", the count after a hairline */
-  .btn-star { display: inline-flex; align-items: center; flex: none; gap: 6px; height: 36px; padding: 0 12px; border-radius: 999px; font: 500 13px/1 var(--sans); white-space: nowrap; text-decoration: none; background: var(--white); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule-3); transition: background .15s, box-shadow .15s; }
-  .btn-star:hover { background: var(--bg-2); box-shadow: inset 0 0 0 1px var(--ink-3); }
-  .btn-star .gh { flex: none; color: var(--ink); }
-  .btn-star .star { flex: none; fill: #E3B341; margin-left: 1px; }
-  .btn-star .st-n { margin-left: 3px; padding-left: 9px; border-left: 1px solid var(--rule-3); line-height: 18px; font-variant-numeric: tabular-nums; }
-  @media (max-width: 640px) {
-    .btn-star { padding: 0 10px; gap: 5px; }
-    .btn-star.has-n .st-l { display: none; }
-    .btn-star .st-n { margin-left: 1px; padding-left: 7px; }
-  }
-  /* ---------- end Star button ---------- */
+  /* header GitHub link: the mark only */
+  .gh-link { display: inline-grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 8px; color: var(--ink-2); }
+  .gh-link:hover { color: var(--ink); background: var(--bg-2); }
   /* this device's screen (room/compute.js): the dots mark on a black button, no words. While this
      device holds layers it is "on": an accent ring, and the mark's dots breathe in the logo's wave */
   #compute-open { position: relative; width: 34px; padding: 0; justify-content: center; background: var(--ink); box-shadow: none; color: #fff; }
@@ -1127,10 +1117,6 @@
   .hbrk { display: none; }
 
   @media (max-width: 1180px) {
-    /* the room bar has less room: the marks and the count (the word shows when there is no count) */
-    body.in-room #gh-link.has-n .st-l { display: none; }
-    body.in-room #gh-link { padding: 0 10px; gap: 5px; }
-    body.in-room #gh-link .st-n { margin-left: 1px; padding-left: 7px; }
     .pchip .pname { max-width: 110px; }
   }
   @media (max-width: 1000px) {
@@ -1150,7 +1136,7 @@
     .pchip .pname { max-width: 96px; }
     #compute-open { width: 36px; height: 36px; }
     #share-btn { padding: 0 12px; }
-    /* phones: the Star button in the first row, before Invite */
+    /* phones: the GitHub link in the first row, before Invite */
     body.in-room #gh-link { order: 1; }
     body.in-room :is(#share-btn, #compute-open, #room-menu) { order: 2; }
     #join-pledge input { width: 32px !important; flex: none; }
@@ -1206,7 +1192,6 @@
     body.in-room #room-badge { padding: 0 6px 0 8px; }
   }
   @media (max-width: 370px) {
-    body.in-room #gh-link .gh { display: none; }   /* the star and the count */
     body.in-room #hdr-sum { width: 0; padding: 0; font-size: 0; }   /* no total; its fade still ends the chip row */
     #share-btn .lbl { display: none; }
     #share-btn { width: 36px; padding: 0; justify-content: center; }
@@ -1312,7 +1297,7 @@
       </section>
     </div>
   </details>
-  <a id="gh-link" class="btn-star" href="https://github.com/Nehanth/pooled" target="_blank" rel="noopener" data-stars aria-label="Star pooled on GitHub"><svg class="gh" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><svg class="star" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .67.42l1.88 3.8 4.2.61a.75.75 0 0 1 .42 1.28l-3.04 2.96.72 4.18a.75.75 0 0 1-1.09.79L8 12.33l-3.76 1.98a.75.75 0 0 1-1.09-.79l.72-4.18L.83 6.38a.75.75 0 0 1 .42-1.28l4.2-.61L7.33.67A.75.75 0 0 1 8 .25z"/></svg><span class="st-l">Star</span><span class="st-n" hidden></span></a>
+  <a id="gh-link" class="gh-link" href="https://github.com/Nehanth/pooled" target="_blank" rel="noopener" aria-label="pooled on GitHub" title="GitHub"><svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
 </header>
 
 <div id="join-screen">

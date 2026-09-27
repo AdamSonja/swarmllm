@@ -43,21 +43,9 @@ ol,ul{list-style:none}
 .nav .right{display:flex;align-items:center;gap:8px;margin-left:auto}
 .nav .btn-sm{height:36px;padding-top:0;padding-bottom:0}
 
-/* ---------- Star button (header; the room mirrors this block) ----------
-   A secondary .btn.btn-sm: white, 1px --rule-3 outline, the GitHub mark in ink, a gold star glyph (the only
-   gold), "Star", then the live count after a hairline, all in ink. 36px tall, like the Start a room button next
-   to it. Phones: marks + count only (the word shows when there is no count). stars.js fills .st-n. */
-.btn-star{gap:6px;height:36px;padding:0 12px;background:var(--white);color:var(--ink);box-shadow:inset 0 0 0 1px var(--rule-3)}
-.btn-star:hover{background:var(--bg-2);box-shadow:inset 0 0 0 1px var(--ink-3)}
-.btn-star .gh{flex:none;color:var(--ink)}
-.btn-star .star{flex:none;fill:#E3B341;margin-left:1px}
-.btn-star .st-n{margin-left:3px;padding-left:9px;border-left:1px solid var(--rule-3);line-height:18px;font-variant-numeric:tabular-nums}
-@media (max-width:640px){
-  .btn-star{padding:0 10px;gap:5px}
-  .btn-star.has-n .st-l{display:none}
-  .btn-star .st-n{margin-left:1px;padding-left:7px}
-}
-/* ---------- end Star button ---------- */
+/* header GitHub link: the mark only */
+.gh-link{display:inline-grid;place-items:center;width:36px;height:36px;border-radius:8px;color:var(--ink-2)}
+.gh-link:hover{color:var(--ink);background:var(--bg-2)}
 
 /* ---------- hero, over the swarm ---------- */
 .hero{position:relative;padding:clamp(20px,3.5vh,40px) 0 clamp(18px,2.5vh,28px);text-align:center;overflow:hidden}
