@@ -93,7 +93,7 @@ GitHub issues carry the same `area:` label as the section they sit in here.
 | 13 | [Multi-turn conversation and an honest context limit](13-multi-turn-context.md) | landed; context per model is under Inference |
 | 14 | [Pre-flight check, join links, and a model ladder](14-preflight-and-join-links.md) | landed |
 | 06 | [More models: Qwen 3.8 27B, Qwen 3.6 35B MoE, Qwen3 1.7B](06-more-models.md) | shipped |
-| — | [Rename to Pooled at pooled.run](../docs/rename-pooled.md) | code, docs and domain done; the repo move is left |
+| - | [Rename to Pooled at pooled.run](../docs/rename-pooled.md) | code, docs and domain done; the repo move is left |
 
 Research notes with no scheduled work yet: [07 persistent rooms and stats](07-rooms-and-stats.md), [08 audited compute](08-verification.md), [10 expert-split MoE](10-moe-expert-split.md). Older reasoning is in [docs/archive/master-plan.md](../docs/archive/master-plan.md) and the [roadmap gap review](../docs/archive/roadmap-review.md), which keep the old name.
 
