@@ -22,7 +22,7 @@ curl -fsSL https://deno.land/install.sh | sh          # Deno 2.x
 npm test                                               # quick unit tests (no GPU)
 ```
 
-Model files are not in the repository. Put GGUFs under `models/` (see [docs/models.md](docs/models.md)); the full test suite and benchmarks expect `models/qwen/model.gguf` (Qwen3 0.6B, Q8_0) and `models/q38/model.gguf` (Qwen 3.8 27B, Q4_0).
+Model files are not in the repository. Put GGUFs under `models/` (see [docs/models.md](docs/models.md)); the full test suite and benchmarks expect `models/qwen/model.gguf` (Qwen3 0.6B, Q8_0) and `models/q38/model.gguf` (Qwen 3.8 27B, Q4_0). `tests/test_moe.js` also needs `models/q36moe/` (Qwen 3.6 35B MoE), and Code mode's small model is `models/qwen17/` (Qwen3 1.7B).
 
 ```bash
 npm run test:gpu          # golden tests on the small model
@@ -62,15 +62,15 @@ To run the site locally, serve the repository root with `npm run serve` (or `npx
 
 ## Coding guidelines
 
-- Plain modern JavaScript (ES modules), no build step, no framework. The site must work by opening the HTML files.
+- Plain modern JavaScript (ES modules), no build step, no framework. Serve the repo with any static server that applies the `serve.json` rewrites (`npm run serve`); the room uses ES modules and the landing page uses absolute `/site/...` paths, so opening the HTML files directly does not work.
 - WGSL kernels live in `engine/wgsl/*.js` (`base.js`, `coop.js`, `qwen35.js`, `gemm.js`, `moe.js`) as JavaScript templates, generated per shape when they vary. Keep generated code deterministic and readable.
 - Kernel rules learned the hard way (see [docs/kernels.md](docs/kernels.md)): never dynamically index a local array (it spills), keep `workgroupBarrier()` outside conditionals, accumulate in f32, no subgroup or pointer-parameter features without a probe and a fallback, and dispatch tall matvecs in 2-D (a single dimension over 65,535 workgroups is silently dropped).
 - Everything must run on Chrome, Safari 26, and Deno. Feature-detect at runtime; never assume an extension.
-- Prefer measuring to reasoning: `benchmarks/bench_breakdown.js` skips kernel families to show where time goes.
+- Prefer measuring to reasoning: `tests/prof_ts.js` gives per-kernel GPU time with timestamp queries, and `tests/bench/chrome_bench.mjs` gives the Chrome numbers we quote. (`benchmarks/bench_breakdown.js` still has kernel family lists from before the fused kernels.)
 
 ## Naming guidelines
 
-- Files: `snake_case.js`; tests `test_<what>.js`; benchmarks `bench_<what>.js`.
+- Files: engine files are short lowercase names; room and harness modules use kebab-case (`code-ui.js`, `engine-model.js`). GPU tests are `tests/test_<what>.js`, unit tests `tests/unit/<what>_test.js`, benchmarks `bench_<what>.js`.
 - Kernels: `<op>[_<quant>][_<variant>]`, e.g. `matvec_q4_coop_b`, `dn_delta_mc`. Suffixes: `_coop` cooperative rows, `_b` batched columns, `_acc` accumulate into output, `_mc` multi-column glue, `_gu` fused gate/up.
 - Protocol messages: `ai-<verb>` with a `t` field.
 
