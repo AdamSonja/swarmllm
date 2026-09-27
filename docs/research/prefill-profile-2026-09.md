@@ -417,3 +417,32 @@ That is still 3.5 to 4× behind llama.cpp's int8 tensor-core MMQ. Closing the re
   - Result: 198.1 / 166.8 tok/s.
   - dn_qkv 146.9 µs (3.65 TF), dn_z 87 µs, dn_out 88.6 / 98.6 µs (Q4/Q8), attn q+gate Q4 147 µs.
 - The wide GEMM: `SHAPES=17408x5120,... NS=64,128,256,512 CFGS='[{"BM":64,"BN":64,"TM":4,"TN":4,"KB":1},{"BM":128,"BN":128,"TM":8,"TN":8,"KB":1}]' deno run --unstable-webgpu --allow-read --allow-env tests/bench/bench_wide_gemm.js`.
+
+#### B measured on GB10 (2026-09-27)
+
+The WGSL compiled and ran first try on Deno/wgpu; 0 GPU errors on every run. Default tile changed to
+KB 1 (one quant block per K stage, 16 KB workgroup memory): the 27B prefill of 1024 tokens ran 90.4 tok/s
+with KB 1 vs 77.3 with KB 2 (default 16-column path 72.0). Tile sweep (`tests/bench_wide_tiles.js`,
+27B, 1024 tokens): 64x64/4x4 KB1 90.4 · 128x64/8x4 KB1 86.7 · 64x64/8x4 KB1 86.8 · 64x32 KB1 86.0 ·
+128x128/8x8 KB1 84.8 · 128x64/8x4 KB2 81.0 · 64x64 KB2 77.3 · 64x128 KB2 76.0 · 128x32 KB2 65.9.
+MoE: 64x64 KB1 223.4, KB2 220.3, 128x64 KB1 221.2, default 163.3.
+
+`bench_ctx.js` (FILLS=512,4096,16384 TOKENS=8; 4096/16384 are the rate of that segment), U=256:
+
+| | 512 off | 512 on | 4096 off | 4096 on | 16384 off | 16384 on |
+|---|---|---|---|---|---|---|
+| 27B prefill tok/s | 66.7 | 80.0 | 59.7 | 71.8 | 35.2 | 39.0 |
+| 27B plain decode | 8.79 | 8.69 | 8.50 | 8.50 | 7.40 | 7.47 |
+| MoE prefill tok/s | 153.0 | 181.6 | 140.8 | 183.1 | 89.1 | 105.3 |
+| MoE plain decode | 24.50 | 23.92 | 24.14 | 22.92 | 20.34 | 21.38 |
+
+Spec identical to plain at every fill, both ways. Wide GEMMs reach 5.5-6.0 TFLOPS (Q4 FFN) in
+`PREFILL_UBATCH=256 prof_prefill.js`, which now profiles wide chunks. At 4096 on the 27B the FFN GEMMs are
+still 44% and attention 28% of kernel time; on the MoE, experts are 51% and attention 24%.
+
+Correctness (`test_prefill_wide.js`, LENS=150,700,2100): the 27B max logits relDiff wide vs default is
+5.2e-4, argmax equal, greedy and spec identical; PASS. The MoE is argmax-equal and greedy/spec identical,
+but relDiff at 2100 tokens is 4.04e-3 (vs sequential: default 8.1e-4, wide 3.97e-3), above the 2e-3 gate.
+It is the same for U=128/256/512, so it comes from the GEMM's summation order vs the GEMV (a near-tie
+amplified through routing is likely), not from chunking. Under the policy the MoE keeps it off by default.
+Goldens with PREFILL_UBATCH=256: run.sh quick 8/8, run.sh q38 9/9, test_moe 3/3 MATCH, spec identical.
