@@ -84,3 +84,10 @@ Deno.test("ToolCallParser: a call cut before </function> is an error, not a trun
   const c = P.end().calls[0];
   ok(c.error && c.open && !c.name, JSON.stringify(c));
 });
+
+Deno.test("a call that ends after </parameter> without </function> still counts", () => {
+  const P = new ToolCallParser();
+  P.feed("<tool_call>\n<function=read_file>\n<parameter=path>\ngame.js\n</parameter>\n");
+  const e = P.end();
+  if (e.calls.length !== 1 || e.calls[0].name !== "read_file" || e.calls[0].arguments.path !== "game.js") throw new Error(JSON.stringify(e));
+});

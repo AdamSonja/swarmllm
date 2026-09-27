@@ -120,7 +120,7 @@ export class Agent {
       const e = P.end();
       const u = this.usage?.();
       // a call left open by the length cap: its last value is a fragment, so say why instead of running it
-      if (u && (u.reason === "max" || u.reason === "ctx")) {
+      {
         for (let i = 0; i < e.calls.length; i++) {
           const c = e.calls[i];
           if (!c.open) continue;
@@ -129,7 +129,12 @@ export class Agent {
           // is cut at the same place again)
           const part = salvageWrite(c.raw, (n) => this.byName.get(n)?.parameters);
           if (part) { e.calls[i] = part; continue; }
-          c.error = `your answer was cut at ${u.generated} tokens before the call was complete; write long files in parts (write_file with append: true)`;
+          if (u && (u.reason === "max" || u.reason === "ctx")) c.error = `your answer was cut at ${u.generated} tokens before the call was complete; write long files in parts (write_file with append: true)`;
+          else {
+            // ended mid-call for another reason (end of turn, a stop, a device hiccup): say which, so it can be traced
+            c.error = `your answer ended in the middle of a tool call${u ? ` (${u.reason || "stop"} after ${u.generated} tokens)` : ""}. Close every call with </parameter>, </function> and </tool_call>; write long files in parts with append: true`;
+            try { console.warn("[code] call ended early", u, JSON.stringify(String(c.raw || "").slice(-300))); } catch {}
+          }
         }
       }
       shown += e.text; found.push(...e.calls);
@@ -176,7 +181,7 @@ export class Agent {
         else {
           try { result = String(await t.run(c.arguments || {}, { signal, step })); }
           catch (err) { result = `error: ${err.message}`; }
-          if (c.salvage && !/^error/.test(result)) result += `\nYour answer hit the length limit, so only the first ${c.salvage.lines} lines of ${c.arguments.path} were saved. The last saved line is:\n${c.salvage.last}\nContinue with write_file(path: ${c.arguments.path}, append: true) starting with the line after it. Keep each part under ~120 lines.`;
+          if (c.salvage && !/^error/.test(result)) result += `\nYour answer stopped before the call was complete, so only the first ${c.salvage.lines} lines of ${c.arguments.path} were saved. The last saved line is:\n${c.salvage.last}\nContinue with write_file(path: ${c.arguments.path}, append: true) starting with the line after it. Keep each part under ~120 lines.`;
         }
       }
     }

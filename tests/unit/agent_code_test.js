@@ -236,3 +236,14 @@ Deno.test("agent: saved ids are replayed only under the same tokenizer", async (
   eq(same, [[7, 8]]);
   eq(other, [], "another model re-encodes the text");
 });
+
+Deno.test("agent: a write_file that ends early for any reason keeps its lines; the error names the reason", async () => {
+  const log = [];
+  const cut = "<tool_call>\n<function=write_file>\n<parameter=path>\ngame.js\n</parameter>\n<parameter=content>\nconst a = 1;\nlet b";
+  const A = new Agent({ generate: scripted([cut, "ok"]), tools: tools(log), usage: () => ({ reason: "stop", generated: 700, prompt: 10 }) });
+  await A.run("go");
+  eq(log, [["write", "game.js"]]);
+  const B = new Agent({ generate: scripted(["<tool_call>\n<function=edit_file>\n<parameter=path>\nx\n</parameter>\n<parameter=old>\nab", "ok"]), tools: tools([]), usage: () => ({ reason: "stop", generated: 12, prompt: 10 }) });
+  await B.run("go");
+  ok(/ended in the middle of a tool call \(stop after 12 tokens\)/.test(B.turns[2].text), B.turns[2].text);
+});

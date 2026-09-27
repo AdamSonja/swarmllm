@@ -138,7 +138,9 @@ export class ToolCallParser {
     if (this.inCall) {
       // a model that stops right after </function> without closing the call still meant it; without
       // </function> the answer was cut mid-call (length cap) and its last value is a fragment
-      const c = /<\/function>/.test(this.buf) ? parseCallBody(this.buf, this.schemaFor) : { error: "unterminated <tool_call>", raw: this.buf, open: true };
+      // also accept a call that ends right after a closed parameter (seen from Qwen: no </function>)
+      const done = /<\/function>/.test(this.buf) || /^\s*<function=[^>\s]+>[\s\S]*<\/parameter>\s*$/.test(this.buf);
+      const c = done ? parseCallBody(this.buf, this.schemaFor) : { error: "unterminated <tool_call>", raw: this.buf, open: true };
       r.calls.push(c); this.calls.push(c);
     } else r.text = this.buf;
     this.buf = ""; this.inCall = false;
