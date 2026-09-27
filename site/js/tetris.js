@@ -12,7 +12,7 @@
     L: [[2, 0], [0, 1], [1, 1], [2, 1]]
   };
   const KEYS = Object.keys(SHAPES);
-  const BLUES = ["#3152FF", "#6E86FF", "#A5B4FC", "#C9D1F7", "#8EA2FF", "#4A5FD0", "#DCE2FF"];
+  const BLUES = ["#2A45E0", "#6E86FF", "#A5B4FC", "#C9D1F7", "#8EA2FF", "#4A5FD0", "#DCE2FF"];
   const rot = (cells, n) => {
     let c = cells;
     for (let k = 0; k < n; k++) c = c.map(([x, y]) => [-y, x]);

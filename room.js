@@ -1831,7 +1831,7 @@ function mapStats(tps, acc) {
 }
 let lastMap = null, bestTps = 0;
 // one colour per device in the chain: the landing's blue, then its near-black, then lighter blues
-const SWATCH = ["#3152FF", "#2B2F3C", "#8EA2FF", "#4A5FD0", "#5E616B", "#C3CCF8", "#1F2FA8", "#9AA8F0"];
+const SWATCH = ["#2A45E0", "#2B2F3C", "#8EA2FF", "#4A5FD0", "#5E616B", "#C3CCF8", "#1F2FA8", "#9AA8F0"];
 const swatch = (i) => i < 0 ? "var(--faint)" : SWATCH[i % SWATCH.length];
 function renderMap(nodes, st, live) {
   const el = $("swarm-map"); if (!el || !nodes?.length) return;

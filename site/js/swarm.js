@@ -117,7 +117,7 @@
         const a = peers[i], b = peers[j], dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy, R = W < 640 ? 90 : 130;
         if (d2 > R * R) continue;
         const al = (1 - Math.sqrt(d2) / R) * .12;
-        ctx.strokeStyle = `rgba(49,82,255,${al.toFixed(3)})`;
+        ctx.strokeStyle = `rgba(42,69,224,${al.toFixed(3)})`;
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
       // ink dots, in three depth bands (few fill calls)
@@ -131,7 +131,7 @@
         }
         ctx.fill();
       }
-      ctx.fillStyle = `rgba(49,82,255,${(.5 - g * .1).toFixed(3)})`;
+      ctx.fillStyle = `rgba(42,69,224,${(.5 - g * .1).toFixed(3)})`;
       ctx.beginPath();
       for (const p of P) if (p.blue && into(p) === 0) { const r = p.rad * 1.35; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, TAU); }
       ctx.fill();
@@ -145,13 +145,13 @@
             ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, TAU);
           }
           const al = .28 + .5 * Math.min(1, (t - gather) / 1.5) - cr * .5;
-          ctx.fillStyle = blue ? `rgba(49,82,255,${(al + .15).toFixed(3)})` : `rgba(20,22,29,${al.toFixed(3)})`;
+          ctx.fillStyle = blue ? `rgba(42,69,224,${(al + .15).toFixed(3)})` : `rgba(20,22,29,${al.toFixed(3)})`;
           ctx.fill();
         }
         if (cr > 0 && slot) {
           const u = slot.s / 24;
           LOGO.forEach((l, i) => {
-            ctx.fillStyle = i === 8 ? `rgba(49,82,255,${cr.toFixed(3)})` : `rgba(20,22,29,${cr.toFixed(3)})`;
+            ctx.fillStyle = i === 8 ? `rgba(42,69,224,${cr.toFixed(3)})` : `rgba(20,22,29,${cr.toFixed(3)})`;
             ctx.beginPath(); ctx.arc(slot.x + (l[0] - 12) * u, slot.y + (l[1] - 12) * u, l[2] * u * (.7 + .3 * cr), 0, TAU); ctx.fill();
           });
         }

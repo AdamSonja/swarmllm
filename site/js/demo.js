@@ -175,7 +175,7 @@
   const pv = $("pv"), app = $("app"), brLoad = $("brLoad"), game = $("game");
   const PROMPT = "build me a tetris game", PROMPT2 = "make the pieces blue and add a next-piece preview";
   const WARM = ["#F08A6C", "#F2C14E", "#6CC5A1", "#B18CF0", "#5EB8E8", "#F28DB2", "#9BD16B"];
-  const BLUE = ["#3152FF", "#6E86FF", "#A5B4FC", "#C9D1F7", "#8EA2FF", "#4A5FD0", "#DCE2FF"];
+  const BLUE = ["#2A45E0", "#6E86FF", "#A5B4FC", "#C9D1F7", "#8EA2FF", "#4A5FD0", "#DCE2FF"];
   const SRC = {
     "index.html": ['<!doctype html>', '<html lang="en">', '<head>', '  <meta charset="utf-8">', '  <title>Tetris</title>', '  <link rel="stylesheet" href="style.css">',
       '</head>', '<body>', '  <canvas id="board" width="200" height="400"></canvas>', '  <p id="score">0</p>', '  <script src="game.js"></script>', '</body>'],
@@ -188,7 +188,7 @@
       'function clearLines() {', '  for (let y = ROWS - 1; y >= 0; y--) {', '    if (!grid[y].every(Boolean)) continue;', '    grid.splice(y, 1); grid.unshift(Array(COLS).fill(0));',
       '    score += 100; y++;', '  }', '}', '', 'function loop(t) {', '  if (t - last > speed()) { drop(); last = t; }', '  draw(grid, piece);', '  requestAnimationFrame(loop);', '}', '',
       'addEventListener("keydown", e => move(e.key));', 'requestAnimationFrame(loop);'],
-    edit: ['const COLORS = ["#3152FF", "#6E86FF", "#A5B4FC", ...];', 'const next = document.getElementById("next");', 'function drawNext() {', '  paint(next, queue[0]);', '}']
+    edit: ['const COLORS = ["#2A45E0", "#6E86FF", "#A5B4FC", ...];', 'const next = document.getElementById("next");', 'function drawNext() {', '  paint(next, queue[0]);', '}']
   };
   const LINES_OUT = { "index.html": 12, "style.css": 9, "game.js": 38, edit: 41 };
   const tet = window.PooledTetris($("tetris"), {

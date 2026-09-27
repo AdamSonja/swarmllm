@@ -31,9 +31,9 @@
     --ink-2: #4B4E58;
     --muted: #5E616B;
     --faint: #C4C0B1;
-    --accent: #3152FF;
-    --accent-dim: #3152FF;
-    --accent-text: #2440D9;
+    --accent: #2A45E0;
+    --accent-dim: #2A45E0;
+    --accent-text: #2239C8;
     --accent-soft: #EAEDFE;
     --user-bubble: #EAEDFE;
     --a2: #4A5FD0; --a3: #9AA8F0;
@@ -67,7 +67,7 @@
   /* developer controls (bandwidth test, rtt/bw, virtual devices, draft view) show with ?dev=1 */
   html:not(.dev) .dev-only { display: none !important; }
 
-  :root { --lap: 600ms; --d0: #3152FF; --d1: #2B2F3C; --gutter: max(16px, calc(50% - 450px)); }
+  :root { --lap: 600ms; --d0: #2A45E0; --d1: #2B2F3C; --gutter: max(16px, calc(50% - 450px)); }
 
   /* ---- header: the landing's nav on the join screen; inside a room, the landing demo's room bar:
      the mark and wordmark, the room code, one chip per device, what the room pools, Invite ---- */
@@ -152,8 +152,8 @@
   .hbtn { display: inline-flex; align-items: center; gap: 8px; flex: none; height: 34px; padding: 0 12px; font: 500 13.5px/1 var(--sans); border-radius: 8px; background: var(--panel); border: 0; box-shadow: inset 0 0 0 1px var(--border-2); color: var(--text); white-space: nowrap; }
   .hbtn:hover:not(:disabled) { background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--muted); }
   .hbtn svg { flex: none; }
-  #share-btn { background: var(--accent); color: #fff; box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(49,82,255,.7); }
-  #share-btn:hover:not(:disabled) { background: #2443E8; box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(49,82,255,.7); }
+  #share-btn { background: var(--accent); color: #fff; box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(42,69,224,.7); }
+  #share-btn:hover:not(:disabled) { background: #2239C8; box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(42,69,224,.7); }
   #gh-link { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 8px; color: var(--ink-2); transition: background .15s, color .15s; }
   #gh-link:hover { background: var(--panel-2); color: var(--text); }
   /* three dots, the landing's "working" mark */
@@ -207,7 +207,7 @@
     background: var(--accent); color: #fff; border-color: var(--accent);
     font: 500 14px/1 var(--sans); border-radius: 8px; padding: 12px 20px;
   }
-  button.primary:hover:not(:disabled) { background: #2443E8; border-color: #2443E8; }
+  button.primary:hover:not(:disabled) { background: #2239C8; border-color: #2239C8; }
   button.primary:disabled { background: var(--panel-2); border-color: var(--border); color: var(--muted); opacity: 1; }
   input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   select { appearance: none; -webkit-appearance: none; padding-right: 34px; background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%235E616B' stroke-width='1.4'/%3E%3C/svg%3E") no-repeat right 14px center; cursor: pointer; }
@@ -303,7 +303,7 @@
   .cells { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2.5px; height: 30px; }
   .cells i { border-radius: 2.5px; background: var(--sw); transform-origin: center bottom; }
   #room-screen.sweep .sm-strip .cells i { animation: cellhot calc(var(--lap) * .9) var(--ease) both; animation-delay: calc(var(--lap) * .9 * var(--c) / var(--cells, 40)); }
-  @keyframes cellhot { 0%, 100% { transform: none; filter: none; box-shadow: none; } 30% { transform: scaleY(1.25); filter: brightness(1.45) saturate(1.2); box-shadow: 0 0 10px rgba(49,82,255,.55); } }
+  @keyframes cellhot { 0%, 100% { transform: none; filter: none; box-shadow: none; } 30% { transform: scaleY(1.25); filter: brightness(1.45) saturate(1.2); box-shadow: 0 0 10px rgba(42,69,224,.55); } }
   .sm-track { display: flex; align-items: center; gap: 0; overflow-x: auto; scrollbar-width: none; }
   .sm-track::-webkit-scrollbar { display: none; }
   .sm-node { flex: none; display: grid; grid-template-columns: auto auto; column-gap: 7px; align-items: center; padding: 4px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-family: var(--mono); font-size: 10.5px; }
@@ -355,7 +355,7 @@
   #ai-model { width: 100%; font: 500 14px/1.2 var(--sans); padding: 11px 34px 11px 13px; }
   #ai-status { font-size: 12.5px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; padding: 0 4px; }
   #ai-status:empty { display: none; }
-  #ai-start { width: 100%; height: 44px; padding: 0 16px; font-size: 14.5px; border-radius: 10px; box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(49,82,255,.7); }
+  #ai-start { width: 100%; height: 44px; padding: 0 16px; font-size: 14.5px; border-radius: 10px; box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(42,69,224,.7); }
   #ai-start:disabled { box-shadow: none; }
   #ai-need { width: 100%; display: flex; flex-direction: column; gap: 7px; }
   #ai-panel.loading :is(#ai-model, #ai-start, #ai-need, #ai-ladder),
@@ -505,7 +505,7 @@
   .linkrow { display: flex; align-items: center; gap: 6px; width: 100%; margin-top: 20px; padding: 5px 5px 5px 12px; border: 1px solid var(--border-2); border-radius: 10px; background: var(--panel-3); }
   #share-url { flex: 1; min-width: 0; font: 400 12px/1.2 var(--mono); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
   #share-copy { flex: none; height: 34px; padding: 0 14px; font: 500 13px/1 var(--sans); background: var(--accent); border-color: var(--accent); color: #fff; }
-  #share-copy:hover:not(:disabled) { background: #2443E8; border-color: #2443E8; }
+  #share-copy:hover:not(:disabled) { background: #2239C8; border-color: #2239C8; }
   .sheet.invite .row { margin-top: 12px; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .sheet.wide { width: min(680px, 100%); }
@@ -514,7 +514,7 @@
 
   /* ---- Just compute: this device, full screen, lending its GPU (room/compute.js) ---- */
   #compute-screen { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: var(--game); color: var(--on-game); overflow: hidden; animation: csin .5s var(--ease);
-    background-image: radial-gradient(ellipse 70% 50% at 50% 42%, rgba(49,82,255,.16), transparent 70%); }
+    background-image: radial-gradient(ellipse 70% 50% at 50% 42%, rgba(42,69,224,.16), transparent 70%); }
   @keyframes csin { from { opacity: 0; } }
   html.computing header, html.computing #room-screen, html.computing #join-screen { visibility: hidden; }
   .cs-top { flex: none; display: flex; align-items: center; gap: 14px; padding: 16px 20px; padding-top: max(16px, env(safe-area-inset-top)); }
@@ -527,7 +527,7 @@
   #compute-exit:hover:not(:disabled) { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.3); }
   .cs-stage { position: relative; flex: 1; min-height: 200px; display: grid; place-items: center; }
   #cs-flow { position: absolute; inset: 0; width: 100%; height: 100%; }
-  #cs-logo { position: relative; width: clamp(128px, 30vmin, 216px); height: auto; overflow: visible; filter: drop-shadow(0 0 40px rgba(49,82,255,.25)); }
+  #cs-logo { position: relative; width: clamp(128px, 30vmin, 216px); height: auto; overflow: visible; filter: drop-shadow(0 0 40px rgba(42,69,224,.25)); }
   #cs-logo circle { fill: var(--on-game); transform-box: fill-box; transform-origin: center; }
   #cs-logo circle.lit { fill: #6E86FF; }
   #compute-screen:not([data-phase="serving"]) #cs-logo circle { animation: breathe 2.8s var(--ease) infinite; animation-delay: calc(var(--rc) * .18s); }
@@ -541,8 +541,8 @@
   #cs-sub { margin-top: 10px; font-size: clamp(16px, 1.6vw, 19px); color: var(--on-game-2); text-wrap: balance; }
   #cs-strip { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; width: min(520px, 100%); height: 10px; margin-top: 26px; }
   #cs-strip i { border-radius: 2px; background: rgba(255,255,255,.08); }
-  #cs-strip i.mine { background: #3152FF; box-shadow: 0 0 12px rgba(49,82,255,.5); }
-  #cs-strip i.mine.wait { background: rgba(49,82,255,.28); box-shadow: none; }
+  #cs-strip i.mine { background: #2A45E0; box-shadow: 0 0 12px rgba(42,69,224,.5); }
+  #cs-strip i.mine.wait { background: rgba(42,69,224,.28); box-shadow: none; }
   .cs-stats { flex: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(560px, calc(100% - 40px)); margin: 28px auto 0; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; background: rgba(255,255,255,.02); }
   .cs-stats > div { display: flex; flex-direction: column-reverse; padding: 14px 12px; text-align: center; min-width: 0; }
   .cs-stats > div + div { border-left: 1px solid rgba(255,255,255,.1); }
@@ -838,7 +838,7 @@
 <body>
 
 <header>
-  <div class="logo"><a href="/" aria-label="pooled home"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8"/><circle cx="10.2" cy="3.4" r="1.99"/><circle cx="18.5" cy="3.4" r="2.38"/><circle cx="3.4" cy="10.2" r="1.99"/><circle cx="10.2" cy="10.2" r="2.38"/><circle cx="18.5" cy="10.2" r="2.94"/><circle cx="3.4" cy="18.5" r="2.38"/><circle cx="10.2" cy="18.5" r="2.94"/><circle cx="18.5" cy="18.5" r="3.9" fill="#3152FF"/></svg><span>pooled</span></a></div>
+  <div class="logo"><a href="/" aria-label="pooled home"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8"/><circle cx="10.2" cy="3.4" r="1.99"/><circle cx="18.5" cy="3.4" r="2.38"/><circle cx="3.4" cy="10.2" r="1.99"/><circle cx="10.2" cy="10.2" r="2.38"/><circle cx="18.5" cy="10.2" r="2.94"/><circle cx="3.4" cy="18.5" r="2.38"/><circle cx="10.2" cy="18.5" r="2.94"/><circle cx="18.5" cy="18.5" r="3.9" fill="#2A45E0"/></svg><span>pooled</span></a></div>
   <button id="room-badge" type="button" title="Invite a device to this room"></button>
   <div id="peers" role="list" aria-label="Devices in the room"></div>
   <div class="spacer"></div>

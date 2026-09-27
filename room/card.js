@@ -1,7 +1,7 @@
 // The swarm card: a 1200x630 PNG of what this room just did (model, devices and their layers,
 // tok/s, draft acceptance) to download or share. Canvas only, no dependencies.
 
-const C = { bg: "#F6F5F1", dot: "#E4E2DA", panel: "#FBFAF7", border: "#E4E2DA", text: "#14161D", muted: "#5E616B", accent: "#3152FF" };
+const C = { bg: "#F6F5F1", dot: "#E4E2DA", panel: "#FBFAF7", border: "#E4E2DA", text: "#14161D", muted: "#5E616B", accent: "#2A45E0" };
 const SANS = '"Geist", -apple-system, BlinkMacSystemFont, sans-serif';
 const DISPLAY = '"Funnel Display", "Geist", sans-serif';
 const MONO = '"Geist Mono", ui-monospace, monospace';

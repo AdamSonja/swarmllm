@@ -4,8 +4,8 @@
   --bg:#F6F5F1; --bg-2:#FBFAF7; --bg-3:#EFEDE7; --white:#FFFFFF;
   --ink:#14161D; --ink-2:#4B4E58; --ink-3:#5E616B; --ink-4:#6B6E78;
   --rule:#E4E2DA; --rule-2:#ECEAE3; --rule-3:#D6D3C9;
-  --blue:#3152FF; --blue-text:#2440D9; --blue-soft:#EAEDFE; --blue-glow:rgba(49,82,255,.35);
-  --d0:#3152FF; --d1:#2B2F3C;
+  --blue:#2A45E0; --blue-text:#2239C8; --blue-soft:#EAEDFE; --blue-glow:rgba(42,69,224,.35);
+  --d0:#2A45E0; --d1:#2B2F3C;
   --ok:#1a7f37; --del:#B42318;
   --game:#0B0F1F; --on-game:#EEF0F6; --on-game-2:#A9B0C4;
   --display:"Funnel Display","Geist",ui-sans-serif,system-ui,sans-serif;
@@ -40,8 +40,8 @@ ol,ul{list-style:none}
 .btn{display:inline-flex;align-items:center;gap:9px;font:500 15px/1 var(--sans);text-decoration:none;padding:13px 20px;border-radius:10px;transition:background-color .16s var(--ease),box-shadow .16s var(--ease),transform .16s var(--ease)}
 .btn:active{transform:scale(.98)}
 .btn-sm{padding:10px 14px;font-size:14px;border-radius:8px}
-.btn-blue{background:var(--blue);color:#fff;box-shadow:0 1px 0 rgba(255,255,255,.18) inset,0 6px 16px -8px rgba(49,82,255,.7)}
-.btn-blue:hover{background:#2443E8}
+.btn-blue{background:var(--blue);color:#fff;box-shadow:0 1px 0 rgba(255,255,255,.18) inset,0 6px 16px -8px rgba(42,69,224,.7)}
+.btn-blue:hover{background:#2239C8}
 .btn-line{background:var(--white);color:var(--ink);box-shadow:inset 0 0 0 1px var(--rule-3)}
 .btn-line:hover{background:var(--bg-2);box-shadow:inset 0 0 0 1px var(--ink-3)}
 .btn-line svg{color:var(--ink-2)}
@@ -133,7 +133,7 @@ ol,ul{list-style:none}
 .mbtn{display:flex;align-items:center;justify-content:center;height:38px;border-radius:8px;font-size:13.5px;font-weight:500;color:var(--ink);background:var(--white);box-shadow:inset 0 0 0 1px var(--rule-3);transition:background .25s,color .25s,transform .14s var(--ease),box-shadow .25s}
 .mbtn.blue,.mbtn.ready{background:var(--blue);color:#fff;box-shadow:none}
 .press{transform:scale(.96)}
-.mbtn.press{background:#1F3BD6;color:#fff}
+.mbtn.press{background:#1C33B8;color:#fff}
 .mpost{display:none}
 #tabA.done .mpre{display:none}
 #tabA.done .mpost{display:flex;animation:enter .35s var(--ease)}
@@ -171,9 +171,9 @@ ol,ul{list-style:none}
 .md-b{position:relative}
 .lane{position:relative;display:flex;align-items:flex-start;justify-content:center;transition:opacity .5s var(--ease) .1s,transform .7s var(--glide)}
 .md-go{position:absolute;inset:-6px 0 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;transition:opacity .35s var(--ease),transform .45s var(--ease),visibility 0s}
-.md-go .mbtn{gap:8px;height:42px;padding:0 20px 0 17px;border-radius:10px;font-size:14px;box-shadow:0 1px 0 rgba(255,255,255,.18) inset,0 8px 20px -10px rgba(49,82,255,.75)}
-.md-go .mbtn.hover{background:#2443E8;box-shadow:0 0 0 4px var(--blue-soft),0 8px 20px -10px rgba(49,82,255,.75)}
-.md-go .mbtn.press{background:#1F3BD6}
+.md-go .mbtn{gap:8px;height:42px;padding:0 20px 0 17px;border-radius:10px;font-size:14px;box-shadow:0 1px 0 rgba(255,255,255,.18) inset,0 8px 20px -10px rgba(42,69,224,.75)}
+.md-go .mbtn.hover{background:#2239C8;box-shadow:0 0 0 4px var(--blue-soft),0 8px 20px -10px rgba(42,69,224,.75)}
+.md-go .mbtn.press{background:#1C33B8}
 .md-fit{font-size:13px;color:var(--ink-3)}
 .md-fit b{font-weight:500;color:var(--ink)}
 .js .model:not(.dl) .lane{opacity:0;transform:translateY(8px) scale(.985)}
@@ -189,7 +189,7 @@ html:not(.js) .md-go{display:none}
 .cells i{border-radius:3px;background:var(--bg-3);box-shadow:inset 0 0 0 1px var(--rule-3);transition:background-color .25s,box-shadow .25s,transform .35s var(--ease),filter .35s}
 .cells i.f{background:var(--sw);box-shadow:none;animation:cell .35s var(--ease)}
 @keyframes cell{from{transform:scaleY(.4)}}
-.cells i.hot{transform:scaleY(1.22);background:#8FA2FF;box-shadow:0 0 10px rgba(49,82,255,.55);transition:transform 0s,background-color 0s,box-shadow 0s}
+.cells i.hot{transform:scaleY(1.22);background:#8FA2FF;box-shadow:0 0 10px rgba(42,69,224,.55);transition:transform 0s,background-color 0s,box-shadow 0s}
 .h1 .cells i.hot{background:#5B74FF}
 .h0{--sw:var(--d0)}.h1{--sw:var(--d1)}
 .hg{font:400 12px/1 var(--mono);color:var(--ink-3);transition:opacity .4s var(--ease),max-height .9s var(--glide),margin .9s var(--glide);max-height:20px;overflow:hidden}
@@ -206,9 +206,9 @@ html:not(.js) .md-go{display:none}
 .ret{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;opacity:0;transition:opacity .4s}
 .ret path{fill:none;stroke:var(--rule-3);stroke-width:1.2;stroke-dasharray:3 4}
 .pkt{position:absolute;left:0;top:0;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#fff;opacity:0;pointer-events:none;
-  box-shadow:0 0 0 2px var(--blue),0 0 12px 4px rgba(49,82,255,.55),0 0 26px 10px rgba(49,82,255,.22)}
+  box-shadow:0 0 0 2px var(--blue),0 0 12px 4px rgba(42,69,224,.55),0 0 26px 10px rgba(42,69,224,.22)}
 .pkt.on{opacity:1}
-.pkt.back{width:8px;height:8px;margin:-4px 0 0 -4px;box-shadow:0 0 0 2px var(--blue),0 0 8px 2px rgba(49,82,255,.45)}
+.pkt.back{width:8px;height:8px;margin:-4px 0 0 -4px;box-shadow:0 0 0 2px var(--blue),0 0 8px 2px rgba(42,69,224,.45)}
 
 /* before the split the halves touch; the split opens the link between them */
 .js .model:not(.split) .hl,.js .model:not(.split) .hg{opacity:0;transform:translateY(4px)}

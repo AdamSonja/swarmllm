@@ -9,7 +9,7 @@ const $ = (id) => document.getElementById(id);
 const REDUCED = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 // the mark's nine dots (site/logo/mark.svg), in a 24-unit box
 const DOTS = [[3.4, 3.4, 1.8], [10.2, 3.4, 1.99], [18.5, 3.4, 2.38], [3.4, 10.2, 1.99], [10.2, 10.2, 2.38], [18.5, 10.2, 2.94], [3.4, 18.5, 2.38], [10.2, 18.5, 2.94], [18.5, 18.5, 3.9]];
-const PACKET = ["#3152FF", "#6E86FF", "#9AA8F0"];
+const PACKET = ["#2A45E0", "#6E86FF", "#9AA8F0"];
 const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "k" : String(n);
 
 export function computeScreen({ state, keepAwake = () => {} }) {
@@ -59,7 +59,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
       // a soft trail
       ctx.globalAlpha = a * 0.22;
       const g = ctx.createLinearGradient(x - 90, 0, x, 0);
-      g.addColorStop(0, "rgba(49,82,255,0)"); g.addColorStop(1, "rgba(110,134,255,0.9)");
+      g.addColorStop(0, "rgba(42,69,224,0)"); g.addColorStop(1, "rgba(110,134,255,0.9)");
       ctx.fillStyle = g; ctx.fillRect(x - 90, cy - 1, 90, 2);
       ctx.globalAlpha = 1;
     }
