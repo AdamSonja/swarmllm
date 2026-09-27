@@ -6,6 +6,7 @@
 // Everything that came from the model or the preview is untrusted text: it goes in with
 // textContent, and model prose through mdChat (room/markdown.js), which escapes first.
 import { mdChat } from "./markdown.js";
+import { working } from "./working.js";
 
 const $ = (id) => document.getElementById(id);
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -191,7 +192,18 @@ export function codeUI({ onMode = () => {} } = {}) {
     empty.innerHTML = DOTS + words(text);
     log.append(empty);
   }
-  function clear() { log.replaceChildren(); empty = null; jump.hidden = true; viewFile(null); }
+  function clear() { log.replaceChildren(); empty = null; jump.hidden = true; viewFile(null); runAt = 0; editWin.close(); }
+
+  // the wait before the model's first output (after a request, and again after each tool result):
+  // the working line at the end of the timeline, gone as soon as text, code or a tool call arrives
+  let runAt = 0;
+  function wait(on) {
+    log.querySelector(".cm-working")?.remove();
+    if (!on || !runAt) return;
+    const w = h("div", "cm-working");
+    w.append(working({ since: runAt, label: "the agent is working" }));
+    add(w);
+  }
 
   function apply(d) {
     switch (d.t) {
@@ -200,6 +212,8 @@ export function codeUI({ onMode = () => {} } = {}) {
         const u = h("div", "cm-user");
         u.append(h("div", "who", d.name || "host"), h("div", "bubble", d.text));
         add(u);
+        runAt = performance.now();
+        wait(true);
         break;
       }
       case "ai-code-tok": {
@@ -210,14 +224,15 @@ export function codeUI({ onMode = () => {} } = {}) {
         const stick = near();
         el.innerHTML = mdChat(el.dataset.raw.replace(/^\s+/, ""));
         if (!el.dataset.raw.trim()) el.hidden = true;   // (kept, so the next piece of the same text finds it)
-        else el.hidden = false;
+        else { el.hidden = false; wait(false); }
         follow(stick);
         break;
       }
       case "ai-code-live": liveCard(d); break;
       case "ai-code-tool": toolCard(d); break;
-      case "ai-code-note": closeText(); add(h("div", "cm-note" + (d.err ? " err" : ""), words(d.text))); break;
+      case "ai-code-note": wait(false); closeText(); add(h("div", "cm-note" + (d.err ? " err" : ""), words(d.text))); break;
       case "ai-code-done": {
+        runAt = 0; wait(false); editWin.close();
         for (const l of log.querySelectorAll(".cm-live")) l.remove();
         closeText();
         const text = d.stats || `${plural(d.steps || 0, "step")} · ${d.reason || "done"}`;
@@ -235,7 +250,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     let el = find(k);
     // the call is complete: the card stays (hidden) as the place its tool card goes, so text the
     // model writes after the call lands under it
-    if (d.end) { if (el) { el.hidden = true; el.classList.add("ended"); } return; }
+    if (d.end) { if (el) { el.hidden = true; el.classList.add("ended"); } editWin.end(); return; }
     if (!el) {
       closeText();
       el = h("div", "cm-live"); el.dataset.k = k; el.dataset.raw = "";
@@ -247,6 +262,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     const p = parseLive(el.dataset.raw);
     if (!p || !p.code) return;
     const stick = near(), pre = el.querySelector("pre");
+    if (el.hidden) wait(false);
     el.hidden = false;
     el.querySelector(".nm").textContent = p.name === "edit_file" ? "editing" : "writing";
     el.querySelector("b").textContent = p.path || "";
@@ -254,11 +270,70 @@ export function codeUI({ onMode = () => {} } = {}) {
     pre.textContent = p.code;
     pre.scrollTop = pre.scrollHeight;
     follow(stick);
+    editWin.show(p);
   }
+
+  // ---------------- the edit window over the preview: once an app is served, a file the agent writes
+  // again streams into a small editor window over the running app (its name in the title bar, the
+  // editor's colours). When the call is complete and the preview has reloaded (or after a moment),
+  // it closes. Host and peers alike (it is drawn from the same ai-code-live messages).
+  const editWin = (() => {
+    let el = null, code = null, raf = 0, last = null, closeT = 0, revAt = 0;
+    const served = () => { const P = ports.get(active); return P && P.rev > 0 ? P : null; };
+    function build() {
+      el = h("div", "ew"); el.setAttribute("role", "status"); el.setAttribute("aria-label", "The agent is editing a file");
+      const bar = h("div", "ew-bar");
+      bar.append(h("span", "ew-dots"), h("span", "ew-nm", ""), h("b", "", ""), h("span", "ew-n", ""));
+      code = h("pre", "ew-code");
+      el.append(bar, code);
+    }
+    function paint() {
+      raf = 0;
+      if (!el || !last) return;
+      el.querySelector(".ew-nm").textContent = last.name === "edit_file" ? "editing" : "writing";
+      el.querySelector("b").textContent = last.path || "";
+      el.querySelector(".ew-n").textContent = plural(last.code.split("\n").length, "line");
+      el.title = last.path || "";
+      code.innerHTML = highlight(last.path, last.code);
+      code.scrollTop = code.scrollHeight;
+    }
+    function show(p) {
+      const P = served();
+      if (!P && !el?.isConnected) return;
+      clearTimeout(closeT); closeT = 0;
+      if (!el) build();
+      const wrap = $("pv-frame-wrap");
+      if (el.parentNode !== wrap) wrap.append(el);
+      el.classList.remove("out", "done");
+      last = p; revAt = P?.rev || 0;
+      raf ||= requestAnimationFrame(paint);
+    }
+    function close() {
+      clearTimeout(closeT); closeT = 0;
+      if (!el?.isConnected || el.classList.contains("out")) return;
+      el.classList.add("out");
+      const gone = () => { if (el.classList.contains("out")) el.remove(); };
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) gone(); else setTimeout(gone, 200);
+    }
+    // the call is complete: the file is written, the preview reloads; close once it has (or soon)
+    function end() {
+      if (!el?.isConnected) return;
+      el.classList.add("done");
+      clearTimeout(closeT); closeT = setTimeout(close, 2500);
+    }
+    // the preview reloaded with the new file: a beat to see the last lines, then close
+    function reloaded(port, rev) {
+      if (el?.isConnected && el.classList.contains("done") && port === active && rev > revAt) { clearTimeout(closeT); closeT = setTimeout(close, 450); }
+    }
+    return { show, end, close, reloaded };
+  })();
 
   function toolCard(d) {
     const k = key("c", d.mid, d.i);
     let el = find(k);
+    // a call came in: no more waiting. Its result goes back to the model, which thinks again
+    if (d.state === "done" || d.state === "error" || d.state === "declined") queueMicrotask(() => wait(true));
+    else if (!el || d.state) wait(false);
     if (!el) {
       // the model's text before a tool call is complete once the call starts; the card takes the
       // place of the live card that showed the call being typed
@@ -573,6 +648,7 @@ export function codeUI({ onMode = () => {} } = {}) {
     }
     if (s.rev) P.rev = s.rev;
     P.path = s.path || P.path; P.state = s.state;
+    if (s.state === "ready") editWin.reloaded(port, P.rev);
     if (port === active) { bar(); renderConsole(); }
   }
   function logRow(port, e) {

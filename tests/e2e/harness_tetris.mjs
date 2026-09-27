@@ -228,6 +228,20 @@ try {
       window.__live.max = Math.max(window.__live.max, n); if (p && !window.__live.paths.includes(p)) window.__live.paths.push(p);
     } }).observe(document.getElementById("code-log"), { childList: true, subtree: true, characterData: true }); };
   await host.evaluate(watchLive); await peer.evaluate(watchLive);
+  // the edit window over the preview (room/code-ui.js editWin): a file written again once the app is served
+  const watchEw = () => { window.__ew = { paths: [], max: 0, hl: false }; new MutationObserver(() => {
+    const el = document.querySelector("#pv-frame-wrap .ew:not(.out)");
+    if (!el) return;
+    const p = el.querySelector(".ew-bar b")?.textContent, code = el.querySelector(".ew-code");
+    if (p && !window.__ew.paths.includes(p)) window.__ew.paths.push(p);
+    window.__ew.max = Math.max(window.__ew.max, code.textContent.split("\n").length);
+    if (code.querySelector("[class^='t-']")) window.__ew.hl = true;
+  }).observe(document.getElementById("pv-frame-wrap"), { childList: true, subtree: true, characterData: true }); };
+  await host.evaluate(watchEw); await peer.evaluate(watchEw);
+  // the working line (room/working.js) shows while the room waits for the model's first output
+  const watchWorking = () => { window.__wk = 0; new MutationObserver(() => { if (document.querySelector("#code-log .cm-working .working")) window.__wk++; })
+    .observe(document.getElementById("code-log"), { childList: true, subtree: true }); };
+  await host.evaluate(watchWorking); await peer.evaluate(watchWorking);
   await host.fill("#code-prompt", "build a tetris game");
   await host.click("#code-send");
   // the first edit asks; "Allow edits for this task" approves the rest
@@ -246,8 +260,18 @@ try {
   await host.waitForSelector(".cm-stats", { timeout: 60000 });
   log("agent run finished");
   for (const [who, pg] of [["host", host], ["peer", peer]]) {
+    const W = await pg.evaluate(() => ({ seen: window.__wk, left: document.querySelectorAll("#code-log .cm-working").length }));
+    check(`${who}: a working line showed before the model's output, and is gone after the run`, W.seen > 0 && W.left === 0, JSON.stringify(W));
+  }
+  for (const [who, pg] of [["host", host], ["peer", peer]]) {
     const L = await pg.evaluate(() => ({ ...window.__live, left: document.querySelectorAll(".cm-live").length }));
     check(`${who}: code streamed live into a "writing" card, then became the tool card`, L.max > 5 && L.paths.includes("game.js") && L.left === 0, JSON.stringify(L));
+  }
+
+  {
+    await host.waitForTimeout(3000);   // it closes a moment after the reload
+    const E = await host.evaluate(() => ({ ...window.__ew, left: document.querySelectorAll("#pv-frame-wrap .ew").length }));
+    check("host: the edit to game.js streamed into a highlighted window over the preview, which then closed", E.paths.join() === "game.js" && E.max >= 1 && E.hl && E.left === 0, JSON.stringify(E));
   }
 
   // ---- host asserts

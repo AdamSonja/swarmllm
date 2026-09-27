@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="A room where your devices run one open AI model together, in browser tabs.">
-<meta property="og:title" content="Pooled · room">
-<meta property="og:description" content="A model too big for any one of your devices runs across all of them, in browser tabs.">
+<meta property="og:title" content="pooled · room">
+<meta property="og:description" content="Peer-to-peer inference in the browser. Models too big for one device run across many.">
 <meta property="og:url" content="https://pooled.run/room">
 <meta property="og:image" content="https://pooled.run/site/og.png">
 <meta property="og:type" content="website">
@@ -18,9 +18,11 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 
-<link rel="icon" type="image/svg+xml" href="/site/logo/favicon-32.svg">
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="manifest" href="/site.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<title>Pooled · room</title>
+<title>pooled · room</title>
 <script>if (/[?&](dev=1|signal=)/.test(location.search) && !/[?&]dev=0/.test(location.search)) document.documentElement.classList.add("dev");</script>
 <meta name="theme-color" content="#F6F5F1">
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -56,8 +58,10 @@
     --accent-hover: var(--blue-600);
     --a2: var(--blue-400); --a3: var(--blue-200);
     --ok: #1a7f37;
-    --warn: #b58500;
-    --warn-text: #8a6500;   /* --warn as small text on the panels (5:1) */
+    /* attention (context nearly full, unsaved, waiting for approval): the accent, never a yellow.
+       What is short or missing reads in the neutrals (--ink-2 / --ink-3) */
+    --warn: var(--accent);
+    --warn-text: var(--accent-text);
     --err: var(--del);
     --game: #0B0F1F; --on-game: #EEF0F6; --on-game-2: #A9B0C4;
     --display: "Funnel Display", "Geist", ui-sans-serif, system-ui, sans-serif;
@@ -135,32 +139,38 @@
   .peer-card.loading .pchip .cst { display: inline; }
   .peer-card.loading .pchip .cg { display: none; }
   .peer-card.self .pchip { --chip-bd: var(--blue-200); }
+  /* device names: one lowercase word by default ("otter"); any name shows lowercase and small, on chips,
+     cards, lanes, the load rows and in the chat */
+  :is(.pchip .pname, .pop-h .pn, .hl b, .m.user .who, .cm-user .who, .sm-name, #ap-devs li span, .lc-row .n) { text-transform: lowercase; letter-spacing: .005em; }
   /* the token sweep: each chip whose device holds layers lights as the token passes through it */
   body:has(#room-screen.sweep) .peer-card.holds .pchip { animation: cardtok var(--lap) var(--ease) both; animation-delay: calc(var(--lap) * var(--k, 0) / 4); }
   @keyframes cardtok { 0%, 100% { box-shadow: none; border-color: var(--chip-bd); } 20% { box-shadow: 0 0 0 3px var(--accent-soft); border-color: var(--sw); } }
 
-  /* a device's card: what it is, what it lends, the layers it holds (fixed, placed by room.js under its chip) */
+  /* a device's card: what it is, the memory it gives, the layers it holds (fixed, placed by room.js under its chip) */
   .pop { position: fixed; z-index: 60; width: 272px; padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 1px 2px rgba(20,22,29,.05), 0 18px 40px -16px rgba(20,22,29,.28); animation: popin .22s var(--ease); cursor: default; }
   @keyframes popin { from { opacity: 0; transform: translateY(-4px); } }
   @keyframes sheetup { from { transform: translateY(100%); } }
   .pop-h { display: flex; align-items: center; gap: 10px; }
   .pop-h .pic2 { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: var(--panel-2); color: var(--ink-2); }
-  .pop-h .pn { min-width: 0; flex: 1; font: 500 15px/1.2 var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pop-h .pn { min-width: 0; flex: 1; font: 500 14px/1.2 var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pst { flex: none; font: 400 12px/1 var(--mono); color: var(--muted); }
   .pst.ok { color: var(--accent-text); }
   .peer-sub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--rule-2); font-size: 13px; color: var(--muted); }
   .peer-sub .buf { color: var(--text); }
   .play { margin-left: auto; font: 400 12px/1 var(--mono); color: var(--accent-text); }
   .play:empty { display: none; }
+  .peer-card.self .play { flex-basis: 100%; margin: 4px 0 0; }   /* under the -/+, not squeezed beside it */
   .peer-sub .dot { display: none; }
   .peer-gpu { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; overflow-wrap: anywhere; }
   .peer-stats { font-family: var(--mono); font-size: 11px; margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); }
   .peer-stats b { color: var(--text); font-weight: 500; }
   .pop .bw-btn { margin-top: 10px; font: 500 12px/1 var(--sans); padding: 7px 10px; color: var(--ink-2); }
-  .compute-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 12px; height: 36px; padding: 0 10px; font: 500 13px/1 var(--sans); color: var(--text); border-color: var(--rule-3); background: var(--panel); }
-  .compute-btn:hover:not(:disabled) { background: var(--panel-3); border-color: var(--ink-3); color: var(--text); }
-  .pledge { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; color: var(--muted); }
-  .pledge input { width: 60px; padding: 5px 6px; font: 500 13px/1.2 var(--mono); border-radius: 8px; text-align: center; }
+  /* this device's GB, with a quiet -/+ */
+  .buf.gbstep { display: inline-flex; align-items: center; gap: 2px; }
+  .buf.gbstep .bv { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+  .buf.gbstep .step { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; display: grid; place-items: center; font: 400 14px/1 var(--sans); color: var(--muted); background: transparent; }
+  .buf.gbstep .step:hover:not(:disabled) { background: var(--panel-2); color: var(--text); transform: none; }
+  .buf.gbstep .step:disabled { opacity: .35; }
 
   #hdr-sum { position: relative; flex: none; font: 400 12px/1 var(--mono); color: var(--muted); white-space: nowrap; background: var(--panel-3); padding: 8px 0 8px 4px; margin: -8px 0; }
   #hdr-sum::before { content: ""; position: absolute; top: 0; bottom: 0; right: 100%; width: 24px; background: linear-gradient(90deg, transparent, var(--panel-3)); pointer-events: none; }
@@ -170,11 +180,21 @@
   .hbtn svg { flex: none; }
   #share-btn { background: var(--accent); color: #fff; box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(42,69,224,.7); }
   #share-btn:hover:not(:disabled) { background: var(--accent-hover); box-shadow: 0 1px 0 rgba(255,255,255,.18) inset, 0 6px 16px -8px rgba(42,69,224,.7); }
-  #gh-link { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 8px; color: var(--ink-2); transition: background .15s, color .15s; }
-  #gh-link:hover { background: var(--panel-2); color: var(--text); }
-  /* Lend this device: a chip glyph and "Lend"; the animated dots mark is the Lend screen's own */
-  #compute-open { gap: 7px; padding: 0 12px 0 10px; background: transparent; box-shadow: none; color: var(--text); }
-  #compute-open:hover:not(:disabled) { background: var(--panel-2); box-shadow: none; }
+  /* header GitHub link: the mark only */
+  .gh-link { display: inline-grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 8px; color: var(--ink-2); }
+  .gh-link:hover { color: var(--ink); background: var(--bg-2); }
+  /* this device's screen (room/compute.js): the dots mark on a black button, no words. While this
+     device holds layers it is "on": an accent ring, and the mark's dots breathe in the logo's wave */
+  #compute-open { position: relative; width: 34px; padding: 0; justify-content: center; background: var(--ink); box-shadow: none; color: #fff; }
+  #compute-open:hover:not(:disabled) { background: var(--d1); box-shadow: none; }
+  #compute-open:active:not(:disabled) { transform: scale(.94); }
+  #compute-open .mk { display: block; fill: currentColor; overflow: visible; }
+  #compute-open .mk circle { transform-box: fill-box; transform-origin: center; }
+  /* holding layers: the dots pulse (no ring around the button) */
+  #compute-open .mk .lit { fill: var(--blue-400); }
+  #compute-open.on .mk circle { animation: mkbeat 2.4s var(--ease) infinite; animation-delay: calc(var(--rc) * .16s); }
+  @keyframes mkbeat { 0%, 100% { opacity: 1; transform: none; } 40% { opacity: .5; transform: scale(.82); } }
+  #compute-open:not(.on):hover .mk circle { animation: dlwave 1.4s var(--ease) 1; animation-delay: calc(var(--rc) * .08s); }
   .chipi { flex: none; display: block; color: currentColor; }
   /* a small tooltip for the icon buttons (data-tip) */
   [data-tip] { position: relative; }
@@ -323,13 +343,12 @@
   #code-input::placeholder { color: var(--faint); }
   #code-input:focus { box-shadow: none; }
   .code-slots:focus-within i { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--panel); }
-  #resume-btn { margin-top: 14px; font-size: 13px; border-color: var(--accent); color: var(--accent-text); padding: 9px 16px; }
   #join-status { font-size: 13px; color: var(--ink-2); min-height: 20px; max-width: 560px; text-align: center; margin-top: 16px; }
   #join-status:not(:empty) { padding: 9px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-3); }
   /* no WebGPU here: one calm line, the remedy behind Details */
   #join-gpu { width: min(680px, 100%); margin-top: 14px; font-size: 13px; line-height: 1.5; color: var(--ink-2); text-align: left; }
   #join-gpu > p { display: flex; align-items: baseline; gap: 9px; }
-  #join-gpu > p i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); transform: translateY(-1px); }
+  #join-gpu > p i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-4); transform: translateY(-1px); }
   #join-gpu details { margin: 4px 0 0 16px; }
   #join-gpu summary { width: fit-content; cursor: pointer; color: var(--muted); font-weight: 500; list-style: none; }
   #join-gpu summary::-webkit-details-marker { display: none; }
@@ -353,7 +372,7 @@
   #join-wait[hidden] { display: none; }
   #join-wait .dl { width: 64px; height: 64px; }
   #jw-t { font: 400 26px/1.15 var(--display); letter-spacing: -.02em; color: var(--text); text-align: center; }
-  #join-screen.waiting > :is(h1, .lede, .jpanel, #resume-btn, .jfoot, #join-gpu) { display: none; }
+  #join-screen.waiting > :is(h1, .lede, .jpanel, .jfoot, #join-gpu) { display: none; }
   #join-screen.waiting { justify-content: center; padding-bottom: 12vh; }
   #join-screen.waiting #join-wait { margin-top: 0; }
   #join-screen.waiting #join-status { margin-top: 10px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 15px; }
@@ -393,9 +412,11 @@
   .sm-stats dt { font: 400 12px/26px var(--sans); color: var(--muted); }
   .sm-stats dd.warn { color: var(--warn-text); }
   .sm-meta { margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
-  /* the collapsed band: one thin bar of every device's layers next to the model's name */
-  .sm-mini { display: none; flex: 1 1 0; min-width: 40px; height: 6px; border-radius: 3px; overflow: hidden; gap: 2px; }
-  .sm-mini i { flex: var(--n) 1 0; background: var(--sw); border-radius: 1px; }
+  /* folded: the split as small blocks, one per layer (or per few on a narrow bar), each in the colour
+     of the device holding it, with small gaps (room.js paintMini) */
+  .sm-mini { display: none; flex: 1 1 0; min-width: 40px; height: 16px; gap: 2px; align-items: stretch; }
+  .sm-mini i { flex: 1 1 0; min-width: 0; border-radius: 2px; background: var(--sw); box-shadow: inset 0 0 0 1px rgba(20,22,29,.06); }
+  .sm-mini i.none { background: var(--rule-2); }
   #swarm-map.folded .sm-mini { display: flex; }
   #swarm-map.folded .sm-strip { display: none; }
   #swarm-map.folded { gap: 0; padding-top: 8px; padding-bottom: 8px; }
@@ -461,6 +482,10 @@
   #mode-bar button:hover:not(:disabled) { background: transparent; color: var(--text); }
   #mode-bar button:active:not(:disabled) { transform: none; }
   #mode-bar button[aria-selected="true"] { color: var(--text); }
+  /* Code selected: the pill goes black with a soft blue glow, the word white, stars twinkling inside (site/js/sparkle.js) */
+  #mode-bar::before { transition: transform .55s cubic-bezier(.65,0,.25,1), background-color .3s ease, box-shadow .3s ease; }
+  #mode-bar:has(#mode-code[aria-selected="true"])::before { background: #0B0D14; box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 0 16px -3px rgba(110,134,255,.6); }
+  #mode-bar #mode-code[aria-selected="true"] { color: #fff; }
   /* in the room bar (820px and wider, room.js moves the node): smaller, after the room code */
   header #mode-bar { --mw: 68px; margin-left: 4px; }
   header #mode-bar::before { width: var(--mw); height: 28px; }
@@ -512,7 +537,8 @@
   .apm-ticks span b { position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%); font: 400 11px/1 var(--mono); color: var(--muted); white-space: nowrap; }
   .apm-ticks span.ok b { color: var(--ink-2); }
   .apm-ticks span.sel { background: var(--accent); width: 3px; margin-left: -1.5px; }
-  .apm-ticks span.sel b { color: var(--accent-text); font-weight: 500; }
+  .apm-ticks span.sel b { color: var(--ink-2); font-weight: 500; }
+  .apm-ticks span.sel.ok b { color: var(--accent-text); }
   .apm-ticks span.r b { left: auto; right: -2px; transform: none; }
   .apm-ticks span.l b { left: -2px; transform: none; }
   #ap-devs { list-style: none; display: flex; flex-direction: column; gap: 6px; }
@@ -570,19 +596,17 @@
   .rung .nd { font: 400 12px/1 var(--mono); color: var(--muted); }
   .rung .fig { display: inline-flex; align-items: center; gap: 8px; justify-self: end; white-space: nowrap; }
   .rung b { font: 500 11px/1 var(--mono); color: var(--accent-text); padding: 4px 6px; border-radius: 4px; background: var(--accent-soft); }
-  .rung .more { font: 400 12px/1 var(--sans); color: var(--warn-text); }
+  /* short: a neutral tag in the shape of "fits" (calm, no warning colour) */
+  .rung .more { font: 400 11px/1 var(--mono); color: var(--ink-2); padding: 4px 6px; border-radius: 4px; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--rule-2); }
   .rung.ok { color: var(--text); }
   .rung.short:not(.sel) { opacity: .6; }
   .rung.short:not(.sel):hover:not(:disabled) { opacity: .85; }
   .ai-nogpu { font-size: 13px; color: var(--muted); padding: 2px 4px 4px; }
-  #ai-why { margin-top: 2px; font-size: 13px; color: var(--muted); text-align: center; }
-  #ai-why a { color: var(--accent-text); font-weight: 500; text-decoration: none; margin-left: 4px; }
-  #ai-why a:hover { text-decoration: underline; }
   .rung:hover:not(:disabled) { background: var(--panel-3); border-color: var(--border-2); }
   .rung.sel, .rung.sel:hover:not(:disabled) { border-color: var(--accent); color: var(--text); background: var(--accent-soft); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 60%, transparent); }
   .rung.sel::before { box-shadow: inset 0 0 0 4.5px var(--accent); }
   #ai-redeal { width: 100%; font: 500 13px/1 var(--sans); border-color: var(--warn); color: var(--warn-text); }
-  #redeal-why { font-size: 12px; color: var(--warn-text); }
+  #redeal-why { font-size: 12px; color: var(--ink-2); }
   #ai-loading { display: none !important; }
   @keyframes enter { from { opacity: 0; transform: translateY(8px); } }
   /* loading: the landing's pick card. The logo's wave, what loads, each device's share of it, and
@@ -639,6 +663,15 @@
   .m .bubble code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
   .m .bubble pre { font-family: var(--mono); font-size: 12px; background: var(--panel-3); border: 1px solid var(--rule-2); padding: 10px 12px; border-radius: 12px; overflow-x: auto; margin: 8px 0; }
   .m .stats { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; }
+  /* the wait before the first token (room/working.js): the dots in their loading wave and a verb */
+  .working { display: inline-flex; align-items: center; gap: 8px; font: 400 13px/1.3 var(--sans); color: var(--ink-2); white-space: nowrap; vertical-align: middle; }
+  .working .wk-mk { flex: none; fill: var(--ink-2); overflow: visible; }
+  .working .wk-mk circle { transform-box: fill-box; transform-origin: center; animation: dlwave 1.6s var(--ease) infinite; animation-delay: calc(var(--rc) * .12s); }
+  .working .wk-mk .lit { fill: var(--accent); }
+  .working .wk-v { display: inline-block; }
+  .m.bot .bubble > .working { min-height: 24px; }
+  .cm-working { display: flex; padding: 2px 0; }
+  @media (prefers-reduced-motion: reduce) { .working .wk-mk circle { animation: none !important; } }
   .cursor { display: inline-block; width: 7px; height: 15px; background: var(--accent); border-radius: 1px; vertical-align: -2px; margin-left: 3px; animation: blink 1s infinite; }
   /* quiet lines in the chat: the model is ready, a device joined */
   .sys { display: flex; align-items: center; gap: 7px; width: fit-content; max-width: 100%; margin: 14px auto; font-size: 13px; line-height: 1.2; color: var(--accent-text); padding: 6px 13px 6px 11px; border-radius: 999px; background: var(--accent-soft); animation: enter .35s var(--ease); }
@@ -682,20 +715,22 @@
   #queue-note { margin-left: auto; font-size: 12px; color: var(--accent-text); }
   #queue-note:empty { display: none; }
   #queue-note:not(:empty) + #ctx-meter { margin-left: 10px; }
-  #ctx-meter { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
-  #room-screen:has(#swarm-map:not([hidden])) #ctx-meter { display: none; }   /* the band shows the context */
-  #ctx-meter.warn { color: var(--warn-text); }
   .bubble.drafts { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; }
   .bubble .dr { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text); border-radius: 3px; }
   .bubble .dr.lk { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
   details.think { margin: 2px 0 8px; padding: 6px 10px; border-left: 2px solid var(--border-2); color: var(--muted); font-size: 13px; }
   details.think summary { cursor: pointer; font-size: 12px; }
   /* ---- toasts, share sheet, the room-over card ---- */
-  #toasts { position: fixed; top: 72px; right: max(16px, 3vw); z-index: 90; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+  #toasts { position: fixed; bottom: calc(104px + env(safe-area-inset-bottom)); right: max(16px, 3vw); z-index: 90; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
+  body:not(.in-room) #toasts { bottom: auto; top: 72px; }
+  @media (max-width: 640px) { #toasts { left: 16px; right: 16px; align-items: center; } }
   .toast { display: flex; align-items: center; gap: 9px; background: var(--text); color: #fff; font: 500 13px/1.3 var(--sans); padding: 10px 14px; border-radius: 12px; box-shadow: 0 10px 30px rgba(20,21,26,0.2); animation: toastin 0.45s var(--ease) both, toastout 0.4s ease-in 3.6s both; }
-  .toast::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--blue-400); }
-  @keyframes toastin { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
-  @keyframes toastout { to { opacity: 0; transform: translateY(-8px); } }
+  .toast::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--sw, var(--blue-400)); }
+  /* joined / left: a quieter chip, the device's colour as its dot */
+  .toast.presence { background: var(--panel); color: var(--text); font-weight: 400; padding: 9px 14px 9px 12px; border-radius: 999px; box-shadow: 0 0 0 1px var(--rule), 0 10px 30px -12px rgba(20,22,29,.25); }
+  .toast.presence::before { box-shadow: 0 0 0 3px color-mix(in srgb, var(--sw, var(--faint)) 22%, transparent); }
+  @keyframes toastin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @keyframes toastout { to { opacity: 0; transform: translateY(4px); } }
   @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
   .overlay { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center; background: rgba(20,22,29,.32); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); padding: 16px; }
   .sheet { position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 28px 24px 22px; width: min(400px, 100%); display: flex; flex-direction: column; align-items: center; gap: 0; box-shadow: 0 24px 60px -20px rgba(20,21,26,0.35); text-align: center; animation: rise .3s var(--ease); }
@@ -722,9 +757,8 @@
   .sheet.wide { width: min(680px, 100%); }
   #card-canvas { width: 100%; height: auto; margin-top: 20px; border-radius: 12px; border: 1px solid var(--border); }
 
-  /* ---- Lend this device: full screen, lending its memory and GPU (room/compute.js) ---- */
-  #compute-screen { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: var(--game); color: var(--on-game); overflow: hidden; animation: csin .5s var(--ease);
-    background-image: radial-gradient(ellipse 70% 50% at 50% 42%, rgba(42,69,224,.16), transparent 70%); }
+  /* ---- this device's screen: full screen, lending its memory and GPU (room/compute.js) ---- */
+  #compute-screen { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: #000; color: var(--on-game); overflow: hidden; animation: csin .5s var(--ease); }
   @keyframes csin { from { opacity: 0; } }
   html.computing header, html.computing #room-screen, html.computing #join-screen { visibility: hidden; }
   .cs-top { flex: none; display: flex; align-items: center; gap: 14px; padding: 16px 20px; padding-top: max(16px, env(safe-area-inset-top)); }
@@ -735,26 +769,22 @@
   .cs-live { width: 7px; height: 7px; border-radius: 50%; background: var(--blue-400); box-shadow: 0 0 0 3px rgba(124,143,255,.18); }
   #compute-exit { margin-left: auto; height: 34px; padding: 0 14px; font: 500 13px/1 var(--sans); color: var(--on-game); background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.16); border-radius: 8px; }
   #compute-exit:hover:not(:disabled) { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.3); }
-  .cs-stage { position: relative; flex: 1; min-height: 200px; display: grid; place-items: center; }
-  #cs-flow { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* logo, text and stats sit together in the middle of the screen: equal space above the logo and below the stats */
+  .cs-stage { position: relative; flex: none; height: clamp(170px, 32vh, 300px); margin-top: auto; display: grid; place-items: center; }
+  #cs-flow, .cs-ring { display: none; }   /* no background animation behind the logo */
   /* each pass: a ring leaves the logo */
   .cs-ring { position: absolute; left: 50%; top: 50%; width: clamp(128px, 30vmin, 216px); aspect-ratio: 1; margin: 0; transform: translate(-50%, -50%) scale(.9); border-radius: 50%; border: 1.5px solid var(--blue-400); opacity: 0; pointer-events: none; }
   #compute-screen[data-phase="idle"] .cs-ring { display: none; }
-  #cs-logo { position: relative; width: clamp(128px, 30vmin, 216px); height: auto; overflow: visible; filter: drop-shadow(0 0 40px rgba(42,69,224,.25)); }
+  #cs-logo { position: relative; width: clamp(128px, 30vmin, 216px); height: auto; overflow: visible; }
   #cs-logo circle { fill: var(--on-game); transform-box: fill-box; transform-origin: center; }
   #cs-logo circle.lit { fill: var(--blue-400); }
   #compute-screen:not([data-phase="serving"]) #cs-logo circle { animation: breathe 2.8s var(--ease) infinite; animation-delay: calc(var(--rc) * .18s); }
   #compute-screen[data-phase="loading"] #cs-logo circle { animation-duration: 1.4s; }
   /* serving, but no token for a moment: the logo breathes slowly until the next pass */
   #compute-screen[data-phase="serving"][data-quiet] #cs-logo circle { animation: breathe 4.2s var(--ease) infinite; animation-delay: calc(var(--rc) * .22s); }
-  #compute-screen[data-quiet] .cs-stats { opacity: .6; }
   @keyframes breathe { 0%, 100% { opacity: .28; transform: scale(.86); } 45% { opacity: 1; transform: none; } }
   .cs-text { flex: none; display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0 20px; }
-  #cs-k { display: inline-flex; align-items: center; gap: 9px; font: 500 15px/1.3 var(--sans); letter-spacing: -.005em; color: var(--blue-200); margin-bottom: 14px; text-wrap: balance; }
-  #cs-k::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: blink 1.6s infinite; }
-  #compute-screen[data-phase="idle"] #cs-k { color: var(--on-game-2); }
   #cs-title { font: 400 clamp(34px, 6.4vw, 60px)/1.04 var(--display); letter-spacing: -.035em; text-wrap: balance; }
-  #cs-ex { margin-top: 8px; font-size: 14px; color: var(--on-game-2); opacity: .75; }
   #cs-sub { margin-top: 10px; font-size: clamp(16px, 1.6vw, 19px); color: var(--on-game-2); text-wrap: balance; }
   #cs-strip { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; width: min(520px, 100%); height: 10px; margin-top: 26px; }
   #cs-strip i { border-radius: 2px; background: rgba(255,255,255,.08); }
@@ -763,13 +793,15 @@
   #cs-strip i.mine.wait { background: color-mix(in srgb, var(--me) 28%, transparent); box-shadow: none; }
   #cs-strip.sweep i.mine:not(.wait) { animation: cssweep .55s var(--ease) both; animation-delay: calc(var(--j, 0) * 14ms); }
   @keyframes cssweep { 30% { background: var(--blue-200); box-shadow: 0 0 14px rgba(124,143,255,.8); transform: scaleY(1.6); } }
-  #compute-screen[data-phase="idle"] #cs-k::before { animation-duration: 3.2s; }
-  .cs-stats { flex: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(560px, calc(100% - 40px)); margin: 28px auto 0; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; background: rgba(255,255,255,.02); }
-  .cs-stats > div { display: flex; flex-direction: column-reverse; justify-content: flex-start; padding: 14px 12px; text-align: center; min-width: 0; }
-  .cs-stats > div + div { border-left: 1px solid rgba(255,255,255,.1); }
-  .cs-stats dd { font: 500 clamp(22px, 3vw, 28px)/1.1 var(--mono); font-variant-numeric: tabular-nums; color: var(--on-game); }
-  .cs-stats dt { margin-top: 6px; font-size: 12px; color: var(--on-game-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #compute-screen[data-phase="idle"] .cs-stats { opacity: .45; }
+  .cs-text { margin-bottom: auto; }
+  #cs-sub:empty { display: none; }
+  /* while this device holds layers: live numbers, and a dot that flashes each time a pass hops over to it */
+  #cs-live { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px 14px; margin-top: 12px; font: 400 13px/1.3 var(--mono); color: var(--on-game-2); }
+  #cs-live[hidden] { display: none; }
+  #cs-live b { font-weight: 500; color: var(--on-game); font-variant-numeric: tabular-nums; }
+  .cs-hopk { display: inline-flex; align-items: center; gap: 7px; }
+  .cs-hop { width: 7px; height: 7px; border-radius: 50%; background: var(--me); opacity: .35; }
+  #compute-exit { white-space: nowrap; }
   .cs-foot { flex: none; padding: 18px 20px; padding-bottom: max(18px, env(safe-area-inset-bottom)); text-align: center; font-size: 12px; color: var(--on-game-2); }
   /* ---- Code mode (room/code.js, room/code-ui.js; docs/design/harness-app.md E): the landing's Code step.
      Files on the left, the agent in the middle, the app it serves on the right ---- */
@@ -869,7 +901,7 @@
   .cm-tool .ms { color: var(--muted); font-size: 11px; flex: none; }
   .chip { flex: none; font: 400 11px/1 var(--mono); padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
   .chip:empty { display: none; }
-  .chip.running { color: var(--warn-text); border-color: #E3CF9A; }
+  .chip.running { color: var(--accent-text); border-color: var(--blue-200); }
   .chip.running::before { content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; animation: blink 1s infinite; }
   .chip.pending { color: #fff; background: var(--accent); border-color: var(--accent); }
   .chip.stopped { color: var(--muted); border-style: dashed; }
@@ -933,6 +965,19 @@
   #code-pane #pv-reload { order: -1; justify-content: center; width: 30px; height: 30px; padding: 0; }
   #code-pane #pv-reload:hover, #code-pane #pv-open:hover { color: var(--text); background: var(--panel); border-color: var(--border); }
   #pv-frame-wrap { position: relative; height: 380px; background: #fff; overflow: hidden; }
+  /* the edit window: a file the agent writes again, streaming over the running app (room/code-ui.js editWin) */
+  .ew { position: absolute; z-index: 3; right: 12px; bottom: 12px; width: min(460px, calc(100% - 24px)); max-height: calc(100% - 24px); display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 1px 2px rgba(20,22,29,.06), 0 16px 36px -14px rgba(20,22,29,.32); overflow: hidden; animation: ewin .22s var(--ease); }
+  .ew.out { opacity: 0; transform: translateY(6px); transition: opacity .18s var(--ease), transform .18s var(--ease); }
+  @keyframes ewin { from { opacity: 0; transform: translateY(8px); } }
+  .ew-bar { flex: none; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 10px; font: 400 12px/1.2 var(--mono); color: var(--muted); background: var(--panel-2); border-bottom: 1px solid var(--rule-2); }
+  .ew-bar b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 500; }
+  .ew-bar .ew-n { margin-left: auto; flex: none; }
+  .ew-dots { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: cmpulse 1s ease-in-out infinite; }
+  .ew.done .ew-dots { animation: none; background: var(--ink-4); }
+  .ew-code { flex: 1 1 auto; min-height: 0; max-height: 260px; margin: 0; padding: 10px 12px; overflow: hidden; font: 400 12px/1.6 var(--mono); color: var(--text); white-space: pre; tab-size: 2; -moz-tab-size: 2; font-variant-ligatures: none; }
+  .ew:not(.done) .ew-code::after { content: ""; display: inline-block; width: 6px; height: 12px; margin-left: 2px; vertical-align: -2px; background: var(--accent); animation: cmblink 1s steps(1) infinite; }
+  @media (max-width: 820px) { .ew { right: 8px; bottom: 8px; width: calc(100% - 16px); max-height: calc(100% - 16px); } .ew-code { font-size: 11px; padding: 8px 10px; } }
+  @media (prefers-reduced-motion: reduce) { .ew, .ew.out { animation: none; transition: none; } .ew-dots, .ew-code::after { animation: none !important; } }
   .pv-view { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
   .pv-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; padding: 20px; font: 400 13px/1.5 var(--sans); color: var(--muted); background: var(--panel-3); background-image: radial-gradient(circle at 1px 1px, var(--rule-2) 1px, transparent 0); background-size: 16px 16px; text-wrap: balance; }
   .pv-empty .dl { width: 28px; height: 28px; margin-bottom: 8px; }
@@ -945,7 +990,7 @@
   #pv-console { flex: none; border-top: 1px solid var(--rule-2); background: var(--panel); font: 400 12px/1.4 var(--mono); overflow: hidden; }
   #pv-con-head { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 2px 6px 2px 4px; flex-wrap: wrap; }
   #pv-counts { color: var(--muted); flex: 1; min-width: 0; }
-  #pv-counts b.e { color: var(--err); font-weight: 500; } #pv-counts b.w { color: var(--warn-text); font-weight: 500; }
+  #pv-counts b.e { color: var(--err); font-weight: 500; } #pv-counts b.w { color: var(--ink); font-weight: 500; }
   #code-pane #pv-con-head button { display: inline-flex; align-items: center; gap: 6px; background: transparent; border-color: transparent; padding: 4px 8px; font: 500 12px/1 var(--sans); color: var(--muted); }
   #pv-con-toggle svg { transition: transform .2s var(--ease); }
   #pv-con-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
@@ -956,7 +1001,7 @@
   .pv-row { display: flex; gap: 8px; padding: 3px 10px; white-space: pre-wrap; word-break: break-word; border-bottom: 1px solid var(--rule-2); }
   .pv-row .src { color: var(--muted); flex: none; }
   .pv-row.error { color: var(--err); background: var(--diff-del); }
-  .pv-row.warn { color: var(--warn-text); background: #FBF7EC; }
+  .pv-row.warn { color: var(--ink); background: var(--bg-3); }
   .pv-row.old { opacity: 0.45; }
   .pv-row.rev { color: var(--muted); font-style: italic; justify-content: center; }
   /* the editor: a bar (the file, its state, Save), line numbers, and the text over its colours */
@@ -987,12 +1032,13 @@
   #ed-text::selection { background: rgba(42,69,224,.18); -webkit-text-fill-color: transparent; }
   #ed-text:focus { box-shadow: none; }
   #ed-text[readonly] { caret-color: transparent; }
-  #ed-hl .t-k, #ed-hl .t-t { color: var(--accent-hover); }
-  #ed-hl .t-s { color: #1F7A45; }
-  #ed-hl .t-c { color: #8A8D96; font-style: italic; }
-  #ed-hl .t-n { color: #B0520A; }
-  #ed-hl .t-f, #ed-hl .t-p { color: #0E6E8C; }
-  #ed-hl .t-a { color: #7446B8; }
+  /* token colours: the editor and the edit window over the preview (no orange: numbers are indigo) */
+  :is(#ed-hl, .ew-code) :is(.t-k, .t-t) { color: var(--accent-hover); }
+  :is(#ed-hl, .ew-code) .t-s { color: #1F7A45; }
+  :is(#ed-hl, .ew-code) .t-c { color: #8A8D96; font-style: italic; }
+  :is(#ed-hl, .ew-code) .t-n { color: #5B4BD6; }
+  :is(#ed-hl, .ew-code) :is(.t-f, .t-p) { color: #0E6E8C; }
+  :is(#ed-hl, .ew-code) .t-a { color: #7446B8; }
   #ed-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 28px; text-align: center; font-size: 13px; line-height: 1.5; color: var(--muted); text-wrap: balance; background: var(--panel-3); background-image: radial-gradient(circle at 1px 1px, var(--rule-2) 1px, transparent 0); background-size: 16px 16px; }
   #ed-empty b { color: var(--text); font-weight: 500; }
   #ed-empty[hidden] { display: none; }
@@ -1014,11 +1060,13 @@
   #code-pane .cm-jump:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
   .cm-jump[hidden] { display: none; }
   /* context: a ring and a percentage next to the composer */
-  #code-ctx { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font: 400 12px/1 var(--mono); color: var(--muted); }
-  #code-ctx:empty { display: none; }
-  #code-ctx i { width: 14px; height: 14px; border-radius: 50%; background: conic-gradient(var(--accent) calc(var(--p) * 1%), var(--border) 0); -webkit-mask: radial-gradient(circle, transparent 3.6px, #000 4.2px); mask: radial-gradient(circle, transparent 3.6px, #000 4.2px); }
-  #code-ctx.warn { color: var(--warn-text); }
-  #code-ctx.warn i { background: conic-gradient(var(--warn) calc(var(--p) * 1%), var(--border) 0); }
+  /* the context ring by the composer, the same in Chat (#ctx-meter) and Code (#code-ctx) */
+  :is(#code-ctx, #ctx-meter) { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font: 400 12px/1 var(--mono); color: var(--muted); }
+  :is(#code-ctx, #ctx-meter):empty { display: none; }
+  #ctx-meter { padding: 0 6px; }
+  :is(#code-ctx, #ctx-meter) i { flex: none; width: 14px; height: 14px; border-radius: 50%; background: conic-gradient(var(--accent) calc(var(--p) * 1%), var(--border) 0); -webkit-mask: radial-gradient(circle, transparent 3.6px, #000 4.2px); mask: radial-gradient(circle, transparent 3.6px, #000 4.2px); }
+  :is(#code-ctx, #ctx-meter).warn { color: var(--warn-text); }
+  :is(#code-ctx, #ctx-meter).warn i { background: conic-gradient(var(--warn) calc(var(--p) * 1%), var(--border) 0); }
   #code-view { flex: 1; min-height: 160px; overflow: auto; background: var(--panel); font: 400 12px/1.6 var(--mono); padding: 12px 0; margin: 0; scrollbar-width: thin; scrollbar-color: var(--faint) transparent; }
   #code-view .hint { display: block; color: var(--muted); padding: 0 16px 6px; font: 400 12px/1.5 var(--sans); }
   #code-view .ln { display: inline-block; width: 46px; padding-right: 14px; text-align: right; color: var(--faint); user-select: none; }
@@ -1067,7 +1115,6 @@
   .hbrk { display: none; }
 
   @media (max-width: 1180px) {
-    body.in-room #gh-link { display: none; }
     .pchip .pname { max-width: 110px; }
   }
   @media (max-width: 1000px) {
@@ -1085,9 +1132,11 @@
     body.in-room #hdr-sum { order: 11; font-size: 12px; }
     .pchip { height: 28px; padding: 0 9px; gap: 6px; }
     .pchip .pname { max-width: 96px; }
-    #compute-open { width: 36px; padding: 0; justify-content: center; }
-    #compute-open .lbl { display: none; }
+    #compute-open { width: 36px; height: 36px; }
     #share-btn { padding: 0 12px; }
+    /* phones: the GitHub link in the first row, before Invite */
+    body.in-room #gh-link { order: 1; }
+    body.in-room :is(#share-btn, #compute-open, #room-menu) { order: 2; }
     #join-pledge input { width: 32px !important; flex: none; }
     #join-pledge .ap-step .step { width: 34px; height: 34px; }
     .pledge input { font-size: 16px; }
@@ -1127,13 +1176,17 @@
     .cs-top { padding: 12px 14px; padding-top: max(12px, env(safe-area-inset-top)); gap: 10px; }
     .cs-brand span { display: none; }
     .cs-room { padding-left: 10px; font-size: 13px; }
-    .cs-stats dt { font-size: 11px; white-space: normal; text-wrap: balance; line-height: 1.3; }
   }
   @media (pointer: coarse) {
     input, select, textarea, #ai-prompt, #code-prompt, #ed-text, #ed-hl, #ed-ln, #code-pane select, #code-pane input[type="text"] { font-size: 16px; }
     :is(.pchip, #band-toggle, .copy-ans, #menu-close, #name-shuffle, #share-close, #code-auto-l, #code-newtask, #pv-reload) { position: relative; }
     :is(.pchip, #band-toggle, .copy-ans, #menu-close, #name-shuffle, #share-close, #code-auto-l, #code-newtask, #pv-reload)::before { content: ""; position: absolute; inset: -8px; }
     #name-shuffle, #share-close { position: absolute; }
+  }
+  @media (max-width: 420px) {
+    /* the first row holds the code, the star, Invite, this device and settings: the code goes without "Room" */
+    body.in-room #room-badge::before { display: none; }
+    body.in-room #room-badge { padding: 0 6px 0 8px; }
   }
   @media (max-width: 370px) {
     body.in-room #hdr-sum { width: 0; padding: 0; font-size: 0; }   /* no total; its fade still ends the chip row */
@@ -1182,7 +1235,7 @@
   <span class="hbrk" aria-hidden="true"></span>
   <span id="hdr-sum"></span>
   <button id="share-btn" class="hbtn" type="button" title="Invite a device: a link, a QR code or the room code"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg><span class="lbl">Invite</span></button>
-  <button id="compute-open" class="hbtn tip-l" type="button" hidden aria-label="Lend this device" data-tip="Lend this device"><svg class="chipi" width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="11" height="11" rx="2.2"/><rect x="7" y="7" width="4" height="4" rx=".8"/><path d="M7 1.3v2.2M11 1.3v2.2M7 14.5v2.2M11 14.5v2.2M1.3 7h2.2M1.3 11h2.2M14.5 7h2.2M14.5 11h2.2"/></svg><span class="lbl">Lend</span></button>
+  <button id="compute-open" class="hbtn tip-l" type="button" hidden aria-label="This device" data-tip="This device"><svg class="mk" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:2"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:3"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:2"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:3"/><circle class="lit" cx="18.5" cy="18.5" r="3.9" style="--rc:4"/></svg></button>
   <details id="room-menu">
     <summary aria-label="Room settings" data-tip="Room settings" class="tip-l"><svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M3 6h8M15 6h2M3 14h2M9 14h8"/><circle cx="13" cy="6" r="2"/><circle cx="7" cy="14" r="2"/></svg></summary>
     <div class="menu-pop" role="dialog" aria-labelledby="mp-t">
@@ -1241,16 +1294,16 @@
       </section>
     </div>
   </details>
-  <a id="gh-link" href="https://github.com/Nehanth/pooled" target="_blank" rel="noopener" aria-label="Source on GitHub" title="Source on GitHub"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor"><path d="M8 0C3.580 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.530-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  <a id="gh-link" class="gh-link" href="https://github.com/Nehanth/pooled" target="_blank" rel="noopener" aria-label="pooled on GitHub" title="GitHub"><svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
 </header>
 
 <div id="join-screen">
   <h1>Start a room, <span>or join one.</span></h1>
-  <p class="lede">Each device in a room lends some memory, and together they run one open AI model in your browser tabs.</p>
+  <p class="lede">Each device in a room shares some memory, and together they run one open AI model in your browser tabs.</p>
   <div class="jpanel">
     <div class="jd" role="group" aria-label="This device">
       <label class="jd-name"><span class="jd-l">This device</span><span class="name-box"><input id="name-input" placeholder="Name, e.g. laptop" maxlength="20" autocomplete="off" spellcheck="false"><button id="name-shuffle" type="button" aria-label="Pick another name" data-tip="Another name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.5h2.5c3 0 4 7 7 7H14M12 9.5l2 2-2 2M2 11.5h2.5c1.2 0 2-1 2.6-2.2M9.3 6.5c.6-1.1 1.3-2 2.2-2H14M12 2.5l2 2-2 2"/></svg></button></span></label>
-      <div id="join-pledge"><span class="jd-l">Lends</span><span class="ap-step jp-step"><button class="step" id="gb-minus" type="button" aria-label="Lend less memory">&minus;</button><input id="join-gb" type="number" min="1" max="64" step="1" value="1" inputmode="numeric" aria-label="Gigabytes of memory to lend"><span class="u">GB</span><button class="step" id="gb-plus" type="button" aria-label="Lend more memory">+</button></span><span class="jp-ask" data-tip="This device can ask but can't hold model layers">Joins to ask</span></div>
+      <div id="join-pledge"><span class="jd-l">Memory</span><span class="ap-step jp-step"><button class="step" id="gb-minus" type="button" aria-label="Less memory">&minus;</button><input id="join-gb" type="number" min="1" max="64" step="1" value="1" inputmode="numeric" aria-label="Gigabytes of memory to share"><span class="u">GB</span><button class="step" id="gb-plus" type="button" aria-label="More memory">+</button></span><span class="jp-ask" data-tip="This device can ask but can't hold model layers">Joins to ask</span></div>
     </div>
     <div class="jcards">
       <section class="jc" aria-labelledby="jc-start">
@@ -1266,7 +1319,6 @@
     </div>
   </div>
   <div id="join-wait" hidden><svg class="dl" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:2"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:3"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:2"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:3"/><circle cx="18.5" cy="18.5" r="3.9" style="--rc:4"/></svg><p id="jw-t">Joining the room</p></div>
-  <button id="resume-btn" type="button" hidden></button>
   <div id="join-gpu" hidden><p><i aria-hidden="true"></i><span id="join-gpu-t"></span></p><details><summary>Details</summary><p id="join-gpu-d"></p></details></div>
   <div id="join-status" role="status" aria-live="polite"></div>
   <p class="jfoot">Works best in Chrome or Edge. Devices without WebGPU can still join and ask.</p>
@@ -1276,7 +1328,7 @@
   <main id="chatpane">
     <div id="topline">
       <div id="swarm-map" hidden><div class="sm-head"><span class="sm-model"></span><span class="sm-live"><i aria-hidden="true"></i><span class="sm-lt">Ready</span></span><div class="sm-mini" aria-hidden="true"></div><dl class="sm-stats"><div><dt>tok/s</dt><dd id="sm-tps">-</dd></div><div title="How long one word takes to pass through every device"><dt>ms per word</dt><dd id="sm-lap">-</dd></div><div><dt>tokens</dt><dd id="sm-tok">0</dd></div><div><dt>context</dt><dd id="sm-ctx">-</dd></div></dl><span class="sm-meta" hidden></span><button id="band-toggle" class="tip-l" type="button" aria-expanded="true" aria-controls="sm-body" aria-label="Hide the layers" data-tip="Hide the layers"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5L7 5l3.5 3.5"/></svg></button></div><div class="sm-strip" id="sm-body" aria-hidden="true"></div><div class="sm-track dev-only"></div></div>
-      <div class="mode-row"><div id="mode-bar" role="tablist" aria-label="room mode" hidden><button id="mode-chat" role="tab" type="button" aria-selected="true" aria-controls="chatpane">Chat</button><button id="mode-code" role="tab" type="button" aria-selected="false" aria-controls="code-pane">Code</button></div></div>
+      <div class="mode-row"><div id="mode-bar" role="tablist" aria-label="room mode" hidden><button id="mode-chat" role="tab" type="button" aria-selected="true" aria-controls="chatpane">Chat</button><button id="mode-code" data-twinkle role="tab" type="button" aria-selected="false" aria-controls="code-pane">Code</button></div></div>
     </div>
     <div id="chat-log" class="dev-only"></div>
     <div id="ai-empty"><svg class="dl" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8" style="--rc:0"/><circle cx="10.2" cy="3.4" r="1.99" style="--rc:1"/><circle cx="18.5" cy="3.4" r="2.38" style="--rc:2"/><circle cx="3.4" cy="10.2" r="1.99" style="--rc:1"/><circle cx="10.2" cy="10.2" r="2.38" style="--rc:2"/><circle cx="18.5" cy="10.2" r="2.94" style="--rc:3"/><circle cx="3.4" cy="18.5" r="2.38" style="--rc:2"/><circle cx="10.2" cy="18.5" r="2.94" style="--rc:3"/><circle cx="18.5" cy="18.5" r="3.9" style="--rc:4"/></svg><span id="ai-empty-t">Pick a model and press Start</span></div>
@@ -1298,7 +1350,6 @@
           <span id="ai-status"></span>
           <p class="ap-note">Each device downloads only its own layers, once. They stay cached for next time.</p>
           <button id="ai-start" class="primary">Start the model</button>
-          <p id="ai-why" hidden>Add a laptop or desktop to start.<a href="#" data-invite>Invite</a></p>
           <div id="redeal-why" hidden></div>
           <button id="ai-redeal" type="button" hidden>Re-deal the layers</button>
         </div>
@@ -1312,11 +1363,11 @@
         <section class="ap-pool" aria-label="The room's memory">
           <p class="ap-k"><span>The room pools</span><b id="ap-total">0 GB</b></p>
           <div id="ap-meter" aria-hidden="true"><div class="apm-fill"></div><div class="apm-ticks"></div></div>
-          <ul id="ap-devs" aria-label="What each device lends"></ul>
+          <ul id="ap-devs" aria-label="What each device gives"></ul>
         </section>
         <section class="ap-me" id="ap-me" aria-label="This device">
-          <p class="ap-k"><span>This device lends</span></p>
-          <div class="ap-step" id="ap-step"><button class="step" id="ap-minus" type="button" aria-label="Lend less memory">&minus;</button><output id="ap-gb" aria-live="polite">1</output><span class="u">GB</span><button class="step" id="ap-plus" type="button" aria-label="Lend more memory">+</button></div>
+          <p class="ap-k"><span>This device gives</span></p>
+          <div class="ap-step" id="ap-step"><button class="step" id="ap-minus" type="button" aria-label="Less memory">&minus;</button><output id="ap-gb" aria-live="polite">1</output><span class="u">GB</span><button class="step" id="ap-plus" type="button" aria-label="More memory">+</button></div>
           <p class="ap-no" id="ap-no" hidden>This browser can't use its graphics chip, so this device can chat but not help run the model.</p>
         </section>
         <section class="ap-room" id="side-room" aria-label="Invite more devices">
@@ -1398,7 +1449,7 @@
   <div class="sheet invite" role="dialog" aria-labelledby="share-h">
     <button id="share-close" class="x" type="button" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M3 3l8 8M11 3l-8 8"/></svg></button>
     <h2 id="share-h">Invite a device</h2>
-    <div class="k">Open the link or scan the code on another device. It joins this room and lends its memory.</div>
+    <div class="k">Open the link or scan the code on another device. It joins this room and adds its memory.</div>
     <div id="share-qr"></div>
     <p class="scan">On your phone? Scan with the camera app.</p>
     <div class="or">or type the room code</div>
@@ -1424,7 +1475,7 @@
     <div class="row"><button id="room-over-new" type="button" class="primary">Start a new room</button></div>
   </div>
 </div>
-<div id="compute-screen" role="dialog" aria-label="Lend this device" data-phase="idle" hidden>
+<div id="compute-screen" role="dialog" aria-label="This device's screen" data-phase="idle" hidden>
   <div class="cs-top">
     <span class="cs-brand"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><circle cx="3.4" cy="3.4" r="1.8"/><circle cx="10.2" cy="3.4" r="1.99"/><circle cx="18.5" cy="3.4" r="2.38"/><circle cx="3.4" cy="10.2" r="1.99"/><circle cx="10.2" cy="10.2" r="2.38"/><circle cx="18.5" cy="10.2" r="2.94"/><circle cx="3.4" cy="18.5" r="2.38"/><circle cx="10.2" cy="18.5" r="2.94"/><circle cx="18.5" cy="18.5" r="3.9" fill="#7C8FFF"/></svg><span>pooled</span></span>
     <span class="cs-room"><span class="cs-live" aria-hidden="true"></span>Room <b id="cs-code">----</b><span class="cs-n">&middot; <span id="cs-devs">1 device</span></span></span>
@@ -1432,20 +1483,15 @@
   </div>
   <div class="cs-stage"><canvas id="cs-flow" aria-hidden="true"></canvas><span class="cs-ring" id="cs-ring" aria-hidden="true"></span><svg id="cs-logo" viewBox="0 0 24 24" aria-hidden="true"></svg></div>
   <div class="cs-text" aria-live="polite">
-    <p id="cs-k">Not serving yet</p>
-    <h1 id="cs-title">Ready to lend</h1>
-    <p id="cs-sub">This device starts helping as soon as someone in the room starts a model.</p>
-    <p id="cs-ex">This device does part of every answer.</p>
+    <h1 id="cs-title">Standing by</h1>
+    <p id="cs-sub"></p>
+    <p id="cs-live" hidden><span class="cs-hopk"><i class="cs-hop" aria-hidden="true"></i>hop</span><span><b id="cs-rate">0</b> tok/s</span><span><b id="cs-tok">0</b> tokens here</span><span><b id="cs-ms">-</b> per hop</span></p>
     <div id="cs-strip" aria-hidden="true"></div>
   </div>
-  <dl class="cs-stats">
-    <div><dt>tokens here</dt><dd id="cs-tok">0</dd></div>
-    <div><dt id="cs-rate-k">tokens per second</dt><dd id="cs-rate">0</dd></div>
-    <div><dt>time for its layers</dt><dd id="cs-ms">-</dd></div>
-  </dl>
-  <p class="cs-foot">This screen stays on. Plug in and leave it be: this device is part of the model.</p>
+  <p class="cs-foot">Keep this screen on.</p>
 </div>
-<div id="toasts"></div>
+<div id="toasts" role="status" aria-live="polite"></div>
+<script src="/site/js/sparkle.js"></script>
 <script type="module" src="/room.js"></script>
 </body>
 </html>

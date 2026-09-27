@@ -1,4 +1,4 @@
-// "Lend this device": a full-screen view for a device that is only lending its memory and GPU (a phone on a
+// This device's screen: a full-screen view for a device that is only lending its memory and GPU (a phone on a
 // charger, a laptop in the corner). It shows which layers this device holds, and a packet of dots
 // runs through the logo every time a real forward pass runs here. Pure presentation: it reads the
 // room's state through `state()` and is told about passes by `pass(n, ms)`; it never touches the
@@ -12,7 +12,7 @@ const DOTS = [[3.4, 3.4, 1.8], [10.2, 3.4, 1.99], [18.5, 3.4, 2.38], [3.4, 10.2,
 const PACKET = ["#2A45E0", "#7C8FFF", "#B9C6FF"];   // --blue-500, --blue-400, --blue-200
 // this device's colour in the room, for its layers here; the two dark neutrals read as light on the dark screen
 const onDark = (c) => (/^#(2B2F3C|5E616B)$/i.test(c || "") ? "#EEF0F6" : c || "");
-const THEME_LIGHT = "#F6F5F1", THEME_DARK = "#0B0F1F";
+const THEME_LIGHT = "#F6F5F1", THEME_DARK = "#000000";
 const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "k" : String(n);
 
 export function computeScreen({ state, keepAwake = () => {} }) {
@@ -81,34 +81,36 @@ export function computeScreen({ state, keepAwake = () => {} }) {
         { duration: 520, delay: delay + rc * 55, easing: "cubic-bezier(.2,.7,.2,1)" });
     }
   }
-  // the pass reaches this device: a ring leaves the logo and a light runs along its layers
+  // the pass reaches this device: a light runs along its layers
   let ringAt = 0;
   function arrive(delay) {
     const now = performance.now();
     if (now - ringAt < 420) return;
     ringAt = now;
-    $("cs-ring")?.animate([{ opacity: 0.55, transform: "translate(-50%,-50%) scale(.92)" }, { opacity: 0, transform: "translate(-50%,-50%) scale(1.55)" }],
-      { duration: 900, delay, easing: "cubic-bezier(.2,.7,.2,1)" });
     const strip = $("cs-strip");
     setTimeout(() => { strip.classList.remove("sweep"); void strip.offsetWidth; strip.classList.add("sweep"); }, delay);
   }
   function spawn(now) {
     const dur = Math.max(900, Math.min(1600, W * 1.3));
-    if (packets.length > 16) packets.shift();
-    packets.push({ t0: now, dur });
+    // no travelling packets behind the logo: the logo wave, the hop dot and the strip show the pass
     wave(dur * 0.36);
     arrive(dur * 0.4);
-    kick();
   }
 
   function renderStats() {
     const now = performance.now();
     while (stamps.length && now - stamps[0][0] > 4000) stamps.shift();
-    const s = state();
+    if (!$("cs-live")) return;
     $("cs-tok").textContent = fmt(tokens);
     $("cs-rate").textContent = stamps.length > 1 ? (stamps.reduce((t, x) => t + x[1], 0) / Math.max(1, (now - stamps[0][0]) / 1000)).toFixed(1) : "0";
     $("cs-ms").textContent = lastMs != null ? Math.round(lastMs) + " ms" : "-";
-    $("cs-rate-k").textContent = "tokens per second";
+  }
+  // a pass hopped over to this device: its dot flashes
+  function hop() {
+    const d = root.querySelector(".cs-hop");
+    if (!d || REDUCED()) return;
+    d.animate([{ opacity: 1, transform: "scale(1.6)", boxShadow: "0 0 10px var(--me)" }, { opacity: .35, transform: "scale(1)", boxShadow: "0 0 0 transparent" }], { duration: 420, easing: "cubic-bezier(.2,.7,.2,1)" });
+    d.parentNode.animate([{ color: "#EEF0F6" }, { color: "var(--on-game-2)" }], { duration: 420, easing: "ease-out" });
   }
   function refresh() {
     if (!open) return;
@@ -117,23 +119,21 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     $("cs-devs").textContent = `${s.devices} device${s.devices === 1 ? "" : "s"}`;
     const has = s.lo != null && s.hi != null;
     const lay = has ? `${s.lo + 1}–${s.hi}` : "";
-    let k, title, sub;
-    const of = s.total ? ` of ${s.total}` : "";
-    if (s.phase === "serving" && has) {
-      k = `This device is helping run ${s.model}`; title = `Serving layers ${lay}`;
-      sub = s.role === "host" ? `${s.hi - s.lo}${of} layers here. It also picks each next word (the model's last step).` : `${s.hi - s.lo}${of} layers here. Every word passes through them.`;
-    }
-    else if (s.phase === "loading") { k = `Getting ready to run ${s.model}`; title = has ? `Loading layers ${lay}` : "Loading the model"; sub = `${s.pct != null ? `${Math.round(s.pct)}% · ` : ""}only this device's layers download`; }
-    else if (s.phase === "serving") { k = `The room is running ${s.model}`; title = "No layers here"; sub = "The other devices hold the model. This one can still ask."; }
-    else { k = "Not serving yet"; title = "Ready to lend"; sub = "This device starts helping as soon as someone in the room starts a model."; }
+    // one status line and one small line: this screen is for the person whose device it is
+    let title, sub;
+    const model = s.model || "the model";
+    if (s.phase === "serving" && has) { title = "Working"; sub = `Layers ${lay} · ${model}`; }
+    else if (s.phase === "loading") { title = s.pct != null ? `Loading ${Math.round(s.pct)}%` : "Loading"; sub = has ? `Layers ${lay} · ${model}` : model; }
+    else if (s.phase === "serving") { title = "Not holding layers"; sub = `The other devices run ${model}`; }
+    else { title = "Standing by"; sub = ""; }
     root.dataset.phase = s.phase;
     if (s.color) root.style.setProperty("--me", onDark(s.color));
     // serving, and no pass for a moment: say so, and let the logo rest
     const quiet = s.phase === "serving" && has && (!stamps.length || performance.now() - stamps[stamps.length - 1][0] > 2500);
     root.toggleAttribute("data-quiet", quiet);
-    if (quiet) k = `This device is helping run ${s.model} · waiting for a question`;
-    $("cs-k").textContent = k; $("cs-title").textContent = title; $("cs-sub").textContent = sub;
-    if ($("cs-ex")) $("cs-ex").hidden = s.phase === "serving" && !has;
+    if (quiet) title = "Ready";
+    $("cs-title").textContent = title; $("cs-sub").textContent = sub;
+    if ($("cs-live")) { $("cs-live").hidden = !(s.phase === "serving" && has); renderStats(); }
     // this device's slice of the model
     const strip = $("cs-strip"), total = s.total || 0;
     const n = total ? Math.min(total, 64) : 0, per = total ? total / n : 1;
@@ -191,6 +191,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
       if (!open || document.hidden) return;
       if (root.hasAttribute("data-quiet")) refresh();
       if (now - statAt > 250) { statAt = now; renderStats(); }
+      hop();
       if (REDUCED()) return;
       // at most one packet per 140 ms; faster passes ride along with the next one
       if (now - lastSpawn >= 140) { lastSpawn = now; owed = 0; spawn(now); }
