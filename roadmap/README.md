@@ -1,6 +1,6 @@
 # Roadmap
 
-What we are working on next, grouped by the part of Pooled it touches. Each line is one item with its priority and its GitHub issue. Longer design notes live in the numbered files in this folder; an item links its file when it has one. File names never change, because issues and links point at them.
+What we are working on next, grouped by the part of Pooled it touches. Each line is one item with its priority and its GitHub issue (`(#issue)` is a placeholder until the issue is filed). Longer design notes live in the numbered files in this folder; an item links its file when it has one. File names never change, because issues and links point at them.
 
 Priorities:
 
@@ -8,7 +8,7 @@ Priorities:
 - **P1**: next. Planned and ready to build.
 - **P2**: later, or needs a design note first.
 
-GitHub issues carry the same `area:` label as the section they sit in here.
+When an issue is filed, it gets the `area:` label of the section it sits in here.
 
 ## Kernels
 

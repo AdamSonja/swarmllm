@@ -129,10 +129,10 @@ Same GB10, 2026-09-27. Each device is its own headless Chromium with real WebRTC
 | 27B | 3 | 8.4 / 11.0 | 7.3 / 10.2 | 5.5 / 8.6 | 3.7 / 6.6 | 2.53 s (2.55 s at 50 ms) |
 
 - Plain decode pays one delay per device per token, because a token goes from the host through the workers and back. Three devices at 50 ms add about 150 ms to every token.
-- Speculative decoding is what keeps a room usable on a real network. At 20–50 ms it is 1.6–2.1x plain.
+- Speculative decoding is what keeps a room usable on a real network. At 20–50 ms it is 1.6–2.1x plain on the MoE and 1.5–1.8x on the 27B.
 - Time to first token barely moves with latency (at most +0.03 s at 50 ms), because the prompt goes out in pipelined 16-token frames.
 - Splitting costs about 3.5–4 ms per extra device even at 0 ms, to read back, pack and upload the hidden state.
-- The one-device rows are lower than the table above because the itinerary prompt drafts worse than code (47–59% accepted).
+- The one-device rows are lower than the table above because the itinerary prompt drafts worse than code (47–59% accepted, against 70–85%) and a room answer includes the room's own per-token work (sampling, chat, telemetry).
 
 Caveats: loopback has no bandwidth limit, loss or jitter, and only model-data frames are delayed. All devices share one GPU, so their compute never overlaps, which makes the 0 ms rows pessimistic compared with separate machines. Harness: [tests/e2e/room_latency.mjs](tests/e2e/room_latency.mjs).
 
@@ -142,7 +142,7 @@ These predate the kernel and MoE work above. Re-measuring on real devices and re
 
 | Setup | Model | Decode | Prefill | Date |
 |---|---|---|---|---|
-| MacBook (Chrome, Metal), solo | 27B | 6.7 plain, 10–10.8 speculative | 14–16 tok/s | Sep 1 |
+| MacBook (Chrome, Metal), solo | 27B | 6.7 plain, 10–10.8 speculative | 14–16 tok/s | Aug 31 to Sep 1 |
 | MacBook + iPhone, same Wi‑Fi, 62 + 2 layers | 27B | 7.7 speculative | 8.5 s for the `japan` prompt | Sep 4 |
 | Cross-internet room, host + one peer | 27B | 3.5–4 speculative | | Sep 1 |
 
@@ -174,7 +174,7 @@ The engine underneath Pooled is our own WGSL, not WebLLM, MLC or llama.cpp. The 
 - [SwarmLLM (enapt)](https://github.com/enapt/SwarmLLM): desktop app that splits models across your linked devices or a public swarm. Its name is why we renamed to Pooled.
 - [WebLLM](https://github.com/mlc-ai/web-llm): single-tab WebGPU inference compiled with MLC and TVM.
 - [Transformers.js](https://github.com/huggingface/transformers.js): Hugging Face models in the browser via ONNX Runtime, on WASM or WebGPU.
-- [pi](https://github.com/badlogic/pi-mono): small, extensible terminal coding agent that works with Ollama, LM Studio, vLLM and other local servers.
+- [pi](https://github.com/earendil-works/pi): small, extensible terminal coding agent that works with Ollama, LM Studio, vLLM and other local servers.
 - [little-coder](https://github.com/itayinbarr/little-coder): coding agent tuned for small local models, built on pi.
 - [aider](https://github.com/Aider-AI/aider): terminal pair-programming agent that works with almost any LLM, including local ones.
 
@@ -188,7 +188,7 @@ A room is a shared conversation: everyone in it sees the questions and answers, 
 
 ## Roadmap
 
-What's next, by area and priority (P0 now, P1 next, P2 later): [roadmap/README.md](roadmap/README.md). Each item links its GitHub issue, and issues carry an `area:` label.
+What's next, by area and priority (P0 now, P1 next, P2 later): [roadmap/README.md](roadmap/README.md). Each item will link its GitHub issue once it is filed.
 
 ## Contributing
 
