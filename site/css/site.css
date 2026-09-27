@@ -4,7 +4,7 @@
   /* colors, type, radius and motion come from tokens.css; these are the landing's own layout values */
   --gutter:clamp(16px,4vw,48px);
   --shadow:0 1px 2px rgba(20,22,29,.04),0 12px 28px -14px rgba(20,22,29,.12),0 44px 90px -48px rgba(20,22,29,.26);
-  --body-h:clamp(300px,calc(100svh - 420px),580px);--band:112px;--pvw:460px;
+  --body-h:clamp(300px,calc(100svh - 420px),580px);--band:122px;--pvw:460px;
   color-scheme:light;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -249,13 +249,14 @@ html:not(.js) .card{display:none}
 /* ---------- 4, 5: the layers, one row per device (as in the room's band: p2p.html #swarm-map) ---------- */
 .band{position:relative;display:flex;flex-direction:column;padding:0 56px;transition:opacity .5s var(--ease) .1s,transform .7s var(--glide),padding .9s var(--glide)}
 .js .model:not(.dl) .band{opacity:0;transform:translateY(8px);pointer-events:none}
-/* downloading: each device gets its own white block */
-.demo[data-scene="split"] .band{align-self:center;width:min(880px,calc(100% - 48px))}
-.demo[data-scene="split"] .bd-h{margin-bottom:16px}
-.demo[data-scene="split"] .rows{gap:8px}
-.demo[data-scene="split"] .row{padding:12px 16px;background:var(--white);border:1px solid var(--rule);border-radius:12px;box-shadow:0 1px 2px rgba(20,22,29,.04),0 8px 18px -12px rgba(20,22,29,.14)}
+/* downloading: the layers sit in a white card, like the room's download card */
+.demo[data-scene="split"] .band{align-self:center;width:min(880px,calc(100% - 48px));padding:24px 28px 20px;background:var(--white);border:1px solid var(--rule);border-radius:16px;
+  box-shadow:0 1px 2px rgba(20,22,29,.04),0 12px 24px -12px rgba(20,22,29,.10),0 40px 80px -40px rgba(20,22,29,.22)}
+.demo[data-scene="split"] .bd-h{margin-bottom:18px}
+.demo[data-scene="split"] .rows{gap:0;border-top:1px solid var(--rule-2)}
+.demo[data-scene="split"] .row{padding:10px 0;border-bottom:1px solid var(--rule-2)}
 .demo[data-scene="split"] .lk-l{margin-top:14px}
-@media (max-width:640px){.demo[data-scene="split"] .band{width:calc(100% - 20px);padding:0}.demo[data-scene="split"] .row{padding:10px 12px}}
+@media (max-width:640px){.demo[data-scene="split"] .band{width:calc(100% - 20px);padding:18px 14px 14px}}
 .bd-h{display:flex;flex-direction:column;align-items:center;gap:7px;margin-bottom:26px;text-align:center;min-width:0;transition:margin .9s var(--glide)}
 .bd-n{font:400 var(--d-md)/1.1 var(--display);letter-spacing:-.02em;white-space:nowrap}
 .bd-s{font:400 var(--t-sm)/1.2 var(--mono);color:var(--ink-3);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
@@ -306,7 +307,7 @@ html:not(.js) .card{display:none}
 .demo[data-scene="chat"] .rows{gap:5px}
 .demo[data-scene="chat"] .row{grid-template-columns:minmax(0,230px) minmax(0,1fr)}
 .demo[data-scene="chat"] .hl{flex-wrap:nowrap;font-size:var(--t-sm)}
-.demo[data-scene="chat"] .hs{flex-basis:auto;margin-left:auto;padding-left:6px}
+.demo[data-scene="chat"] .hs{flex:none;width:12ch;margin-left:auto;padding-left:6px;justify-content:flex-start}   /* one column: "layers" starts at the same place on every row */
 .demo[data-scene="chat"] .hg{display:none}
 .demo[data-scene="chat"] .cells{height:12px;gap:2px}
 .demo[data-scene="chat"] .cells i{border-radius:2px}

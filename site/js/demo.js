@@ -552,7 +552,7 @@
   const halt = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } };
   // first load: under half a second of the agent's edit, right before the changed app is served (the diff
   // on screen, the reload next), then the story starts from the top
-  const HOOK_MS = 400;
+  const HOOK_MS = 800;
   let hookT = 0, hookWait = false;
   const endHook = () => { hookT = 0; frozen = false; if (playing) { hookWait = true; return; } hookWait = false; tl.reset(); tl.started = true; wake(); };
   const begin = () => {
