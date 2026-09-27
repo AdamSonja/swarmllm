@@ -1,5 +1,7 @@
-/* Tetris for the Code demo (the game the agent "wrote"). Plays itself until the visitor takes over.
-   PooledTetris(canvas, { seed, tick, onScore, onState, onDraw }) */
+/* Tetris for the Code demo (the game the agent "wrote"). Plays itself; a visitor can take over with the keys.
+   PooledTetris(canvas, { seed, tick, colors, next, onScore, onState, onDraw })
+   colors: seven piece colours (setColors swaps them: the agent's "make the pieces blue" edit).
+   next: a small canvas for the next-piece preview, drawn only after showNext(true). */
 (() => {
   "use strict";
   const COLS = 10, ROWS = 20;
@@ -10,7 +12,7 @@
     L: [[2, 0], [0, 1], [1, 1], [2, 1]]
   };
   const KEYS = Object.keys(SHAPES);
-  const COLORS = ["#3152FF", "#6E86FF", "#A5B4FC", "#C9D1F7", "#8EA2FF", "#4A5FD0", "#DCE2FF"];
+  const BLUES = ["#3152FF", "#6E86FF", "#A5B4FC", "#C9D1F7", "#8EA2FF", "#4A5FD0", "#DCE2FF"];
   const rot = (cells, n) => {
     let c = cells;
     for (let k = 0; k < n; k++) c = c.map(([x, y]) => [-y, x]);
@@ -26,18 +28,21 @@
     const ctx = canvas.getContext("2d");
     const onScore = opts.onScore || (() => {}), onState = opts.onState || (() => {}), TK = opts.tick || 55;
     let rand, bag, board, cur, plan, score, lines, flash, over = false, human = false, paused = false;
+    let COLORS = (opts.colors || BLUES).slice(), showNext = false;
+    const nctx = opts.next ? opts.next.getContext("2d") : null;
     let acc = 0, raf = 0, last = 0, playing = false, visible = true;
 
     const empty = () => Array.from({ length: ROWS }, () => Array(COLS).fill(0));
     const fits = (cells, px, py, b = board) => cells.every(([x, y]) => { const X = px + x, Y = py + y; return X >= 0 && X < COLS && Y < ROWS && (Y < 0 || !b[Y][X]); });
     const cells = () => ROTS[cur.k][cur.r];
 
+    function refill() { const b = KEYS.slice(); for (let i = b.length - 1; i > 0; i--) { const j = (rand() * (i + 1)) | 0; [b[i], b[j]] = [b[j], b[i]]; } bag.push(...b); }
     function next() {
-      if (!bag.length) { bag = KEYS.slice(); for (let i = bag.length - 1; i > 0; i--) { const j = (rand() * (i + 1)) | 0; [bag[i], bag[j]] = [bag[j], bag[i]]; } }
-      const k = bag.pop();
+      if (bag.length < 2) refill();
+      const k = bag.shift();
       cur = { k, r: 0, x: 3, y: -1, c: KEYS.indexOf(k) };
       if (!fits(ROTS[k][0], cur.x, cur.y)) {
-        if (human) { over = true; onState("over"); return; }
+        if (human) { over = true; onState("over"); setTimeout(() => { if (over) { human = false; reset(); onState("auto"); } }, 1600); return; }
         board = empty();
       }
       if (!human) plan = think(k);
@@ -136,7 +141,24 @@
       if (over) {
         ctx.fillStyle = "rgba(11,15,31,.72)"; ctx.fillRect(0, 0, W, H);
       }
+      drawNext();
       if (opts.onDraw) opts.onDraw(canvas);
+    }
+    let nextShown = "";
+    function drawNext() {
+      if (!nctx) return;
+      const k = showNext && bag && bag[0] ? bag[0] : "", key = k + COLORS[0];
+      if (key === nextShown) return;
+      nextShown = key;
+      const r = opts.next.getBoundingClientRect(), d = Math.min(devicePixelRatio || 1, 2);
+      const w = Math.round((r.width || 64) * d), h = Math.round((r.height || 64) * d);
+      if (opts.next.width !== w || opts.next.height !== h) { opts.next.width = w; opts.next.height = h; }
+      nctx.setTransform(1, 0, 0, 1, 0, 0); nctx.clearRect(0, 0, w, h);
+      if (!k) return;
+      const cs = ROTS[k][0], cw = Math.max(...cs.map(p => p[0])) + 1, ch = Math.max(...cs.map(p => p[1])) + 1;
+      const s = Math.floor(Math.min(w, h) / 5), ox = (w - cw * s) / 2, oy = (h - ch * s) / 2;
+      nctx.fillStyle = COLORS[KEYS.indexOf(k)];
+      cs.forEach(([x, y]) => nctx.fillRect(ox + x * s + d, oy + y * s + d, s - 2 * d, s - 2 * d));
     }
     function frame(now) {
       const dt = last ? Math.min(100, now - last) : 16; last = now;
@@ -158,6 +180,8 @@
       start() { playing = true; wake(); },
       stop() { playing = false; if (raf) cancelAnimationFrame(raf); raf = 0; draw(); },
       reset(seed) { reset(seed); draw(); },
+      setColors(c) { COLORS = c.slice(); nextShown = ""; draw(); },
+      showNext(on) { showNext = !!on; nextShown = ""; draw(); },
       warm(n) { warm(n); draw(); },
       play(seed) { human = true; paused = false; reset(seed == null ? (Date.now() % 9973) : seed); onState("play"); playing = true; wake(); },
       auto(seed) { human = false; paused = false; reset(seed); onState("auto"); },

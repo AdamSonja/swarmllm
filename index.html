@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>Pooled</title>
-<meta name="description" content="Pooled runs one open AI model across the devices in a room, in the browser. Chat with it, or run a coding agent in your tab. Open source, MIT.">
+<meta name="description" content="Pooled runs one open AI model across the devices in a room, peer to peer, in the browser. Chat with it, or let it write code. Open source, MIT.">
 <meta name="theme-color" content="#F6F5F1">
 <link rel="icon" type="image/svg+xml" href="/site/logo/favicon-32.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -13,17 +13,17 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/site/css/site.css">
 <script src="/site/js/boot.js"></script>
-
 </head>
 <body>
 <svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false">
   <symbol id="i-mark" viewBox="0 0 24 24"><circle cx="3.4" cy="3.4" r="1.8"/><circle cx="10.2" cy="3.4" r="1.99"/><circle cx="18.5" cy="3.4" r="2.38"/><circle cx="3.4" cy="10.2" r="1.99"/><circle cx="10.2" cy="10.2" r="2.38"/><circle cx="18.5" cy="10.2" r="2.94"/><circle cx="3.4" cy="18.5" r="2.38"/><circle cx="10.2" cy="18.5" r="2.94"/><circle cx="18.5" cy="18.5" r="3.9" fill="#3152FF"/></symbol>
   <symbol id="i-laptop" viewBox="0 0 16 16"><path d="M3 3.5h10v7H3zM1.2 12.5h13.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
   <symbol id="i-desk" viewBox="0 0 16 16"><path d="M1.8 2.8h12.4v8.4H1.8zM8 11.2v2.6M5.2 13.8h5.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
-  <symbol id="i-phone" viewBox="0 0 16 16"><rect x="4.5" y="1.5" width="7" height="13" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 12.2h2" stroke="currentColor" stroke-width="1.3"/></symbol>
-  <symbol id="i-send" viewBox="0 0 14 14"><path d="M7 12V2M2.5 6.5 7 2l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
   <symbol id="i-lock" viewBox="0 0 10 10"><rect x="2" y="4.5" width="6" height="4.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 4.5V3a1.5 1.5 0 0 1 3 0v1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
   <symbol id="i-check" viewBox="0 0 12 12"><path d="m2.5 6.2 2.3 2.3 4.7-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-file" viewBox="0 0 14 14"><path d="M3.5 1.5h4.5l3 3v8h-7.5z M8 1.5v3h3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></symbol>
+  <symbol id="i-dir" viewBox="0 0 14 14"><path d="M1.5 3.5h4l1.2 1.3h5.8v6.7h-11z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></symbol>
+  <symbol id="i-reload" viewBox="0 0 12 12"><path d="M10 6a4 4 0 1 1-1.2-2.85M10 1.8v2.4H7.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 </svg>
 
 <a class="skip" href="#main">Skip to content</a>
@@ -45,182 +45,175 @@
   <header class="hero" id="top">
     <canvas class="swarm" id="swarm" aria-hidden="true"></canvas>
     <div class="wrap hero-in">
+      <p class="kicker"><i aria-hidden="true"></i>peer-to-peer inference</p>
       <h1>Pool your devices. <span>Run AI together.</span></h1>
-      <p class="sub">Run a coding agent in your browser tab, powered by every device in the room. Your laptop, a friend's desktop and your phone share one open model.</p>
+      <p class="sub">Open one link on each device. Together they run an open model that none of them could run alone.</p>
     </div>
   </header>
 
-  <section class="stage" id="demo" aria-label="How a room works, in seven steps">
+  <section class="stage" aria-label="How a room works">
     <div class="wrap">
-      <div class="demo" id="win" data-scene="code">
-        <div class="frame">
+      <div class="demo" id="demo" data-scene="code" data-mode="code">
 
-          <!-- 1, 2: two browser tabs. One starts a room, the other joins it with the code -->
-          <div class="duo" id="duo">
-            <div class="tab" id="tabA">
-              <p class="tab-dev"><svg width="15" height="15" aria-hidden="true"><use href="#i-laptop"/></svg>MacBook Air</p>
-              <div class="tabwin">
-                <div class="tab-bar"><span class="url"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>pooled.run/room</span></div>
-                <div class="tab-body"><p class="mh">Start a room, <span>or join one.</span></p><div class="mcard">
-                  <div class="mdev"><span>This device <b>MacBook Air</b></span><span>Lends <b>12 GB</b></span></div>
-                  <div class="mpre">
-                    <h3>Start a room</h3>
-                    <p>You get a code to type on your other devices.</p>
-                    <span class="mbtn blue" id="aGo">Start a room</span>
-                  </div>
-                  <div class="mpost">
-                    <p class="mk">Room code</p>
-                    <p class="mcode" aria-label="Room code K7QX"><span>K</span><span>7</span><span>Q</span><span>X</span></p>
-                    <p class="mwait" id="aWait">Type it on your other devices</p>
-                    <p class="mjoined" id="aJoined"><svg width="12" height="12" aria-hidden="true"><use href="#i-check"/></svg>Desktop PC joined</p>
-                  </div>
-                </div></div>
-              </div>
-            </div>
-            <div class="tab" id="tabB">
-              <p class="tab-dev"><svg width="15" height="15" aria-hidden="true"><use href="#i-desk"/></svg>Desktop PC</p>
-              <div class="tabwin">
-                <div class="tab-bar"><span class="url"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>pooled.run/room</span></div>
-                <div class="tab-body"><p class="mh">Start a room, <span>or join one.</span></p><div class="mcard">
-                  <div class="mdev"><span>This device <b>Desktop PC</b></span><span>Lends <b>12 GB</b></span></div>
-                  <div class="mjoin">
-                    <h3>Join a room</h3>
-                    <div class="slots" aria-label="Code typed: K7QX"><i>K</i><i>7</i><i>Q</i><i>X</i></div>
-                    <span class="mbtn" id="bBtn">Join</span>
-                    <p class="mok"><svg width="12" height="12" aria-hidden="true"><use href="#i-check"/></svg>Joined room K7QX</p>
-                  </div>
-                </div></div>
-              </div>
-            </div>
+        <div class="modes" role="tablist" aria-label="Demo">
+          <span class="pill" aria-hidden="true"></span>
+          <button type="button" role="tab" id="mChat" aria-controls="win" aria-selected="false" tabindex="-1">Chat</button>
+          <button type="button" role="tab" id="mCode" aria-controls="win" aria-selected="true">Code</button>
+        </div>
+
+        <div class="win" id="win" role="tabpanel" aria-labelledby="mCode">
+          <!-- the room: its code, and every device in it -->
+          <div class="hd">
+            <span class="hd-room"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#i-mark"/></svg><span class="hd-k">Room</span><b class="hd-code" id="hdCode" aria-label="K7QX"><span>K</span><span>7</span><span>Q</span><span>X</span></b></span>
+            <ul class="chips" id="chips" aria-label="Devices in the room">
+              <li class="chip c0"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg><span class="cn">MacBook Air</span><span class="cg">12 GB</span></li>
+              <li class="chip c1"><svg width="14" height="14" aria-hidden="true"><use href="#i-desk"/></svg><span class="cn">Desktop PC</span><span class="cg">12 GB</span></li>
+            </ul>
+            <span class="hd-sum"><b id="gbSum">24 GB</b> pooled</span>
           </div>
 
-          <!-- 3 to 7: the two tabs are one room now -->
-          <div class="box" id="box">
-            <div class="topbar">
-              <span class="tb-room"><svg class="mark" width="16" height="16" aria-hidden="true"><use href="#i-mark"/></svg><span class="live" aria-hidden="true"></span>Room <b>K7QX</b></span>
-              <ul class="chips" id="chips" aria-label="Devices in the room">
-                <li class="chip c0"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg><span class="cn">MacBook Air</span><span class="cg">12 GB</span></li>
-                <li class="chip c1"><svg width="14" height="14" aria-hidden="true"><use href="#i-desk"/></svg><span class="cn">Desktop PC</span><span class="cg">12 GB</span></li>
-                <li class="chip c2"><svg width="14" height="14" aria-hidden="true"><use href="#i-phone"/></svg><span class="cn">Phone</span><span class="cg">2 GB</span></li>
-              </ul>
-              <span class="tb-sum"><b id="gbSum">26 GB</b> pooled</span>
-            </div>
-            <div class="modebar" id="modebar">
-              <span class="seg" aria-hidden="true"><span class="sg-chat">Chat</span><span class="sg-code">Code</span></span>
-              <span class="mn">Qwen 3.6 35B MoE</span>
-              <div class="strip thin" aria-hidden="true"><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i></div>
-              <span class="wd" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></span>
-            </div>
+          <div class="body" id="body">
 
-            <div class="view">
-              <!-- 3: pick a model, both devices load their layers -->
-              <div class="scene s-pick" data-s="pick">
-                <div class="pick" id="pick">
-                  <div class="pk-pre">
-                    <p class="pk-h"><span>Pick a model</span><span class="pk-sum"><b>24 GB</b> in this room</span></p>
-                    <ul class="rungs">
-                      <li><span>Qwen3 1.7B</span><span class="nd">2 GB</span><b>fits</b></li>
-                      <li><span>Qwen 3.8 27B</span><span class="nd">17 GB</span><b>fits</b></li>
-                      <li class="sel"><span>Qwen 3.6 35B MoE</span><span class="nd">22.5 GB</span><b>fits</b></li>
-                    </ul>
-                    <span class="mbtn blue" id="pkGo">Start the model</span>
-                  </div>
-                  <div class="pk-post">
-                    <p class="pk-h"><span>Loading <b>Qwen 3.6 35B MoE</b></span><span class="pk-sum" id="pkStat">40 layers, split 2 ways</span></p>
-                    <ul class="lrows">
-                      <li class="c0"><i class="sw"></i><span class="ln">MacBook Air</span><span class="lb"><i id="lb0"></i></span><span class="lp" id="lp0">20 layers</span></li>
-                      <li class="c1"><i class="sw"></i><span class="ln">Desktop PC</span><span class="lb"><i id="lb1"></i></span><span class="lp" id="lp1">20 layers</span></li>
-                    </ul>
-                    <div class="strip big-strip" aria-hidden="true"><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c0"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i><i class="c1"></i></div>
-                    <p class="pk-note">Each device downloads only its own layers.</p>
+            <!-- 1, 2: two devices open pooled.run. One starts a room, the other joins with the code -->
+            <div class="scene s-tabs">
+              <div class="tab" id="tabA">
+                <p class="tab-dev"><svg width="14" height="14" aria-hidden="true"><use href="#i-laptop"/></svg>MacBook Air</p>
+                <div class="tabwin">
+                  <div class="tab-bar"><span class="url"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>pooled.run/room</span></div>
+                  <div class="tab-body">
+                    <div class="mcard">
+                      <div class="mpre">
+                        <h3>Start a room</h3>
+                        <p>You get a code for your other devices.</p>
+                        <span class="mbtn blue" id="aGo">Start a room</span>
+                      </div>
+                      <div class="mpost">
+                        <p class="mk">Room code</p>
+                        <p class="mcode" id="aCode" aria-label="K7QX"><span>K</span><span>7</span><span>Q</span><span>X</span></p>
+                        <p class="mwait"><span class="live" aria-hidden="true"></span>Waiting for your other devices</p>
+                        <p class="mjoined"><svg width="12" height="12" aria-hidden="true"><use href="#i-check"/></svg>Desktop PC joined</p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
+              <div class="tab" id="tabB">
+                <p class="tab-dev"><svg width="14" height="14" aria-hidden="true"><use href="#i-desk"/></svg>Desktop PC</p>
+                <div class="tabwin">
+                  <div class="tab-bar"><span class="url"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>pooled.run/room</span></div>
+                  <div class="tab-body">
+                    <div class="mcard">
+                      <div class="mjoin">
+                        <h3>Join a room</h3>
+                        <div class="slots" aria-label="Code typed: K7QX"><i>K</i><i>7</i><i>Q</i><i>X</i></div>
+                        <span class="mbtn" id="bBtn">Join</span>
+                        <p class="mok"><svg width="12" height="12" aria-hidden="true"><use href="#i-check"/></svg>Joined room K7QX</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
 
-              <!-- 4, 5: chat. A phone joins in the middle -->
-              <div class="scene s-chat" data-s="chat">
-                <ol class="msgs" id="msgs">
-                  <li class="sys" data-at="rdy"><svg class="mark" width="12" height="12" aria-hidden="true"><use href="#i-mark"/></svg>Model ready on 2 devices</li>
-                  <li class="q" data-at="q1"><span class="who">MacBook Air</span><p>what is Pooled?</p></li>
-                  <li class="a" data-at="a1"><span class="who">Qwen 3.6 35B MoE<span class="wd" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></span></span><p class="say">Pooled runs one open AI model across the devices in this room. Each one holds some of my layers, and every word I write passes through all of them, right here in your browser tabs.</p></li>
-                  <li class="sys join" data-at="ph"><svg width="12" height="12" aria-hidden="true"><use href="#i-phone"/></svg>Phone joined, lends 2 GB</li>
-                  <li class="q" data-at="q2"><span class="who">Phone</span><p>can it write code?</p></li>
-                  <li class="a" data-at="a2"><span class="who">Qwen 3.6 35B MoE<span class="wd" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></span></span><p class="say">Yes. Open Code and tell me what to build. I write the files, run them, and you watch it live.</p></li>
+            <!-- 3, 4: the model, 40 layers, split across the two devices. Then every word passes through them -->
+            <div class="model" id="model">
+              <p class="md-h"><span class="md-n">Qwen 3.6 35B MoE</span><span class="md-s" id="mdS">22.5 GB, 40 layers, split 2 ways</span></p>
+              <div class="lane" id="lane">
+                <div class="half h0">
+                  <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-laptop"/></svg><b>MacBook Air</b><span>layers 1-20</span></p>
+                  <div class="cells" id="cells0"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  <p class="hg" id="hg0">11.2 GB</p>
+                </div>
+                <div class="link" aria-hidden="true"><span class="lk-sp"></span><span class="lk-c"><span class="lk-l"><b>hidden state</b> 10 KB</span><span class="lk-w"><i></i></span></span></div>
+                <div class="half h1">
+                  <p class="hl"><svg width="13" height="13" aria-hidden="true"><use href="#i-desk"/></svg><b>Desktop PC</b><span>layers 21-40</span></p>
+                  <div class="cells" id="cells1"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  <p class="hg" id="hg1">11.2 GB</p>
+                </div>
+                <svg class="ret" id="ret" aria-hidden="true"><path id="retPath" d=""/></svg>
+                <span class="pkt" id="pkt" aria-hidden="true"></span>
+              </div>
+            </div>
+
+            <div class="scene s-chat">
+              <ol class="msgs" id="msgs">
+                <li class="q" data-at="q1"><span class="who">MacBook Air</span><p>what is Pooled?</p></li>
+                <li class="a" data-at="a1"><span class="who">Qwen 3.6 35B MoE</span><p class="say" id="a1">Pooled splits one open model across the devices in this room. Your laptop runs layers 1 to 20, the desktop runs 21 to 40, and every word passes through both.</p></li>
+              </ol>
+              <div class="composer" id="chatComposer" aria-hidden="true">
+                <span class="field"><span class="typed" id="chatTyped"></span><span class="ph">Message the room</span></span>
+                <span class="send">Send</span>
+              </div>
+            </div>
+
+            <!-- 5 to 7: Code. Files on the left, the agent, then the game it serves -->
+            <div class="scene s-code">
+              <div class="files">
+                <p class="fh"><svg width="14" height="14" aria-hidden="true"><use href="#i-dir"/></svg>tetris</p>
+                <ul class="ftree" id="ftree">
+                  <li data-f="index.html"><svg width="13" height="13" aria-hidden="true"><use href="#i-file"/></svg><span class="fn">index.html</span><span class="fm">12</span></li>
+                  <li data-f="style.css"><svg width="13" height="13" aria-hidden="true"><use href="#i-file"/></svg><span class="fn">style.css</span><span class="fm">9</span></li>
+                  <li data-f="game.js" class="mod"><svg width="13" height="13" aria-hidden="true"><use href="#i-file"/></svg><span class="fn">game.js</span><span class="fm">41</span></li>
+                </ul>
+                <p class="fempty">No files yet</p>
+              </div>
+
+              <div class="agent">
+                <p class="ag-h"><span>Agent</span><span class="ag-m">Qwen 3.6 35B MoE on 2 devices</span></p>
+                <ol class="log" id="log">
+                  <li class="cu" data-at="c-q"><p>build me a tetris game</p></li>
+                  <li class="ct" data-at="c-s1"><p class="say">I'll write three files and serve them on :5173.</p></li>
+                  <li class="tool" data-at="c-t0"><p class="tl"><span class="nm">write_file</span><span class="br">index.html</span><span class="st">done</span></p></li>
+                  <li class="tool" data-at="c-t1"><p class="tl"><span class="nm">write_file</span><span class="br">style.css</span><span class="st">done</span></p></li>
+                  <li class="tool" data-at="c-t2"><p class="tl"><span class="nm">write_file</span><span class="br">game.js</span><span class="st">done</span></p></li>
+                  <li class="wlive pending" id="lv"><p class="lh"><span class="nm">writing</span><b id="lvF">game.js</b><span class="n" id="lvN">0 lines</span></p><pre id="lvPre"></pre></li>
+                  <li class="tool" data-at="c-t3"><p class="tl"><span class="nm">serve</span><span class="br">:5173</span><span class="st">done</span></p></li>
+                  <li class="ct" data-at="c-s2"><p class="say">Tetris is running on :5173.</p></li>
+                  <li class="cu" data-at="c-q2"><p>make the pieces blue and add a next-piece preview</p></li>
+                  <li class="tool" data-at="c-t4"><p class="tl"><span class="nm">edit_file</span><span class="br">game.js</span><span class="dn"><span class="add">+4</span><span class="del">-1</span></span><span class="st">done</span></p>
+                    <div class="diff"><span class="r del">const COLORS = ["#F08A6C", "#F2C14E", "#6CC5A1", ...];</span><span class="r add">const COLORS = ["#3152FF", "#6E86FF", "#A5B4FC", ...];</span><span class="r add">const next = document.getElementById("next");</span><span class="r add">function drawNext() { paint(next, queue[0]); }</span><span class="r add">// called after each spawn()</span></div></li>
+                  <li class="ct" data-at="c-s3"><p class="say">Done. The pieces are blue, and the next one shows beside the board.</p></li>
                 </ol>
-                <div class="composer" id="chatComposer" aria-hidden="true">
-                  <span class="typer" id="chatWho"><svg width="13" height="13"><use href="#i-laptop"/></svg></span>
-                  <span class="field"><span class="typed" id="chatTyped"></span><span class="ph">Message the room</span></span>
+                <div class="composer" id="codeComposer" aria-hidden="true">
+                  <span class="field"><span class="typed" id="codeTyped"></span><span class="ph">Ask the agent</span></span>
                   <span class="send">Send</span>
                 </div>
               </div>
 
-              <!-- 6, 7: Code mode. The agent writes, you approve, the preview runs it -->
-              <div class="scene s-code" data-s="code">
-                <div class="agent">
-                  <p class="ag-h"><span class="k">Project</span><span class="pj">tetris</span><span class="auto"><i aria-hidden="true"></i>auto-approve edits</span></p>
-                  <ol class="log" id="log">
-                    <li class="cu" data-at="c-q"><span class="who">MacBook Air</span><p>build me a tetris game</p></li>
-                    <li class="ct" data-at="c-s1"><p class="say">I'll make a canvas Tetris in two files and serve it on :5173.</p></li>
-                    <li class="tool" data-at="c-t0" id="t0"><p class="tl"><span class="nm">write_file</span><span class="br">index.html</span><span class="chip done">done</span></p><div class="apr"><span class="yes">Approve</span><span>Reject&hellip;</span><span class="all">Allow edits for this task</span></div></li>
-                    <li class="wlive" data-at="c-l" id="lv"><p class="lh"><span class="nm">writing</span><b id="lvF">game.js</b><span class="n" id="lvN">32 lines</span></p><pre id="lvPre"></pre></li>
-                    <li class="tool" data-at="c-t1" id="t1"><p class="tl"><span class="nm">write_file</span><span class="br">game.js</span><span class="chip done">done</span></p>
-                      <div class="diff"><p class="dh"><b>game.js</b><span>new file</span><span class="add">+32</span></p><div class="rows" id="dRows"><span class="r">const COLS = 10, ROWS = 20;</span><span class="r">let board = grid(ROWS, COLS);</span><span class="r">let piece = spawn(), score = 0;</span><span class="r"></span><span class="r">function spawn() {</span><span class="r">  const k = "IJLOSTZ"[rand(7)];</span><span class="r">  return { k, x: 3, y: 0, r: 0 };</span><span class="r">}</span><span class="r"></span><span class="r">function fits(p) {</span><span class="r">  return cells(p).every(([x, y]) =&gt;</span><span class="r">    x &gt;= 0 &amp;&amp; x &lt; COLS &amp;&amp; y &lt; ROWS &amp;&amp; !board[y]?.[x]);</span><span class="r">}</span><span class="r"></span><span class="r">function clearLines() {</span><span class="r">  for (let y = ROWS - 1; y &gt;= 0; y--) {</span><span class="r">    if (board[y].every(Boolean)) {</span><span class="r">      board.splice(y, 1);</span><span class="r">      board.unshift(Array(COLS).fill(0));</span><span class="r">      score += 100; y++;</span><span class="r">    }</span><span class="r">  }</span><span class="r">}</span><span class="r"></span><span class="r">function loop(t) {</span><span class="r">  if (t - last &gt; speed) drop();</span><span class="r">  draw(board, piece);</span><span class="r">  requestAnimationFrame(loop);</span><span class="r">}</span><span class="r"></span><span class="r">addEventListener("keydown", e =&gt; move(e.key));</span><span class="r">requestAnimationFrame(loop);</span></div></div>
-                      <div class="apr"><span class="yes">Approve</span><span>Reject&hellip;</span><span class="all">Allow edits for this task</span></div></li>
-                    <li class="tool" data-at="c-t2" id="t2"><p class="tl"><span class="nm">serve</span><span class="br">:5173</span><span class="chip done">done</span></p></li>
-                    <li class="ct" data-at="c-s2"><p class="say">Tetris is running on :5173. Arrows move, up rotates, space drops.</p></li>
-                  </ol>
-                  <div class="composer" id="codeComposer" aria-hidden="true">
-                    <span class="field"><span class="typed" id="codeTyped"></span><span class="ph">Ask the agent</span></span>
-                    <span class="send">Send</span>
-                  </div>
-                </div>
-
-                <div class="out">
-                  <p class="out-tabs" aria-hidden="true"><span class="on">Preview</span><span>Files</span></p>
-                  <div class="pv" id="pv">
-                    <div class="pv-bar"><span class="pv-tab">:5173</span><span class="pv-addr"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>localhost:5173</span><span class="pv-st" id="pvSt">running</span><span class="br-load" aria-hidden="true"><i id="brLoad"></i></span></div>
-                    <div class="pv-frame">
-                      <p class="pv-empty" aria-hidden="true">nothing served yet</p>
-                      <div class="app" id="app">
-                    <p class="stats"><span>Score <b id="score">0</b></span><span>Lines <b id="lines">0</b></span></p>
-                    <div class="game" id="game" tabindex="0" role="application" aria-label="Tetris. Press Enter to play. Arrow keys move, up rotates, down drops, space hard-drops, Escape leaves the game.">
-                      <svg class="board-static" viewBox="0 0 200 400" aria-hidden="true"><rect width="200" height="400" fill="#0E1328"/><rect x="121" y="261" width="18" height="18" fill="#6E86FF"/><rect x="141" y="261" width="18" height="18" fill="#6E86FF"/><rect x="1" y="281" width="18" height="18" fill="#3152FF"/><rect x="101" y="281" width="18" height="18" fill="#6E86FF"/><rect x="121" y="281" width="18" height="18" fill="#6E86FF"/><rect x="141" y="281" width="18" height="18" fill="#6E86FF"/><rect x="1" y="301" width="18" height="18" fill="#3152FF"/><rect x="41" y="301" width="18" height="18" fill="#A5B4FC"/><rect x="61" y="301" width="18" height="18" fill="#A5B4FC"/><rect x="121" y="301" width="18" height="18" fill="#8EA2FF"/><rect x="141" y="301" width="18" height="18" fill="#8EA2FF"/><rect x="181" y="301" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="321" width="18" height="18" fill="#3152FF"/><rect x="41" y="321" width="18" height="18" fill="#A5B4FC"/><rect x="61" y="321" width="18" height="18" fill="#A5B4FC"/><rect x="81" y="321" width="18" height="18" fill="#DCE2FF"/><rect x="101" y="321" width="18" height="18" fill="#8EA2FF"/><rect x="121" y="321" width="18" height="18" fill="#8EA2FF"/><rect x="181" y="321" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="341" width="18" height="18" fill="#3152FF"/><rect x="21" y="341" width="18" height="18" fill="#4A5FD0"/><rect x="41" y="341" width="18" height="18" fill="#4A5FD0"/><rect x="81" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="101" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="121" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="161" y="341" width="18" height="18" fill="#C9D1F7"/><rect x="181" y="341" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="361" width="18" height="18" fill="#DCE2FF"/><rect x="21" y="361" width="18" height="18" fill="#4A5FD0"/><rect x="41" y="361" width="18" height="18" fill="#4A5FD0"/><rect x="61" y="361" width="18" height="18" fill="#6E86FF"/><rect x="81" y="361" width="18" height="18" fill="#6E86FF"/><rect x="101" y="361" width="18" height="18" fill="#6E86FF"/><rect x="141" y="361" width="18" height="18" fill="#A5B4FC"/><rect x="161" y="361" width="18" height="18" fill="#A5B4FC"/><rect x="181" y="361" width="18" height="18" fill="#8EA2FF"/><rect x="1" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="21" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="41" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="61" y="381" width="18" height="18" fill="#C9D1F7"/><rect x="81" y="381" width="18" height="18" fill="#6E86FF"/><rect x="101" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="121" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="141" y="381" width="18" height="18" fill="#A5B4FC"/><rect x="161" y="381" width="18" height="18" fill="#A5B4FC"/><rect x="181" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="81" y="61" width="18" height="18" fill="#6E86FF"/><rect x="101" y="61" width="18" height="18" fill="#6E86FF"/><rect x="121" y="61" width="18" height="18" fill="#6E86FF"/><rect x="101" y="81" width="18" height="18" fill="#6E86FF"/></svg>
-                      <canvas id="tetris" width="200" height="400" aria-hidden="true"></canvas>
-                      <div class="gui">
-                        <p class="over-t" id="overT" hidden>Score <b id="overScore">0</b></p>
-                        <button class="play" id="play" type="button">Play</button>
+              <div class="pvcol" id="pvcol">
+                <div class="pv" id="pv">
+                  <div class="pv-bar"><svg class="pv-rl" width="12" height="12" aria-hidden="true"><use href="#i-reload"/></svg><span class="pv-addr"><svg width="10" height="10" aria-hidden="true"><use href="#i-lock"/></svg>localhost:5173</span><span class="br-load" aria-hidden="true"><i id="brLoad"></i></span></div>
+                  <div class="pv-frame" id="pvFrame">
+                    <div class="app" id="app">
+                      <div class="game" id="game" tabindex="0" role="application" aria-label="The Tetris game the agent wrote, playing itself. Focus it and press an arrow key to take over; Escape hands it back.">
+                        <svg class="board-static" viewBox="0 0 200 400" aria-hidden="true"><rect width="200" height="400" fill="#0E1328"/><rect x="121" y="261" width="18" height="18" fill="#6E86FF"/><rect x="141" y="261" width="18" height="18" fill="#6E86FF"/><rect x="1" y="281" width="18" height="18" fill="#3152FF"/><rect x="101" y="281" width="18" height="18" fill="#6E86FF"/><rect x="121" y="281" width="18" height="18" fill="#6E86FF"/><rect x="141" y="281" width="18" height="18" fill="#6E86FF"/><rect x="1" y="301" width="18" height="18" fill="#3152FF"/><rect x="41" y="301" width="18" height="18" fill="#A5B4FC"/><rect x="61" y="301" width="18" height="18" fill="#A5B4FC"/><rect x="121" y="301" width="18" height="18" fill="#8EA2FF"/><rect x="141" y="301" width="18" height="18" fill="#8EA2FF"/><rect x="181" y="301" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="321" width="18" height="18" fill="#3152FF"/><rect x="41" y="321" width="18" height="18" fill="#A5B4FC"/><rect x="61" y="321" width="18" height="18" fill="#A5B4FC"/><rect x="81" y="321" width="18" height="18" fill="#DCE2FF"/><rect x="101" y="321" width="18" height="18" fill="#8EA2FF"/><rect x="121" y="321" width="18" height="18" fill="#8EA2FF"/><rect x="181" y="321" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="341" width="18" height="18" fill="#3152FF"/><rect x="21" y="341" width="18" height="18" fill="#4A5FD0"/><rect x="41" y="341" width="18" height="18" fill="#4A5FD0"/><rect x="81" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="101" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="121" y="341" width="18" height="18" fill="#DCE2FF"/><rect x="161" y="341" width="18" height="18" fill="#C9D1F7"/><rect x="181" y="341" width="18" height="18" fill="#C9D1F7"/><rect x="1" y="361" width="18" height="18" fill="#DCE2FF"/><rect x="21" y="361" width="18" height="18" fill="#4A5FD0"/><rect x="41" y="361" width="18" height="18" fill="#4A5FD0"/><rect x="61" y="361" width="18" height="18" fill="#6E86FF"/><rect x="81" y="361" width="18" height="18" fill="#6E86FF"/><rect x="101" y="361" width="18" height="18" fill="#6E86FF"/><rect x="141" y="361" width="18" height="18" fill="#A5B4FC"/><rect x="161" y="361" width="18" height="18" fill="#A5B4FC"/><rect x="181" y="361" width="18" height="18" fill="#8EA2FF"/><rect x="1" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="21" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="41" y="381" width="18" height="18" fill="#DCE2FF"/><rect x="61" y="381" width="18" height="18" fill="#C9D1F7"/><rect x="81" y="381" width="18" height="18" fill="#6E86FF"/><rect x="101" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="121" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="141" y="381" width="18" height="18" fill="#A5B4FC"/><rect x="161" y="381" width="18" height="18" fill="#A5B4FC"/><rect x="181" y="381" width="18" height="18" fill="#8EA2FF"/><rect x="81" y="61" width="18" height="18" fill="#6E86FF"/><rect x="101" y="61" width="18" height="18" fill="#6E86FF"/><rect x="121" y="61" width="18" height="18" fill="#6E86FF"/><rect x="101" y="81" width="18" height="18" fill="#6E86FF"/></svg>
+                        <canvas id="tetris" width="200" height="400" aria-hidden="true"></canvas>
                       </div>
-                      <p class="paused" id="paused" hidden>Paused. Tap to resume</p>
-                    </div>
-                    <p class="keys"><kbd>&larr;</kbd><kbd>&rarr;</kbd> move <kbd>&uarr;</kbd> rotate <kbd>space</kbd> drop</p>
-                    <div class="pad" id="pad" aria-label="Game controls">
-                    <button type="button" data-k="left" aria-label="Move left"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M11 4 6 9l5 5"/></svg></button>
-                    <button type="button" data-k="rot" aria-label="Rotate"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 9a5 5 0 1 1-1.6-3.7M14 3v3h-3"/></svg></button>
-                    <button type="button" data-k="right" aria-label="Move right"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m7 4 5 5-5 5"/></svg></button>
-                    <button type="button" data-k="down" aria-label="Soft drop"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m4 7 5 5 5-5"/></svg></button>
-                    <button type="button" data-k="drop" class="wide" aria-label="Hard drop">Drop</button>
-                  </div>
+                      <div class="side">
+                        <p class="stat"><span>Score</span><b id="score">1,300</b></p>
+                        <p class="stat"><span>Lines</span><b id="lines">9</b></p>
+                        <div class="nextbox" id="nextbox"><span>Next</span><canvas id="nextc" width="48" height="48" aria-hidden="true"></canvas></div>
                       </div>
                     </div>
-                    <p class="pv-con"><span>console &#9656;</span><span id="pvCount">2 logs</span></p>
                   </div>
                 </div>
               </div>
             </div>
+
           </div>
         </div>
 
         <!-- the caption: which step this is; each dot jumps to one -->
         <div class="stepbar" id="stepbar">
-          <p class="sb-now"><span class="sb-n" id="sbN">7/7</span><span class="sb-t" id="sbT" aria-live="polite">It runs in the preview. Your turn: press Play.</span></p>
+          <p class="sb-now"><span class="sb-n" id="sbN">7/7</span><span class="sb-t" id="sbT" aria-live="polite">Ask for a change. It edits the code and reloads.</span></p>
           <ol class="sb-dots" aria-label="Steps">
-            <li><button type="button" data-step="1"><i></i><span class="lbl">Start a room on your laptop</span></button></li>
-            <li><button type="button" data-step="2"><i></i><span class="lbl">Join from your desktop with the code</span></button></li>
-            <li><button type="button" data-step="3"><i></i><span class="lbl">Pick a model. Both devices load it.</span></button></li>
-            <li><button type="button" data-step="4"><i></i><span class="lbl">Ask it anything</span></button></li>
-            <li><button type="button" data-step="5"><i></i><span class="lbl">A phone joins in the middle</span></button></li>
-            <li><button type="button" data-step="6"><i></i><span class="lbl">Ask for a game. Approve its edits.</span></button></li>
-            <li><button type="button" data-step="7"><i></i><span class="lbl">It runs in the preview. Your turn: press Play.</span></button></li>
+            <li><button type="button" data-step="0"><i></i><span class="lbl">Start a room on your laptop</span></button></li>
+            <li><button type="button" data-step="1"><i></i><span class="lbl">Join from your desktop with the code</span></button></li>
+            <li><button type="button" data-step="2"><i></i><span class="lbl">The model splits: layers 1-20 on the laptop, 21-40 on the desktop</span></button></li>
+            <li><button type="button" data-step="3"><i></i><span class="lbl">Every word passes through all 40 layers, on both devices</span></button></li>
+            <li class="gap"><button type="button" data-step="4"><i></i><span class="lbl">Switch to Code and ask for a game</span></button></li>
+            <li><button type="button" data-step="5"><i></i><span class="lbl">It writes the files and serves them on :5173</span></button></li>
+            <li><button type="button" data-step="6"><i></i><span class="lbl">Ask for a change. It edits the code and reloads.</span></button></li>
           </ol>
           <button class="replay" id="replay" type="button" aria-label="Replay from the start" title="Replay"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v3h3"/></svg></button>
         </div>
@@ -229,26 +222,9 @@
   </section>
 
   <section class="closer" id="closer" aria-labelledby="closer-h">
-    <div class="wrap">
-      <svg class="gather" id="gather" viewBox="0 0 360 172" aria-hidden="true">
-        <g class="devs-i">
-          <g class="di" transform="translate(28 128)"><use href="#i-laptop" width="30" height="30"/></g>
-          <g class="di" transform="translate(165 132)"><use href="#i-desk" width="30" height="30"/></g>
-          <g class="di" transform="translate(302 128)"><use href="#i-phone" width="30" height="30"/></g>
-          <text x="43" y="168">Laptop</text><text x="180" y="168">Desktop</text><text x="317" y="168">Phone</text>
-        </g>
-        <g class="logo" transform="translate(143.2 8) scale(3.2)">
-          <circle class="g0" cx="3.4" cy="3.4" r="1.8" style="--x:-34.7px;--y:38.8px"/>
-          <circle class="g3" cx="3.4" cy="10.2" r="1.99" style="--x:-34.7px;--y:32.0px"/>
-          <circle class="g6" cx="3.4" cy="18.5" r="2.38" style="--x:-34.7px;--y:23.7px"/>
-          <circle class="g1" cx="10.2" cy="3.4" r="1.99" style="--x:1.3px;--y:40.0px"/>
-          <circle class="g4" cx="10.2" cy="10.2" r="2.38" style="--x:1.3px;--y:33.2px"/>
-          <circle class="g7" cx="10.2" cy="18.5" r="2.94" style="--x:1.3px;--y:24.9px"/>
-          <circle class="g2" cx="18.5" cy="3.4" r="2.38" style="--x:35.8px;--y:38.8px"/>
-          <circle class="g5" cx="18.5" cy="10.2" r="2.94" style="--x:35.8px;--y:32.0px"/>
-          <circle class="g8" cx="18.5" cy="18.5" r="3.9"/>
-        </g>
-      </svg>
+    <canvas class="swarm" id="swarm2" aria-hidden="true"></canvas>
+    <div class="wrap closer-in">
+      <div class="logo-slot" id="logoSlot" aria-hidden="true"><svg width="96" height="96"><use href="#i-mark"/></svg></div>
       <h2 id="closer-h">Your devices are already a supercomputer. <span>Introduce them.</span></h2>
       <div class="ctas">
         <a class="btn btn-blue" href="/room">Open a room <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 8 8 2M3.5 2H8v4.5"/></svg></a>
@@ -268,6 +244,5 @@
 <script src="/site/js/swarm.js"></script>
 <script src="/site/js/tetris.js"></script>
 <script src="/site/js/demo.js"></script>
-
 </body>
 </html>
