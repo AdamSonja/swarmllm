@@ -32,7 +32,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
   logo.innerHTML = DOTS.map(([x, y, r], i) => `<circle cx="${x}" cy="${y}" r="${r}" style="--i:${i};--rc:${Math.round(x / 7) + Math.round(y / 7)}"${i === 8 ? ' class="lit"' : ""}/>`).join("");
   const circles = [...logo.querySelectorAll("circle")];
   let open = false, raf = 0, timer = 0, lastSpawn = 0, owed = 0;
-  let tokens = 0, lastMs = null, statAt = 0;
+  let tokens = 0, lastMs = null, statAt = 0, lastRate = null;
   const stamps = [];            // [time, tokens] of the passes over the last few seconds, for the rate
   const packets = [];           // { t0, dur }
   let W = 0, H = 0, dpr = 1, cy = 0, lx = 0, lw = 0;
@@ -113,8 +113,12 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     while (stamps.length && now - stamps[0][0] > 4000) stamps.shift();
     if (!$("cs-live")) return;
     $("cs-tok").textContent = fmt(tokens);
-    $("cs-rate").textContent = stamps.length > 1 ? (stamps.reduce((t, x) => t + x[1], 0) / Math.max(1, (now - stamps[0][0]) / 1000)).toFixed(1) : "0";
-    $("cs-ms").textContent = lastMs != null ? Math.round(lastMs) + " ms" : "-";
+    // between answers: the last run's speed, not 0; a number it has never had is left out
+    if (stamps.length > 1 && now - stamps[stamps.length - 1][0] < 600) lastRate = (stamps.slice(1).reduce((t, x) => t + x[1], 0) / Math.max(.05, (stamps[stamps.length - 1][0] - stamps[0][0]) / 1000)).toFixed(1);
+    $("cs-rate").textContent = lastRate ?? "0";
+    $("cs-rate").parentNode.hidden = lastRate == null;
+    $("cs-ms").textContent = lastMs != null ? Math.round(lastMs) + " ms" : "";
+    $("cs-ms").parentNode.hidden = lastMs == null;
   }
   // a pass hopped over to this device: its dot flashes
   function hop() {
@@ -133,7 +137,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     // one status line and one small line: this screen is for the person whose device it is
     let title, sub;
     const model = s.model || "the model";
-    if (s.phase === "serving" && has) { title = "Working"; sub = `Layers ${lay} · ${model}`; }
+    if (s.phase === "serving" && has) { title = "Working"; sub = `Serving layers ${lay} · ${model}`; }
     else if (s.phase === "loading") { title = s.pct != null ? `Loading ${Math.round(s.pct)}%` : "Loading"; sub = has ? `Layers ${lay} · ${model}` : model; }
     else if (s.phase === "serving") { title = "Not holding layers"; sub = `The other devices run ${model}`; }
     else { title = "Standing by"; sub = ""; }
@@ -142,7 +146,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     // serving, and no pass for a moment: say so, and let the logo rest
     const quiet = s.phase === "serving" && has && (!stamps.length || performance.now() - stamps[stamps.length - 1][0] > 2500);
     root.toggleAttribute("data-quiet", quiet);
-    if (quiet) title = "Ready";
+    if (quiet) title = "Serving";   // holding its layers, waiting for the next question
     $("cs-title").textContent = title; $("cs-sub").textContent = sub;
     if ($("cs-live")) { $("cs-live").hidden = !(s.phase === "serving" && has); renderStats(); }
     // this device's slice of the model
