@@ -171,7 +171,15 @@ const iconFor = (meta) => meta.phone || /iPhone|Android$/.test(meta.ua || "") ? 
 const humanRange = (r) => { const m = /^(\d+)\D+(\d+)$/.exec(String(r || "")); return m ? `${+m[1] + 1}\u2013${+m[2] + 1}` : String(r || ""); };
 // One colour per device, everywhere (chips, pool bar, loading rows, band, Lend screen): given once,
 // in join order, to each device that can hold layers. A device that only asks is grey everywhere.
-const SWATCH = ["#2A45E0", "#2B2F3C", "#7C8FFF", "#5E616B", "#B9C6FF", "#1C33B8"];
+const SWATCH = ["#2A45E0", "#2B2F3C", "#7C8FFF", "#5E616B", "#B9C6FF", "#1C33B8",
+  // devices 7 to 16: more of the same family (blues, indigo, slate), each distinct from its neighbours
+  "#4F6BFF", "#3E4454", "#9AABFF", "#7B7F8A", "#2F3FA8", "#D3DBFF", "#454D8F", "#9DA1AB", "#6E86FF", "#1A1D26"];
+// past 16 devices: shades generated in the same blue-to-slate range (hue 222-232), so no two neighbours match
+function swatch(i) {
+  if (i < SWATCH.length) return SWATCH[i];
+  const k = i - SWATCH.length, hue = 222 + (k * 7) % 11, sat = k % 3 === 2 ? 12 : 55 + (k * 13) % 30, light = 28 + (k * 17) % 50;
+  return `hsl(${hue} ${sat}% ${light}%)`;
+}
 const devSlots = new Map();   // name -> slot: the host's roster order on every device (see the roster message)
 function metaOf(name) {
   if (name === myName) return myMeta;
@@ -184,10 +192,18 @@ function devColor(name) {
   const meta = metaOf(name);
   if (meta && meta.webgpu === false) return "var(--ink-4)";
   if (!devSlots.has(name)) devSlots.set(name, devSlots.size);
-  return SWATCH[devSlots.get(name) % SWATCH.length];
+  return swatch(devSlots.get(name));
 }
 // text on a device's colour: ink on the light blues and greys, white on the rest
-const onSwatch = (c) => (/^#(7C8FFF|B9C6FF)$/i.test(c) || /faint/.test(c) ? "var(--ink)" : "#fff");
+// text on a light colour is ink, on a dark one white (by perceived lightness, for the generated shades too)
+const onSwatch = (c) => {
+  if (/faint/.test(c)) return "var(--ink)";
+  let l = 0;
+  const hex = /^#([0-9a-f]{6})$/i.exec(c), hsl = /^hsl\(\S+ \S+% (\d+)%\)$/.exec(c);
+  if (hex) { const n = parseInt(hex[1], 16); l = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255 * 100; }
+  else if (hsl) l = +hsl[1];
+  return l > 58 ? "var(--ink)" : "#fff";
+};
 function peerCard(id, name, meta, self) {
   // a chip in the room bar (the landing's: dot, icon, name, GB); a click opens the device's card
   const card = document.createElement("div");
