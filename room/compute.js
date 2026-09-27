@@ -137,7 +137,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     // one status line and one small line: this screen is for the person whose device it is
     let title, sub;
     const model = s.model || "the model";
-    if (s.phase === "serving" && has) { title = "Working"; sub = `Serving layers ${lay} · ${model}`; }
+    if (s.phase === "serving" && has) { title = "Working"; sub = `Layers ${lay} · ${model}`; }   // the title says Serving between answers
     else if (s.phase === "loading") { title = s.pct != null ? `Loading ${Math.round(s.pct)}%` : "Loading"; sub = has ? `Layers ${lay} · ${model}` : model; }
     else if (s.phase === "serving") { title = "Not holding layers"; sub = `The other devices run ${model}`; }
     else { title = "Standing by"; sub = ""; }

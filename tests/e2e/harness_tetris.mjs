@@ -322,7 +322,7 @@ try {
     run: document.querySelector(".pv-run")?.textContent,
   }));
   check("peer: timeline shows the 6 tool cards", P.tools.join(" ") === H.tools.join(" "), P.tools.join(" "));
-  check("peer: can drive (prompt row and projects, no Open folder), told where the files live", P.drive && /host-e2e's device/.test(P.note) && !/driving/.test(P.note), JSON.stringify(P));
+  check("peer: can drive (prompt row and projects, no Open folder), with no note in the usual case", P.drive && !P.note, JSON.stringify(P));
   check("peer: file tree", P.tree.join(",") === H.tree.join(","), P.tree);
   check("peer: the preview runs by itself (no click-to-run button)", !P.run, P.run);
   await peer.waitForFunction(() => /^rev \d+$/.test(document.getElementById("pv-state").textContent), null, { timeout: 10000 });
