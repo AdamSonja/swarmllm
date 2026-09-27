@@ -3,7 +3,8 @@
 import { argmax } from "../engine/engine.js";
 import { topkNaive, readCands } from "../engine/topk.js";
 
-export const GPU_SAMPLE = Deno.env.get("GPU_SAMPLE") === "1";
+export const GPU_SAMPLE = Deno.env.get("GPU_SAMPLE") !== "0";   // on by default (the engine default); GPU_SAMPLE=0: the logits path
+export const ARGMAX_WIDE = (Deno.env.get("ARGMAX_WIDE") ?? (GPU_SAMPLE ? "1" : "0")) === "1";
 // greedy that reads either logits or the engine's GPU candidates; .gpu makes the engine sample on the GPU
 export const gpuGreedy = Object.assign((x) => (x && x.ids instanceof Uint32Array ? x.ids[0] : argmax(x)), { gpu: { kind: "greedy" } });
 

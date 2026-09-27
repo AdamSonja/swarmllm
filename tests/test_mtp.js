@@ -4,7 +4,7 @@
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { makeTokenizer, argmax } from "../engine/engine.js";
 import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
-import { GPU_SAMPLE, gpuGreedy, checkHeadIds } from "./gpusample_check.js";
+import { GPU_SAMPLE, ARGMAX_WIDE, gpuGreedy, checkHeadIds } from "./gpusample_check.js";
 const N = +(Deno.env.get("TOKENS") || 40);
 const K = +(Deno.env.get("K") || 3);
 const openFile = async (path) => {
@@ -25,7 +25,7 @@ const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRang
   // DRAFTCHAIN=0 / SPECFUSE=0: per-submit drafts / separate verify submits (A/B; same output)
   draftChain: Deno.env.get("DRAFTCHAIN") !== "0", specFuse: Deno.env.get("SPECFUSE") !== "0",
   // GPU_SAMPLE=1: sampling on the GPU and the two-stage draft argmax (ARGMAX_WIDE=1 alone: only the latter)
-  gpuSample: GPU_SAMPLE, argmaxWide: GPU_SAMPLE || Deno.env.get("ARGMAX_WIDE") === "1" });
+  gpuSample: GPU_SAMPLE, argmaxWide: ARGMAX_WIDE });
 console.log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}`);
 console.log(`loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s; mtp=${!!eng.mtp}`);
 const V = tok.vocab;

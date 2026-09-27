@@ -1,9 +1,8 @@
 # exp/gpu-sample: sample on the GPU (argmax and top-k for every head)
 
-Branch `exp/gpu-sample` from `exp/base`. Status: code complete and checked on the CPU (a CPU model of the
-kernels, the kernels themselves on lavapipe, the whole engine on lavapipe with the synthetic dense and MoE
-models). **Not yet run on the GB10**: the GPU suites, the Chrome profile and the room profile below still
-have to be run, and the results table filled in. Both options are **off by default** until then.
+Branch `exp/gpu-sample` from `exp/base`. Status: **validated on the GB10 (2026-09-27), on by default**
+(`gpuSample` and `argmaxWide` engine defaults, `room.js` `GPU_SAMPLE`, `prof.html`; `?gpusample=0` or
+`GPU_SAMPLE=0` for the logits path). Verdict: keep. Results below.
 
 ## Why
 
@@ -63,18 +62,52 @@ node tests/e2e/room_prof.mjs --model qwen3.6-35b-moe --devices 3 --maxnew 48 --o
 If all of these pass, turn `gpuSample` and `argmaxWide` on by default (engine defaults, `room.js`
 `GPU_SAMPLE`, `prof.html`).
 
-## Results (fill in after the GPU run)
+## Results on the GB10 (2026-09-27)
 
-Baselines are from `exp-moe-network-profile.md` (Chrome, GB10, 35B-A3B, two-sum prompt, greedy).
+### Correctness (all pass)
 
-| | exp/base | gpusample=1 | expected |
+| check | result |
+|---|---|
+| `tests/e2e/topk_kernel.mjs` (NVIDIA GB10, Deno) | 251 cases, bit-identical to the CPU model |
+| `tests/e2e/gpusample_synth.mjs` (GB10) | all checks pass, no validation errors |
+| `tests/run.sh quick`, `tests/run.sh q38` | pass, with the options off and again with them on by default |
+| `tests/test_moe.js` off / `GPU_SAMPLE=1` / `ARGMAX_WIDE=1` / new defaults | MATCH llama.cpp on 3 prompts, spec == plain, acceptance unchanged (28/33, 28/39, 25/45); the head check finds 0 of 256 greedy mismatches and 0 of 32 top-40 mismatches |
+| `tests/test_mtp.js` `GPU_SAMPLE=1` (27B) | spec == plain, 28/33; the head check finds 0 mismatches |
+| `tests/e2e/room_synth.mjs --compare --devices 2 / 3 --query gpusample=1`, then with the new defaults | solo == split, both rounds |
+| Chrome (Tint) | accepts the workgroup atomic; the kernel runs in the prof page and in the room |
+
+`room_synth.mjs` no longer matched the room UI on this base. The Room settings selects sit in a closed menu, and the chat row is not visible, so Playwright's `selectOption` and `click` time out. On this branch, the harness sets the selects through a change event (the same approach as `setSelect` on `feat/engine-opt`), and sends the prompt from inside the page, as `room_prof.mjs` does. Nothing in the room changed.
+
+### Speed (Chrome, GB10, 35B-A3B Q4_0, two-sum prompt, greedy; same session, off/on alternated twice)
+
+`tests/prof/prof_chrome.mjs` (solo):
+
+| | off (run 1 / run 2) | on (run 1 / run 2) | change |
 |---|---|---|---|
-| solo plain, ms/token (tok/s) | 22.1 (45.2) | | ~20 (~49): the 1 MB map drops to a 16 B one |
-| solo spec K=3, ms/step (tok/s) | 48.6 (75.5) | | ~44 (~83): the 4 MB map drops to 64 B, and the full-head draft argmax drops from 3 × 490 µs to about 3 × 40 µs (argmaxWide) |
-| logits readback in the spec step's timeline, GPU idle between submits | 6.4 ms/step | | ~2 to 3 ms |
-| room 2 devices plain / spec tok/s | see profile | | head outside the lap −2.4 ms per plain token; verify head map −1.5 to 2 ms, and no CPU argmax (−2.5 ms) per spec step |
-| room 3 devices plain / spec tok/s | see profile | | as for 2 devices |
-| kernel cost: topk_a + topk_b, k = 1 / 40, per column | 490 µs (old argmax, full vocab) | | tens of µs (61 workgroups; k rounds of ~10 barriers each) |
+| plain, ms/token, median | 22.3 / 23.7 | 21.3 / 21.8 | about −1.5 ms (+7 %) |
+| plain, ms/token, submit mode | 24.45 / 24.15 | 21.43 / 22.06 | −2.6 ms; submits per token 2 → 1 |
+| plain, GPU idle between submits, ms/token | 5.19 / 5.15 | 2.65 / 3.16 | −2.3 ms |
+| spec K=3, ms/step (tok/s) | 49.56 (74.0) / 49.52 (74.1) | 43.43 (84.4) / 43.73 (83.9) | **−6 ms/step, +13.6 % tok/s** |
+| spec, GPU busy %, idle between submits ms/step | 85.6 %, 6.95 / 84.1 %, 7.91 | 94.4 %, 2.30 / 93.7 %, 2.62 | idle −5 ms |
+| acceptance | 37/42 | 37/42 | same |
+
+Solo speculative is now 84 tok/s, level with llama.cpp CUDA plain (85.5). The spec gain (−6 ms) is larger
+than estimated (−3.5 to −4.5 ms). The 4 MB verify map and the full-head draft argmaxes both go.
+
+`tests/e2e/room_prof.mjs` (emulated room: one Chromium per device, loopback WebRTC, 48 tokens):
+
+| | off (run 1 / run 2) | on (run 1 / run 2) | mean change |
+|---|---|---|---|
+| 2 devices, plain tok/s | 32.4 / 30.8 | 32.2 / 33.1 | +3 % |
+| 2 devices, spec tok/s | 53.2 / 49.7 | 55.7 / 57.9 | **+10 %** |
+| 3 devices, plain tok/s | 27.5 / 27.4 | 28.0 / 28.8 | +3.5 % |
+| 3 devices, spec tok/s | 52.4 / 48.9 | 48.5 / 51.4 | −1 % (within run-to-run noise) |
+
+In the lap split (`room_prof_report.mjs`, run 2 of each), host time outside the lap per plain token
+drops from 6.0 to 5.1 ms (2 devices) and from 6.7 to 5.3 ms (3 devices). The head drops 4.7 → 4.3 and
+4.7 → 4.2 ms. At K=3 (4 verify columns), host time outside the lap per step drops from 12.8 to 10.5 ms
+(2 devices) and from 13.0 to 11.6 ms (3 devices). Lap-to-lap variance in the 3-device room (step times
+of 54 to 56 ms in both runs) is bigger than the 1.4 ms saved, so its tok/s does not move outside the noise.
 
 ## Risks
 

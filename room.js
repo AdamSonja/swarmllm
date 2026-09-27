@@ -1362,10 +1362,10 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
       // MoE bits, so every device of a room should run the same setting; ?moednrows=1|2|4 tunes it
       moeFuse: new URLSearchParams(location.search).get("moefuse") !== "0",
       moeDnRows: parseInt(new URLSearchParams(location.search).get("moednrows"), 10) || 1,
-      // ?gpusample=1: sample on the GPU (argmax / top-k of the head in the same submit, 16-520 bytes
-      // back instead of the 1 MB logits vector); a masked sampler (tool-name constraint) still gets
-      // the logits. ?argmaxwide=1 (default: same as gpusample): the draft argmax as the two-stage
-      // multi-workgroup kernel. Experimental (exp/gpu-sample), off by default.
+      // GPU sampling, on by default (?gpusample=0: off): argmax / top-k of the head in the same submit,
+      // 16-520 bytes back instead of the 1 MB logits vector; a masked sampler (tool-name constraint)
+      // still gets the logits. ?argmaxwide=0|1 (default: same as gpusample): the draft argmax as the
+      // two-stage multi-workgroup kernel.
       gpuSample: GPU_SAMPLE,
       argmaxWide: ARGMAX_WIDE,
     });
@@ -1716,9 +1716,9 @@ const FILL_DRAFTS = new URLSearchParams(location.search).get("fill") !== "0";
 const MTP_REFILL = new URLSearchParams(location.search).get("mtprefill") !== "0";
 const PRE_DRAFT = new URLSearchParams(location.search).get("predraft") !== "0";
 const DRAFT_VOCAB = (() => { const v = new URLSearchParams(location.search).get("draftvocab"); return v === null ? 65536 : parseInt(v, 10) || 0; })();
-const MTP_BATCH = new URLSearchParams(location.search).get("mtpbatch") !== "0";
-const GPU_SAMPLE = new URLSearchParams(location.search).get("gpusample") === "1";   // see the engine options in aiLoadShard
-const ARGMAX_WIDE = (new URLSearchParams(location.search).get("argmaxwide") ?? (GPU_SAMPLE ? "1" : "0")) === "1";   // ?mtpbatch=0: one draft-cache row per submit, for A/B
+const MTP_BATCH = new URLSearchParams(location.search).get("mtpbatch") !== "0";   // ?mtpbatch=0: one draft-cache row per submit, for A/B
+const GPU_SAMPLE = new URLSearchParams(location.search).get("gpusample") !== "0";   // on by default; see the engine options in aiLoadShard
+const ARGMAX_WIDE = (new URLSearchParams(location.search).get("argmaxwide") ?? (GPU_SAMPLE ? "1" : "0")) === "1";
 function fillDrafts(h, ids, i0, basePos, n) {
   if (!FILL_DRAFTS || !ai.engine?.mtp) return;
   const dim = ai.engine.dims.dim, E = ai.engine;

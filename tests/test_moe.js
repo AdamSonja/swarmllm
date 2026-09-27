@@ -3,7 +3,7 @@
 import { Qwen35Engine } from "../engine/qwen35.js";
 import { makeTokenizer, argmax } from "../engine/engine.js";
 import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF } from "../engine/gguf.js";
-import { GPU_SAMPLE, gpuGreedy, checkHeadIds } from "./gpusample_check.js";
+import { GPU_SAMPLE, ARGMAX_WIDE, gpuGreedy, checkHeadIds } from "./gpusample_check.js";
 const N = +(Deno.env.get("TOKENS") || 40), K = +(Deno.env.get("K") || 3);
 const MOEK = Deno.env.get("MOE_KERNEL") ? (Deno.env.get("MOE_KERNEL").startsWith("{") ? JSON.parse(Deno.env.get("MOE_KERNEL")) : Deno.env.get("MOE_KERNEL")) : undefined;   // moeKernel: legacy | default | JSON
 const PATH = Deno.env.get("MOE") || "../models/q36moe/Qwen_Qwen3.6-35B-A3B-Q4_0.gguf";
@@ -27,7 +27,7 @@ const eng = await Qwen35Engine.create({ device, meta: G.meta, weights, layerRang
   moeFuse: Deno.env.get("MOE_FUSE") !== "0", moeDnRows: +(Deno.env.get("MOE_DN_ROWS") || 1), moeKernel: MOEK,
   // GPU_SAMPLE=1: sampling on the GPU (forwardTokenIds, a .gpu sampler for specStep) and the two-stage
   // draft argmax (ARGMAX_WIDE=1 alone: only the latter)
-  gpuSample: GPU_SAMPLE, argmaxWide: GPU_SAMPLE || Deno.env.get("ARGMAX_WIDE") === "1" });   // MOE_FUSE=0: unfused MoE kernels (A/B)
+  gpuSample: GPU_SAMPLE, argmaxWide: ARGMAX_WIDE });   // MOE_FUSE=0: unfused MoE kernels (A/B)
 console.log(`draftChain ${!!eng.draftChain}, specFuse ${eng.specFuse}, gpuSample ${eng.gpuSample}, argmaxWide ${eng.argmaxWide}`);
 console.log(`${arch}: ${L} layers, mtp tensors ${hasMtp}, engine mtp ${!!eng.mtp}, moeFuse ${eng.moeFuse}; loaded in ${((performance.now() - t0) / 1000).toFixed(0)}s`);
 if (eng.moeK) console.log("moeKernel", JSON.stringify(eng.moeK));
