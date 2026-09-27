@@ -14,7 +14,7 @@ import fs from "node:fs";
 import { parseGGUFHeader, qwen35Weights, tokenizerFromGGUF, gpuUploadEntry } from "../engine/gguf.js";
 import { makeTokenizer } from "../engine/engine.js";
 import { attachWeightCache } from "./weight_cache.js";
-import { Qwen35Engine } from "../engine/qwen35.js";
+import { Qwen35Engine, prefillMathFeatures } from "../engine/qwen35.js";
 
 // A/B switches for every test and bench that loads through this file (engine defaults, not per test):
 //   ATTN_PREFILL_TILE=0|1 tiled causal flash attention for full-width prefill passes (engine/wgsl/attn_tile.js;
@@ -59,7 +59,8 @@ export function openGGUF(path, { skipTokenizer = false, cache = true, headerByte
 
 export async function gpuDevice() {
   const adapter = await navigator.gpu.requestAdapter();
-  const device = await adapter.requestDevice({ requiredLimits: {
+  // PREFILL_MATH=sgmatrix asks for the tensor-core features where the adapter has them (Chrome only; none in Deno)
+  const device = await adapter.requestDevice({ requiredFeatures: prefillMathFeatures(adapter), requiredLimits: {
     maxBufferSize: adapter.limits.maxBufferSize,
     maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, ...wideLimits(adapter),
     ...(Qwen35Engine.defaults.attnPrefillTK >= 16 ? { maxComputeWorkgroupStorageSize: adapter.limits.maxComputeWorkgroupStorageSize } : {}) } });
