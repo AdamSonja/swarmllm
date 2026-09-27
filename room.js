@@ -830,7 +830,10 @@ $("share-copy").addEventListener("click", copyRoomLink);
 $("share-native").addEventListener("click", () => navigator.share?.({ title: "Join my Pooled room", text: `Room ${roomCode}: add this device to the AI model we run together`, url: roomLink() }).catch(() => {}));
 $("room-over-new").addEventListener("click", () => { location.href = location.pathname.startsWith("/r/") ? "/room" : location.pathname.replace(/\?.*$/, ""); });
 stars();   // the header's Star button: the repo's star count (room/stars.js)
-// (the join screen no longer offers to resume a room this tab hosted; saveHost/resumeHost stay for the session)
+// A host that reloads its tab goes straight back into its room (no note on the join screen): only on a
+// real reload of this tab, and only while the guests are still waiting for it (HOST_WAIT_MS).
+const reloaded = (() => { try { return performance.getEntriesByType("navigation")[0]?.type === "reload"; } catch { return false; } })();
+const backAsHost = reloaded ? savedHost() : null;
 // a link with a room code fills it in and joins once the GPU probe is done
 const linkCode = codeFromLocation(location.pathname, location.search, location.hash);
 // a virtual device (an iframe the host added, see addVirtual): its name, pledge and a compact page
@@ -838,7 +841,9 @@ const VQ = new URLSearchParams(location.search);
 if (VQ.get("embed") === "1") document.documentElement.classList.add("embed");
 if (VQ.get("vname")) $("name-input").value = VQ.get("vname").slice(0, 20);
 if (+VQ.get("vgb") > 0) $("join-gb").value = +VQ.get("vgb");
-if (linkCode) {
+if (backAsHost && Date.now() - backAsHost.t < 60000 && !(linkCode && linkCode !== backAsHost.code)) {
+  metaPromise.then(() => { if (!peer) start(true, backAsHost); });
+} else if (linkCode) {
   $("code-input").value = linkCode; codeReady();
   joinWait(true, `Joining room ${linkCode}`);
   $("join-status").textContent = "Checking this device\u2026";
@@ -2580,12 +2585,13 @@ function hostGone() {
 
 // ---- the host's side of resuming: what it keeps, and picking the room back up after a reload ----
 function saveHost() {
-  if (ai.role !== "host" || !roomCode) return;
+  if (!isHost || !roomCode) return;   // from the moment the room exists, not only once a model runs
   try {
     localStorage.setItem(HOST_KEY, JSON.stringify({ code: roomCode, name: myName, model: ai.model || null, turns: ai.conv.turns,
       transcript: ai.transcript.slice(-20), settings: ai.settings, peers: ai.chainNames || [], split: $("ai-split").value, t: Date.now() }));
   } catch {}
 }
+addEventListener("pagehide", saveHost);   // stamp the saved room as the tab unloads, so a reload can go straight back in
 function savedHost() {
   try { const r = JSON.parse(localStorage.getItem(HOST_KEY) || localStorage.getItem(OLD_HOST_KEY) || "null"); return r && Date.now() - r.t < 15 * 60 * 1000 ? r : null; } catch { return null; }
 }
