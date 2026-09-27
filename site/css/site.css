@@ -4,7 +4,7 @@
   /* colors, type, radius and motion come from tokens.css; these are the landing's own layout values */
   --gutter:clamp(16px,4vw,48px);
   --shadow:0 1px 2px rgba(20,22,29,.04),0 12px 28px -14px rgba(20,22,29,.12),0 44px 90px -48px rgba(20,22,29,.26);
-  --body-h:clamp(300px,calc(100svh - 420px),580px);--band:112px;--pvw:460px;
+  --body-h:clamp(300px,calc(100svh - 420px),580px);--band:122px;--pvw:460px;
   color-scheme:light;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -42,10 +42,11 @@ ol,ul{list-style:none}
 .btn-star:hover{background:var(--bg-2);box-shadow:inset 0 0 0 1px var(--ink-3)}
 .btn-star .gh{flex:none;color:var(--ink)}
 .btn-star .star{flex:none;fill:#E3B341;margin-left:1px}
+.btn-star.has-n .st-l{display:none}
+.btn-star.has-n .st-n{margin-left:0;padding-left:0;border-left:0}
 .btn-star .st-n{margin-left:3px;padding-left:9px;border-left:1px solid var(--rule-3);line-height:18px;font-variant-numeric:tabular-nums}
 @media (max-width:640px){
   .btn-star{padding:0 10px;gap:5px}
-  .btn-star.has-n .st-l{display:none}
   .btn-star .st-n{margin-left:1px;padding-left:7px}
 }
 /* ---------- end Star button ---------- */
@@ -306,7 +307,7 @@ html:not(.js) .card{display:none}
 .demo[data-scene="chat"] .rows{gap:5px}
 .demo[data-scene="chat"] .row{grid-template-columns:minmax(0,230px) minmax(0,1fr)}
 .demo[data-scene="chat"] .hl{flex-wrap:nowrap;font-size:var(--t-sm)}
-.demo[data-scene="chat"] .hs{flex-basis:auto;margin-left:auto;padding-left:6px}
+.demo[data-scene="chat"] .hs{flex:none;width:12ch;margin-left:auto;padding-left:6px;justify-content:flex-start}   /* one column: "layers" starts at the same place on every row */
 .demo[data-scene="chat"] .hg{display:none}
 .demo[data-scene="chat"] .cells{height:12px;gap:2px}
 .demo[data-scene="chat"] .cells i{border-radius:2px}
@@ -395,7 +396,7 @@ html:not(.js) .card{display:none}
 /* the offer to play: an overlay on the whole game, the game dimmed behind a big play pill */
 .pv-play{position:absolute;inset:0;z-index:3;display:grid;place-items:center;padding:0;border:0;border-radius:0;background:rgba(9,12,26,.52);-webkit-backdrop-filter:blur(1.5px);backdrop-filter:blur(1.5px);cursor:pointer;
   opacity:0;visibility:hidden;transition:opacity .3s var(--ease),visibility 0s .3s}
-.pv-pill{display:inline-flex;align-items:center;gap:9px;height:48px;padding:0 22px 0 18px;border-radius:var(--r-pill);background:var(--blue);color:#fff;font:500 16px/1 var(--sans);white-space:nowrap;
+.pv-pill{display:inline-flex;align-items:center;gap:9px;height:46px;padding:0 20px 0 17px;border-radius:10px;background:var(--blue);color:#fff;font:500 16px/1 var(--sans);white-space:nowrap;
   box-shadow:0 1px 0 rgba(255,255,255,.18) inset,0 10px 26px -8px rgba(42,69,224,.85);transform:scale(.94);transition:transform .35s var(--ease),background-color .2s ease}
 .pv-play:hover .pv-pill{background:var(--blue-600)}
 .demo.served.app-on:is(.ask,.done):not(.playing) .pv-play{opacity:1;visibility:visible;transition:opacity .3s var(--ease),visibility 0s}

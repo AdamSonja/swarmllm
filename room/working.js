@@ -11,6 +11,8 @@ const MARK = '<svg class="wk-mk" width="12" height="12" viewBox="0 0 24 24" aria
   + [[3.4, 3.4, 1.8], [10.2, 3.4, 1.99], [18.5, 3.4, 2.38], [3.4, 10.2, 1.99], [10.2, 10.2, 2.38], [18.5, 10.2, 2.94], [3.4, 18.5, 2.38], [10.2, 18.5, 2.94], [18.5, 18.5, 3.9]]
     .map(([x, y, r], i) => `<circle cx="${x}" cy="${y}" r="${r}" style="--rc:${Math.round(x / 7) + Math.round(y / 7)}"${i === 8 ? ' class="lit"' : ""}/>`).join("")
   + "</svg>";
+// the mark alone at another size (the edit overlay over the preview uses it)
+export const markSVG = (size = 12) => MARK.replace('width="12" height="12"', `width="${size}" height="${size}"`);
 const reduced = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // a random order of the verbs, never the same one twice in a row
