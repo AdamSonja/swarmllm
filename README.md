@@ -4,7 +4,7 @@
     <img src="site/logo/wordmark-light.svg" height="56" alt="pooled">
   </picture></a>
 </p>
-<p align="center"><b>Pool your devices to run big open models in a browser tab, for chat and for coding agents.</b></p>
+<p align="center"><b>Peer-to-peer LLM inference in the browser. Pool your devices to run big open models, for chat and coding agents.</b></p>
 <p align="center">
   <a href="https://pooled.run">Site</a> ·
   <a href="https://pooled.run/room">Start a room</a> ·
@@ -21,7 +21,7 @@
 
 https://github.com/user-attachments/assets/4f349e4b-c699-45da-abe8-e9162689293e
 
-<p align="center"><sub>Demo, recorded September 7, 2026: Qwen 3.8 27B across a MacBook and an iPhone in browser tabs, same Wi‑Fi, 400 tokens at 10.7 tok/s. <a href="https://github.com/Nehanth/swarmllm/releases/download/v0.2.0/swarmllm-demo-2026-09-07.mp4">Download</a>.</sub></p>
+<p align="center"><sub>Demo, recorded September 7, 2026: Qwen 3.8 27B across a MacBook and an iPhone in browser tabs, same Wi‑Fi, 400 tokens at 10.7 tok/s. <a href="https://github.com/Nehanth/pooled/releases/download/v0.2.0/swarmllm-demo-2026-09-07.mp4">Download</a>.</sub></p>
 
 Pooled runs one open model across the devices in a room. Your laptop, a friend's desktop and a phone each hold some of the model's layers, and together they run a model none of them could run alone. You can chat with it, or switch to Code mode and let it build and fix a small app right in the tab. There is nothing to install and no account, and no server does any of the thinking.
 
@@ -60,7 +60,7 @@ Design: [docs/design/harness-app.md](docs/design/harness-app.md). What the agent
 ## Run it locally
 
 ```bash
-git clone https://github.com/Nehanth/swarmllm && cd swarmllm
+git clone https://github.com/Nehanth/pooled && cd swarmllm
 npx -y serve -l 8080 .        # then open http://localhost:8080/room
 ```
 
@@ -136,15 +136,6 @@ Same GB10, 2026-09-27. Each device is its own headless Chromium with real WebRTC
 
 Caveats: loopback has no bandwidth limit, loss or jitter, and only model-data frames are delayed. All devices share one GPU, so their compute never overlaps, which makes the 0 ms rows pessimistic compared with separate machines. Harness: [tests/e2e/room_latency.mjs](tests/e2e/room_latency.mjs).
 
-### Real devices (older)
-
-These predate the kernel and MoE work above. Re-measuring on real devices and real networks is on the roadmap.
-
-| Setup | Model | Decode | Prefill | Date |
-|---|---|---|---|---|
-| MacBook (Chrome, Metal), solo | 27B | 6.7 plain, 10–10.8 speculative | 14–16 tok/s | Aug 31 to Sep 1 |
-| MacBook + iPhone, same Wi‑Fi, 62 + 2 layers | 27B | 7.7 speculative | 8.5 s for the `japan` prompt | Sep 4 |
-| Cross-internet room, host + one peer | 27B | 3.5–4 speculative | | Sep 1 |
 
 ## How it compares
 
@@ -158,7 +149,6 @@ Other projects split models across machines or run models in a browser tab. Each
 | [distributed-llama](https://github.com/b4rtaz/distributed-llama) | native (CPU, experimental Vulkan) | yes, tensor parallel, power-of-2 node counts | C++ build plus Python launcher | Llama 3.2 3B Q40: 5.95 tok/s on 1 Pi 5, 13.68 tok/s on 4 Pi 5 ([#165](https://github.com/b4rtaz/distributed-llama/discussions/165)); Qwen3 30B A3B: 13.04 tok/s on 4 Pi 5 ([#255](https://github.com/b4rtaz/distributed-llama/discussions/255)) | no |
 | [Petals](https://github.com/bigscience-workshop/petals) | native Python, public or private swarm | yes, layers served by volunteers | pip package, PyTorch | up to 6 tok/s for Llama 2 70B and up to 4 tok/s for Falcon 180B ([README](https://github.com/bigscience-workshop/petals)); last commit 2024-08-25 | no |
 | [Mesh LLM](https://github.com/Mesh-LLM/mesh-llm) | native (Rust, llama.cpp) plus a web console | yes, layer splits for dense models, expert sharding for MoE, over QUIC | install script, Homebrew or distro package | none in the README | no own agent; launches outside agents against the mesh |
-| [SwarmLLM (enapt)](https://github.com/enapt/SwarmLLM) | native app with a local web UI | yes, private linked devices or a public swarm | download per OS | none published | no own agent; exposes an OpenAI and Anthropic compatible endpoint |
 | [WebLLM](https://github.com/mlc-ai/web-llm) | browser tab (WebGPU) | no, whole model in one tab | none for users; npm or CDN for developers | 41.1 tok/s Llama 3.1 8B vs 57.7 native MLC-LLM on an M3 Max ([paper](https://arxiv.org/abs/2412.15803)) | no |
 | [Transformers.js](https://github.com/huggingface/transformers.js) | browser or Node (ONNX Runtime, WASM or WebGPU) | no | none for users; npm or CDN for developers | WebGPU up to 100x faster than WASM ([v3 post](https://huggingface.co/blog/transformersjs-v3)) | no |
 
@@ -171,7 +161,6 @@ The engine underneath Pooled is our own WGSL, not WebLLM, MLC or llama.cpp. The 
 - [distributed-llama](https://github.com/b4rtaz/distributed-llama): tensor-parallel CPU and Vulkan inference across home devices, down to Raspberry Pis.
 - [Petals](https://github.com/bigscience-workshop/petals): BitTorrent-style public swarm for running and fine-tuning large models in Python.
 - [Mesh LLM](https://github.com/Mesh-LLM/mesh-llm): pools GPUs across machines behind one OpenAI-compatible API, built on llama.cpp and iroh.
-- [SwarmLLM (enapt)](https://github.com/enapt/SwarmLLM): desktop app that splits models across your linked devices or a public swarm. Its name is why we renamed to Pooled.
 - [WebLLM](https://github.com/mlc-ai/web-llm): single-tab WebGPU inference compiled with MLC and TVM.
 - [Transformers.js](https://github.com/huggingface/transformers.js): Hugging Face models in the browser via ONNX Runtime, on WASM or WebGPU.
 - [pi](https://github.com/earendil-works/pi): small, extensible terminal coding agent that works with Ollama, LM Studio, vLLM and other local servers.
@@ -194,25 +183,23 @@ What's next, by area and priority (P0 now, P1 next, P2 later): [roadmap/README.m
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md). Benchmark reports from hardware we don't have are especially welcome (there's an issue template). Contributors are listed in [AUTHORS](AUTHORS).
 
-## Formerly SwarmLLM
-
-Pooled was called SwarmLLM until September 2026. The name collided with the older [enapt/SwarmLLM](https://github.com/enapt/SwarmLLM), so we renamed ([discussion #53](https://github.com/Nehanth/swarmllm/discussions/53)); swarmllm.ai and old join links redirect to pooled.run.
-
 ## Citation
 
 ```bibtex
 @software{pooled2026,
   author = {Narendrula, Nehanth},
-  title  = {Pooled: run a big open model across your devices, in the browser},
+  title  = {Pooled: peer-to-peer LLM inference in the browser},
   note   = {Formerly SwarmLLM},
   year   = {2026},
-  url    = {https://github.com/Nehanth/swarmllm}
+  url    = {https://github.com/Nehanth/pooled}
 }
 ```
 
 ## Acknowledgements
 
 Model weights and the GGUF format come from the [Qwen](https://huggingface.co/Qwen) team and [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp), whose speculative-decoding graph for Qwen 3.5/3.8 was the reference for ours. Prior work that shaped this: [Petals](https://github.com/bigscience-workshop/petals), [exo](https://github.com/exo-explore/exo), [WebLLM](https://github.com/mlc-ai/web-llm), [LlamaWeb](https://arxiv.org/abs/2605.20706), and the Gated DeltaNet and PipeInfer papers.
+
+Pooled was called SwarmLLM until September 2026; swarmllm.ai links redirect to pooled.run.
 
 ## License
 

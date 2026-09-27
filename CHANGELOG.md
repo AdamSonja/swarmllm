@@ -5,7 +5,7 @@ All notable changes to Pooled (called SwarmLLM before September 2026). Format fo
 ## [Unreleased]
 
 ### Changed
-- **SwarmLLM is now Pooled, at [pooled.run](https://pooled.run).** The old name collided with the older enapt/SwarmLLM project (discussion #53). swarmllm.ai and www.swarmllm.ai redirect to pooled.run for good, and join links like `/r/ABCD` keep working. The repo stays at github.com/Nehanth/swarmllm for now. Browser caches are per site, so the first visit to pooled.run downloads model weights again. Rooms now use the PeerJS id prefix `pooled-room-`, so a pooled.run tab and an old swarmllm.ai tab never land in the same room.
+- **SwarmLLM is now Pooled, at [pooled.run](https://pooled.run).** swarmllm.ai and www.swarmllm.ai redirect to pooled.run for good, and join links like `/r/ABCD` keep working. The repo moved to github.com/Nehanth/pooled; the old GitHub URLs redirect. Browser caches are per site, so the first visit to pooled.run downloads model weights again. Rooms now use the PeerJS id prefix `pooled-room-`, so a pooled.run tab and an old swarmllm.ai tab never land in the same room.
 
 ### Added
 - **Merged projection GEMVs** (`fuseProj`): the projections that read the same input run as one GEMV over stacked rows; bit-identical. With the fused MoE and the one-submit speculative step, Chrome decode on the GB10 went up 16–24% plain and 26–32% speculative on the MoE (docs/bench-log.md, 2026-09-26).

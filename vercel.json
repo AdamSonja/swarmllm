@@ -6,6 +6,8 @@
     { "source": "/r/:code", "destination": "/p2p.html" }
   ],
   "redirects": [
+    { "source": "/", "has": [{ "type": "host", "value": "swarmllm.ai" }], "destination": "https://pooled.run/", "permanent": true },
+    { "source": "/", "has": [{ "type": "host", "value": "www.swarmllm.ai" }], "destination": "https://pooled.run/", "permanent": true },
     { "source": "/:path*", "has": [{ "type": "host", "value": "swarmllm.ai" }], "destination": "https://pooled.run/:path*", "permanent": true },
     { "source": "/:path*", "has": [{ "type": "host", "value": "www.swarmllm.ai" }], "destination": "https://pooled.run/:path*", "permanent": true },
     { "source": "/:path*", "has": [{ "type": "host", "value": "www.pooled.run" }], "destination": "https://pooled.run/:path*", "permanent": true },
