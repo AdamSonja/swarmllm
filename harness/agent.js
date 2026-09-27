@@ -14,12 +14,17 @@
 // Events (onEvent): step, delta (raw streamed text), text (visible text), call-live, tool-start,
 // tool, usage, compacted, trimmed, stopped, stuck, done, limit, card (a recovery note was added,
 // harness/cards.js).
-import { toolsSystemPrompt, toolResponses, ToolCallParser, parseCallBody } from "./tools.js";
+import { toolsSystemPrompt, toolResponses, ToolCallParser, parseCallBody, parseLooseJSON } from "./tools.js";
 import { pickCard, hint, PRIORITY, MAX_PER } from "./cards.js";
+import { fixArgs, fixToolName } from "./argfix.js";
 
 const STOPPED = "(stopped by the user)";
 const EMPTY = "(empty answer: call a tool or say you are done)";
 const LIVE = new Set(["preview_logs", "run_js"]);   // results that can change with time: a repeat is not a loop
+// a clean serve: the page loaded with no errors (harness/preview-tools.js)
+const CLEAN = /^serving [^\n]*\n(?:loaded in \d+ ms · no errors|still loading after 2 s · no errors)/;
+// said after a clean serve to a small (JSON-style) model, which otherwise tends to write the same files again
+export const SERVED_OK = "\nnext: the page loads with no errors. If it does what was asked, reply with one short line saying what you built (no tool call). Otherwise fix it with edit_file.";
 export const CONTEXT_FULL = "context full: start a new task (the files are kept)";
 
 // head and tail of a long tool result (errors are usually at the end, headers at the start)
@@ -45,9 +50,11 @@ export class Agent {
   // optional; reason "max" / "ctx" means the answer hit the length cap.
   // idsFor(text) / adopt(text, ids): the model's exact sampled ids, for toJSON / from; idsTag() names
   // the tokenizer they belong to, so a session saved under another model re-encodes its text.
+  // coach: short "what to do next" notes after a clean serve (default: JSON-style models, the small ones)
   constructor({ generate, tools, style = "xml", system = "", maxSteps = 24, approve = async () => true, onEvent = () => {},
-    budget = Infinity, count = null, maxResultChars = 6000, usage = null, idsFor = null, adopt = null, idsTag = null }) {
+    budget = Infinity, count = null, maxResultChars = 6000, usage = null, idsFor = null, adopt = null, idsTag = null, coach = null }) {
     this.generate = generate; this.tools = tools; this.style = style; this.maxSteps = maxSteps;
+    this.coach = coach ?? style === "json";
     this.budget = typeof budget === "function" ? budget : () => budget;
     this.count = count || ((t) => Math.ceil(t.length / 3.5));
     this.approve = approve; this.onEvent = onEvent; this.maxResultChars = maxResultChars;
@@ -65,6 +72,8 @@ export class Agent {
     this.turns.push({ role: "user", text: userText, req });
     let calls = 0, shown = "", failRun = 0, lastFail = "", empty = 0, mut = 0;
     let prevStep = new Map();   // the last step's calls: name+args -> { step, result, mut }
+    let cleanAt = -1;           // mut when a serve last loaded with no errors (-1: not since the last change)
+    const fails = new Map();    // a failed call (name+args) -> { n: times, mut } since the last change
     // never leave two user turns in a row: an untouched request is taken back, anything else gets
     // a closing assistant turn
     const close = () => {
@@ -160,8 +169,12 @@ export class Agent {
       // (<write_file><path>a</path><content>..</content></write_file>, seen from Qwen 3.6): run those
       if (!found.length) {
         const bare = bareCalls(shown, this.byName);
+        // or as a bare JSON object ({"name": "write_file", "arguments": {...}}), seen from Qwen3 1.7B
+        if (!bare.length) bare.push(...bareJsonCalls(shown, this.byName));
         if (bare.length) { for (const c of bare) c.bare = true; found.push(...bare); }
       }
+      // small-model slips: a tool's other name, arguments under other names or types
+      for (const c of found) this._fix(c);
       if (e.text) this.onEvent({ type: "text", text: e.text, step });
       this.turns.push({ role: "assistant", text: raw, req });
       if (u) this.onEvent({ type: "usage", step, prompt: u.prompt, reused: u.reused, generated: u.generated, tps: u.tps, forced: u.forced || 0 });
@@ -175,7 +188,7 @@ export class Agent {
         this.onEvent({ type: "done", step });
         return { text: shown.trim(), steps: step, calls, reason: "done" };
       }
-      const results = [], briefs = [], reps = [], cur = new Map(), seen = new Set();
+      const results = [], briefs = [], reps = [], again = [], cur = new Map(), seen = new Set(), cleanBefore = cleanAt;
       for (const c of found) {
         calls++;
         R.calls.push({ name: c.name, arguments: c.arguments });
@@ -202,15 +215,33 @@ export class Agent {
           this.onEvent({ type: "tool", call: c, result: r, step, ms: 0 });
         } else {
           r = await this._runCall(c, step, signal);
-          if (this.byName.get(c.name)?.mutates && !/^(error|declined)/.test(r)) mut++;
+          if (this.byName.get(c.name)?.mutates && !/^(error|declined|unchanged)/.test(r)) mut++;
+          if (c.name === "serve" && CLEAN.test(r)) cleanAt = mut;
         }
+        // the same failing call again with other calls in between (read_file, edit_file, read_file,
+        // the same edit_file...): not caught as a repeat of the last step, so counted here
+        let n = 0;
+        if (key && /^error/.test(r)) { const f = fails.get(key); n = f && f.mut === mut ? f.n + 1 : 1; fails.set(key, { n, mut }); }
+        again.push(n);
         reps.push(rep);
         if (key) cur.set(key, rep ? prev : { step, result: r, mut });
         results.push(r);
       }
       prevStep = cur;
       const plain = results.slice();   // the stuck check below compares results without their cards
-      this._card(R, found, results, reps, step);
+      // the page was served clean and this step changed nothing (the same calls again, a write of
+      // the same content): the task is done, so end here instead of looping to the stuck guard
+      const idle = plain.length && plain.every((r, i) => reps[i] || /^unchanged/.test(r) || (found[i].name === "serve" && CLEAN.test(r))
+        || (found[i].name === "preview_logs" && /^no new logs/.test(r)));
+      if (cleanBefore >= 0 && cleanBefore === mut && idle && !signal?.aborted) {
+        this.turns.push({ role: "user", text: toolResponses(results), req, calls: briefs });
+        const text = shown.trim() || "Done: the page is served with no errors.";
+        this.turns.push({ role: "assistant", text, req });
+        R.done = true; R.answer = text;
+        this.onEvent({ type: "done", step, idle: true });
+        return { text, steps: step, calls, reason: "done" };
+      }
+      this._card(R, found, results, reps.map((x, i) => x || again[i] >= 2), step);
       this.turns.push({ role: "user", text: toolResponses(results), req, calls: briefs });
       if (signal?.aborted) return stopped(step);
       // the same failure three steps in a row: the model (or the room) is stuck, so stop and say so
@@ -219,7 +250,9 @@ export class Agent {
       const sig = failed ? plain.map((r) => r.replace(/\d+/g, "#").slice(0, 80)).join("|") : "";
       failRun = failed && (sig === lastFail || failRun === 0) ? failRun + 1 : failed ? 1 : 0;
       lastFail = sig;
-      if (failRun >= 3) {
+      // or one failing call made a third time with nothing changed in between
+      const same = plain.length && plain.every((r, i) => again[i] >= 3);
+      if (failRun >= 3 || same) {
         finish(); close();
         this.onEvent({ type: "stuck", step, error: results[0] });
         return { text: "Stopped: the same tool call failed three times in a row.", steps: step, calls, reason: "stuck" };
@@ -255,7 +288,9 @@ export class Agent {
       }
     }
     if (c.bare && this.style === "xml") result += "\nhint: this ran, but write tool calls as <tool_call>\n<function=NAME>\n<parameter=NAME>\nvalue\n</parameter>\n</function>\n</tool_call>";
+    else if (c.bare) result += "\nhint: this ran, but write tool calls as <tool_call>\n{\"name\": \"NAME\", \"arguments\": {...}}\n</tool_call>";
     result = capResult(result, this.maxResultChars);
+    if (this.coach && c.name === "serve" && CLEAN.test(result)) result += SERVED_OK;
     this.onEvent({ type: "tool", call: c, result, step, ms: Date.now() - t0 });
     return result;
   }
@@ -268,13 +303,23 @@ export class Agent {
     for (let i = 0; i < results.length; i++) {
       const k = results[i] === STOPPED ? null : pickCard({ call: found[i], result: results[i], repeat: reps[i] });
       if (!k || (cards[k] || 0) >= (MAX_PER[k] ?? 2) || (id && PRIORITY.indexOf(k) >= PRIORITY.indexOf(id))) continue;
-      if (this.turns.some((t) => t.text.includes(hint(k)))) continue;
+      if (this.turns.some((t) => t.text.includes(hint(k, this.style)))) continue;
       best = i; id = k;
     }
     if (best < 0) return;
-    results[best] += hint(id);
+    results[best] += hint(id, this.style);
     cards[id] = (cards[id] || 0) + 1;
     this.onEvent({ type: "card", id, step });
+  }
+
+  // a call's tool name and arguments, repaired in place (harness/argfix.js)
+  _fix(c) {
+    if (c.error || c.garbage) return;
+    const name = fixToolName(c.name, (n) => this.byName.has(n));
+    const t = this.byName.get(name);
+    if (!t) return;
+    if (name !== c.name) { c.asked = c.name; c.name = name; }
+    c.arguments = fixArgs(c.arguments ?? {}, t.parameters);
   }
 
   _size() { return this.count(this.system) + this.turns.reduce((n, t) => n + this.count(t.text) + 4, 0); }
@@ -377,7 +422,11 @@ export class Agent {
 // call is anything else or has no complete line yet.
 export function salvageWrite(raw, schemaFor = () => null) {
   if (!raw) return null;
-  const c = parseCallBody(raw, schemaFor);
+  let c = parseCallBody(raw, schemaFor);
+  // a JSON call cut inside its content string: close the string where it was cut
+  if (c?.error && /^\s*\{/.test(raw)) {
+    try { const o = parseLooseJSON(raw.trim(), { open: true }); c = { name: o?.name, arguments: fixArgs(o?.arguments ?? o?.parameters ?? {}, schemaFor("write_file")) }; } catch { return null; }
+  }
   const a = c?.arguments;
   if (c?.name !== "write_file" || !a || typeof a.path !== "string" || !a.path.trim() || typeof a.content !== "string") return null;
   const cut = a.content.lastIndexOf("\n");
@@ -385,6 +434,40 @@ export function salvageWrite(raw, schemaFor = () => null) {
   const content = a.content.slice(0, cut + 1), lines = content.split("\n").length - 1;
   const last = content.slice(0, -1).split("\n").pop();
   return { name: "write_file", arguments: { path: a.path.trim(), content, append: a.append === true }, salvage: { lines, last } };
+}
+
+// Calls written as bare JSON objects outside <tool_call> (in a ```json fence or plain text):
+// {"name": "write_file", "arguments": {...}}. Only known tool names (or their usual other names)
+// with an arguments object count.
+export function bareJsonCalls(text, byName) {
+  const out = [];
+  if (!text || !byName?.size) return out;
+  const re = /\{\s*"(?:name|tool|function)"\s*:/g;
+  let m;
+  while ((m = re.exec(text))) {
+    let o;
+    try { o = parseLooseJSON(text.slice(m.index)); } catch { continue; }
+    const c = parseCallBody(JSON.stringify(o));
+    if (c.error) continue;
+    const name = fixToolName(c.name, (n) => byName.has(n));
+    if (!byName.has(name) || !c.arguments || typeof c.arguments !== "object") continue;
+    out.push({ name, arguments: c.arguments });
+    re.lastIndex = Math.max(re.lastIndex, jsonEnd(text, m.index));   // (not the objects inside this one)
+  }
+  return out;
+}
+
+// the index just past the JSON object that starts at `at` (strings respected), or the text's end
+function jsonEnd(text, at) {
+  let depth = 0, inStr = false, esc = false;
+  for (let i = at; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+    if (c === '"') inStr = true;
+    else if (c === "{" || c === "[") depth++;
+    else if ((c === "}" || c === "]") && --depth === 0) return i + 1;
+  }
+  return text.length;
 }
 
 // Calls written as bare tags named after a known tool, children named after its parameters:

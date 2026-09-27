@@ -4,6 +4,7 @@
 // so the common "write, serve, see the error" loop needs no separate preview_logs step.
 import { DEFAULT_PORT } from "./preview.js";
 import { buildPreviewDoc } from "./preview-build.js";
+import { normPath, SKIP_DIRS } from "./workspace.js";
 
 export const LOG_LINES = 40, LOG_CHARS = 3000, SERVE_LINES = 8;
 
@@ -29,6 +30,58 @@ export function fold(lines) {
   return out.map(({ e, n }) => ({ e, n, text: logLine(e) + (n > 1 ? ` ×${n}` : "") }));
 }
 
+const PAGE = /\.html?$/i, FILEISH = /\.[a-z0-9]{1,5}$/i;
+const listed = (files, n = 8) => files.slice(0, n).join(", ") + (files.length > n ? ` (+${files.length - n} more)` : "");
+// serve's arguments as small models write them, turned into what they meant (docs: harness/argfix.js):
+//   dir names a file ("index.html", "site/index.html")  -> its folder, that file as the entry
+//   entry repeats the dir ("site/index.html" with dir "site") -> the path inside the dir
+//   a dir that does not exist, the pages are elsewhere -> the folder that has them
+//   no index.html but one other page -> that page
+//   a port that cannot be one (0, 80, "abc", 99999) -> the default
+// -> { dir, entry, port, notes: [what was changed] } or { error } that says what to call instead.
+// `files`: every file in the project (ws.walk()).
+export function serveArgs({ dir = "", port, entry = "" } = {}, files = []) {
+  const notes = [];
+  const clean = (p) => { try { return normPath(String(p ?? "").trim()); } catch { return ""; } };
+  files = files.filter((f) => !f.split("/").some((s) => s.startsWith(".") || SKIP_DIRS.has(s)));
+  const isFile = (p) => files.includes(p), isDir = (p) => !p || files.some((f) => f.startsWith(p + "/"));
+  let d = clean(dir), e = clean(entry);
+  let p = port == null || port === "" ? DEFAULT_PORT : Number(port);
+  if (!Number.isInteger(p) || p < 1024 || p > 65535) { notes.push(`port ${port} is not usable, so :${DEFAULT_PORT}`); p = DEFAULT_PORT; }
+  // dir is a file
+  if (d && (isFile(d) || (!isDir(d) && FILEISH.test(d)))) {
+    const i = d.lastIndexOf("/"), f = d.slice(i + 1), folder = i < 0 ? "" : d.slice(0, i);
+    if (!e || e === "index.html" || e === f || e === d) { e = f; notes.push(`dir ${d} is a file, so its folder with entry ${f}`); }
+    else notes.push(`dir ${d} is a file, so its folder`);
+    d = folder;
+  }
+  // the entry written with the dir in front of it
+  if (d && e && e.startsWith(d + "/") && !isFile(d + "/" + e)) e = e.slice(d.length + 1);
+  const pages = files.filter((f) => PAGE.test(f));
+  if (!pages.length) {
+    return { error: files.length ? `error: there is no HTML page to serve yet (the project has: ${listed(files)}). Write index.html with write_file first, then call serve with {}`
+      : "error: the project is empty. Write index.html with write_file first, then call serve with {}" };
+  }
+  // a folder that does not exist: serve where the pages are
+  if (d && !isDir(d)) {
+    const home = e && isFile(e) ? "" : pages.find((f) => f.endsWith("/index.html") || f === "index.html") ?? pages[0];
+    const folder = home === "" ? "" : home.includes("/") ? home.slice(0, home.lastIndexOf("/")) : "";
+    notes.push(`there is no folder ${d}, so ${folder || "the project root"}`);
+    d = folder;
+  }
+  const under = d ? pages.filter((f) => f.startsWith(d + "/")).map((f) => f.slice(d.length + 1)) : pages;
+  if (!e) e = "index.html";
+  if (!isFile(d ? d + "/" + e : e)) {
+    const pick = under.find((f) => f === "index.html") ?? under.find((f) => f.endsWith("/index.html")) ?? (under.length === 1 ? under[0] : null);
+    if (!pick) {
+      return { error: `error: no ${e} in ${d || "the project root"}; the pages there are: ${listed(under.length ? under : pages)}. Call serve with {"entry": "${(under[0] ?? pages[0])}"}${d ? ` and {"dir": "${d}"}` : ""}` };
+    }
+    if (e !== "index.html" || pick !== "index.html") notes.push(`no ${e}, so entry ${pick}`);
+    e = pick;
+  }
+  return { dir: d, entry: e, port: p, notes };
+}
+
 export function previewTools(server) {
   const portOf = (p) => (p == null || p === "" ? DEFAULT_PORT : Number(p));
   const nothing = (port) => {
@@ -40,13 +93,18 @@ export function previewTools(server) {
       name: "serve", mutates: false,
       description: "Serve a folder on a preview port; returns the page's first errors.",
       parameters: { type: "object", properties: { dir: { type: "string" }, port: { type: "integer", description: `default ${DEFAULT_PORT}` }, entry: { type: "string", description: "default index.html" } } },
-      async run({ dir = "", port, entry = "index.html" } = {}) {
-        port = portOf(port);
+      async run(args = {}) {
+        // (a server without a workspace, e.g. a test's: the arguments as given)
+        const a = server.ws?.walk ? serveArgs(args, await server.ws.walk())
+          : { dir: args.dir || "", entry: args.entry || "index.html", port: portOf(args.port), notes: [] };
+        if (a.error) return a.error;
+        const { dir, entry } = a, port = a.port;
         const since = server.cursor(port);
         const snap = await server.serve({ dir, port, entry });
         const { missing } = buildPreviewDoc(snap, {});
         const head = `serving ${snap.dir || "."} on :${port} (${snap.entry}, ${plural(snap.files.size, "file")}, ${kb(snap.bytes)})`;
-        const miss = missing.length ? `\nmissing: ${missing.slice(0, 10).join(", ")}${missing.length > 10 ? ` (+${missing.length - 10} more)` : ""}` : "";
+        const fixed = a.notes.length ? `\n(${a.notes.join("; ")})` : "";
+        const miss = fixed + (missing.length ? `\nmissing: ${missing.slice(0, 10).join(", ")}${missing.length > 10 ? ` (+${missing.length - 10} more)` : ""}` : "");
         const idle = await server.whenIdle(port, 2000);
         if (!idle && !server.hasFrame(port)) return `${head} · no preview open, logs appear when it is${miss}`;
         const lines = server.logs(port, since).lines.filter((e) => e.rev === snap.rev);

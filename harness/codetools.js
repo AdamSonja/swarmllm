@@ -50,11 +50,20 @@ function closest(F, O) {
   return `; lines ${from + 1}-${to} are closest:\n` + F.slice(from, to).map((l, i) => `${from + i + 1}|${cut(l, 200)}`).join("\n");
 }
 
+// read_file's "12|" line prefixes, which are not part of the file
+const NUMBERED = /^[ \t]*\d+\|/;
+export const unnumber = (t) => t.split("\n").map((l) => l.replace(NUMBERED, "")).join("\n");
+
 // edit_file's search/replace; also used by its preview so the card shows exactly what run does.
 // An exact match first; else whole lines equal after fuzz(), else after trim() (the new text then
 // takes the file's indentation); else an error naming the closest lines.
 function applyEdit(text, path, o, n) {
   if (!o) return { error: "error: old is empty; use write_file to create or replace a whole file" };
+  // old copied from read_file with its "12|" line numbers (Qwen3 1.7B): match without them
+  if (!text.includes(o) && NUMBERED.test(o) && o.split("\n").every((l) => !l.trim() || NUMBERED.test(l))) {
+    const r = applyEdit(text, path, unnumber(o), unnumber(n));
+    return r.error ? r : { ...r, how: [r.how, "the line numbers"].filter(Boolean).join(" and ") };
+  }
   if (o === n) return { error: "error: old and new are the same" };
   const k = text.split(o).length - 1;
   if (k > 1) return { error: `error: old appears ${k} times in ${path}; include more surrounding lines so it is unique` };
@@ -83,7 +92,7 @@ function applyEdit(text, path, o, n) {
 // a path the approval card shows exactly as it is written (normalised, not too long to read)
 function cleanPath(p) {
   const n = normPath(p);
-  if (!n) throw new Error("path is empty");
+  if (!n) throw new Error("path is empty (pass the file's path, e.g. index.html)");
   if (n.length > MAX_PATH) throw new Error(`path is ${n.length} characters (max ${MAX_PATH})`);
   return n;
 }
@@ -135,6 +144,21 @@ export function kept(old, text) {
   return k >= 0.8 * O.length ? ` · ${k} of ${O.length} old lines unchanged` : "";
 }
 
+// the new text is a fragment of the HTML page it would replace: the page has <html>/<!doctype>
+// and a <body>, the new text has no <html>/<!doctype> (a bare "<body>...</body>" counts) and is shorter
+export function fragmentOf(old, text) {
+  if (old == null) return false;
+  const page = (t) => /<!doctype html|<html[\s>]/i.test(t) && /<body[\s>]/i.test(t);
+  return page(old) && !/<!doctype html|<html[\s>]/i.test(text) && text.length < old.length && lineCount(old) >= 5;
+}
+
+// the new text starts with the file's own first two lines (non-trivial): a whole-file rewrite
+export function sameStart(old, text) {
+  const a = asLines(old), b = asLines(text);
+  if (a.length < 2 || b.length < 2) return false;
+  return a[0].trim().length >= 6 && a[0] === b[0] && a[1] === b[1];
+}
+
 // edit_file takes old/new or old_string/new_string (the XML parser already trims one newline
 // at each end of a parameter)
 const oldOf = (a) => a.old ?? a.old_string ?? "", newOf = (a) => a.new ?? a.new_string ?? "";
@@ -152,6 +176,12 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
     return " · " + out.join(" · ");
   };
   const readOr = async (p) => ((await ws.exists(p)) ? ws.read(p) : null);
+  // "the project has: a, b" / "the project is empty", for errors about a missing file
+  const have = async () => {
+    let fs = [];
+    try { fs = await ws.walk(50); } catch { /* none */ }
+    return fs.length ? `the project has: ${fs.slice(0, 8).join(", ")}${fs.length > 8 ? ` (+${fs.length - 8} more)` : ""}` : "the project is empty";
+  };
   // normalised, and allowed by the workspace (a folder on disk refuses hidden and secret files)
   const clean = (p) => { const n = cleanPath(p); ws.check?.(n); return n; };
   return [
@@ -160,7 +190,14 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
       description: "List a folder (default: project root).",
       parameters: { type: "object", properties: { path: { type: "string" } } },
       async run({ path = "" } = {}) {
-        const es = await ws.list(path);
+        let es;
+        try { es = await ws.list(path); }
+        catch (e) {
+          // a file named as a folder (small models list "index.html" to see if it exists)
+          if (path && (await ws.exists(path).catch(() => false))) return `${normPath(path)} is a file, not a folder; read_file shows its lines`;
+          if (/no such/i.test(e?.message || "")) return `error: there is no folder ${path} (${await have()})`;
+          throw e;
+        }
         if (!es.length) return "(empty)";
         const out = es.slice(0, MAX_ENTRIES).map((e) => e.name + (e.dir ? "/" : ""));
         if (es.length > MAX_ENTRIES) out.push(`(+${es.length - MAX_ENTRIES} more)`);
@@ -176,7 +213,7 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
         try { u8 = await ws.readBytes(path); }
         catch (e) {
           // the browser's own "A requested file or directory could not be found..." says nothing useful to the model
-          if (e?.name === "NotFoundError" || /could not be found|not found|no such file/i.test(e?.message || "")) return `error: ${path} does not exist yet; list_dir shows what does`;
+          if (e?.name === "NotFoundError" || /could not be found|not found|no such file/i.test(e?.message || "")) return `error: ${path} does not exist yet (${await have()}); create it with write_file`;
           throw e;
         }
         const text = new TextDecoder().decode(u8);
@@ -252,16 +289,28 @@ export function codingTools(ws, { server = null, searchMs = SEARCH_MS } = {}) {
         try { path = clean(path); } catch (e) { return { path: String(path ?? "").slice(0, MAX_PATH), before: null, after: "", error: `error: ${e.message}` }; }
         let before;
         try { before = await readOr(path); } catch (e) { return { path, before: null, after: "", error: `error: ${e.message}` }; }
-        return { path, before, after: append && before != null ? before + content : content };
+        return { path, before, after: append && before != null && !sameStart(before, String(content)) ? before + content : content };
       },
-      async run({ path, content = "", append = false }) {
+      async run({ path, content, append = false }) {
+        if (path == null || !String(path).trim()) return 'error: write_file needs a path, e.g. {"path": "index.html", "content": "..."}; nothing was written';
         path = clean(path);
+        // a call with no content would empty the file (a small model's content under a name it made up)
+        if (content == null) return `error: write_file needs content (the whole text of ${path}); nothing was written`;
         const old = await readOr(path).catch(() => null);
+        // an "append" that starts like the file itself is the whole file again (a small model
+        // rewriting after an error): replace, don't double the file
+        const whole = append && old != null && sameStart(old, String(content));
+        if (whole) append = false;
         const before = append ? old : null;
         const text = before != null ? before + content : String(content);
+        // the same file again (a small model after a failed step): say so, so it moves on
+        // a whole HTML page replaced by a piece of one (a small model "adding" a button with
+        // write_file): refuse, the page would lose everything else
+        if (!append && fragmentOf(old, text)) return `error: not written: ${path} is a whole page (${lineCount(old)} lines) and this content is only a piece of one (no <!doctype> or <html>). To add or change part of the page use edit_file; to replace it, write the whole page`;
+        if (!append && old === text) return `unchanged: ${path} already has exactly this content. Do not write it again: serve it, or fix what is wrong with edit_file, or finish`;
         await ws.write(path, text);
         const size = `${lineCount(text)} lines, ${kb(new TextEncoder().encode(text).length)}`;
-        return (before != null ? `appended to ${path} (now ${size})` : `wrote ${path} (${size})${append ? "" : kept(old, text)}`) + await reloadNote(path);
+        return (before != null ? `appended to ${path} (now ${size})` : `wrote ${path} (${size})${whole ? "; it started like the file itself, so it replaced the file instead of being appended" : kept(old, text)}`) + await reloadNote(path);
       },
     },
   ];
