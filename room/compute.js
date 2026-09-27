@@ -101,9 +101,20 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     kick();
   }
 
-  function renderStats() {   // the screen shows no counters now; keep the pass window for the quiet state
+  function renderStats() {
     const now = performance.now();
     while (stamps.length && now - stamps[0][0] > 4000) stamps.shift();
+    if (!$("cs-live")) return;
+    $("cs-tok").textContent = fmt(tokens);
+    $("cs-rate").textContent = stamps.length > 1 ? (stamps.reduce((t, x) => t + x[1], 0) / Math.max(1, (now - stamps[0][0]) / 1000)).toFixed(1) : "0";
+    $("cs-ms").textContent = lastMs != null ? Math.round(lastMs) + " ms" : "-";
+  }
+  // a pass hopped over to this device: its dot flashes
+  function hop() {
+    const d = root.querySelector(".cs-hop");
+    if (!d || REDUCED()) return;
+    d.animate([{ opacity: 1, transform: "scale(1.6)", boxShadow: "0 0 10px var(--me)" }, { opacity: .35, transform: "scale(1)", boxShadow: "0 0 0 transparent" }], { duration: 420, easing: "cubic-bezier(.2,.7,.2,1)" });
+    d.parentNode.animate([{ color: "#EEF0F6" }, { color: "var(--on-game-2)" }], { duration: 420, easing: "ease-out" });
   }
   function refresh() {
     if (!open) return;
@@ -126,6 +137,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
     root.toggleAttribute("data-quiet", quiet);
     if (quiet) title = "Ready";
     $("cs-title").textContent = title; $("cs-sub").textContent = sub;
+    if ($("cs-live")) { $("cs-live").hidden = !(s.phase === "serving" && has); renderStats(); }
     // this device's slice of the model
     const strip = $("cs-strip"), total = s.total || 0;
     const n = total ? Math.min(total, 64) : 0, per = total ? total / n : 1;
@@ -183,6 +195,7 @@ export function computeScreen({ state, keepAwake = () => {} }) {
       if (!open || document.hidden) return;
       if (root.hasAttribute("data-quiet")) refresh();
       if (now - statAt > 250) { statAt = now; renderStats(); }
+      hop();
       if (REDUCED()) return;
       // at most one packet per 140 ms; faster passes ride along with the next one
       if (now - lastSpawn >= 140) { lastSpawn = now; owed = 0; spawn(now); }
