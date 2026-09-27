@@ -5,12 +5,12 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { parseGGUFHeader, dequantF32, ggmlLayerNames, GGML_EMBED, GGML_FINAL_NORM, GGML_OUTPUT } from "../engine/gguf.js";
+import { parseGGUFHeader, dequantF32, ggmlLayerNames, GGML_EMBED, GGML_FINAL_NORM, GGML_OUTPUT } from "../../engine/gguf.js";
 
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.QWEN_DIR || "qwen");
 
 // ---- tokenizer: reuse ref.js's BPE via a tiny re-implementation import ----
-import { makeTokenizer } from "../engine/engine.js";
+import { makeTokenizer } from "../../engine/engine.js";
 
 function rmsnorm(x, w, eps, out = new Float32Array(x.length)) {
   let ss = 0;
