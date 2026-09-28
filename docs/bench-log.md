@@ -588,6 +588,135 @@ All four answers start with the same text (greedy). At 26 tok/s plain, one lap (
 → back) is about 38 ms, including a ~6-7 ms WebRTC round trip. The GB10-only 2-device emulation at 0 ms (above)
 gave 27.9 / 32.7.
 
+## 2026-09-28: wide fused MoE expert kernels on Apple, faster moe_route (branch perf/metal-moe-fused-expert-kernels-apple)
+
+The profile of 2026-09-27 found the fused expert kernels barrier bound on the M5 Max: moe_gus (256 threads, 4 rows,
+one 32-weight block quarter per thread at dIn 2048, 8-level tree over 8 arrays) and moe_dnc (64 threads, one block per
+thread at dIn 512, 6-level tree over 9 arrays) ran at ~280 / ~230 GB/s, moe_route took 16.6 µs a layer.
+
+Changes:
+- `moeFusedLayout` engine option (engine/wgsl/moe.js `gusKernelWide` / `dncKernelWide`): groups of TPR threads per R
+  rows, each thread owns whole blocks (16 B vec4<u32> loads), a log2(TPR) tree per group. Default: `wide` when the
+  adapter vendor is Apple (Chrome / Safari), `legacy` elsewhere (the GB10's bits are unchanged). MOEF_WIDE =
+  gate/up 128 threads / 16 per row / 1 row, down 64 / 8 / 1 (picked by the sweep below). The MoE bits on Apple change
+  (another summation order); batched == one-token still holds (spec == plain).
+- moe_route: the top-K rank loop reads the probabilities 4 per load from a vec4 copy and stops once a thread's rank
+  reaches K. Same ids and weights bit for bit (tests/e2e/moe_fused_cpu.mjs: moe_route == moe_router); on every GPU.
+
+Kernel A/B (`tests/bench/moe_fused_sweep.js`, new: synthetic 35B-A3B shapes, 40 launches per timed pass, variants
+interleaved round by round; `REF=<origin/main engine/wgsl/moe.js>` adds main's kernels as "ref"). The Mac was heavily
+loaded during these runs by other processes (absolute µs are 2-4x the quiet-machine profile), so only the ratios mean
+anything. Median µs per launch, M5 Max, Deno / Metal:
+
+| kernel | main (ref) | this branch, legacy layout | this branch, wide |
+|---|---|---|---|
+| moe_gus | 194.9 | 194.3 | 95.7 (0.49x) |
+| moe_dnc | 124.5 | 123.9 | 68.9 (0.55x) |
+| moe_route | 98.8 | 52.8 (0.53x) | 52.4 |
+
+Layout sweep (2 runs, same tool): gate/up TPR 16 or 32 at R 1 best (TPR 8 / R 2 and 256-thread R 4 slower); down TPR 8
+or 16 best, TPR 1 / 2 and R 2 much slower. GB10 (Vulkan), same tool: moe_route 26.7 -> 16.5 µs; wide moe_gus 57.3 -> 51.7
+but wide moe_dnc 36.8 -> 45.3 µs, hence legacy stays the default there (Chrome decode with the wide layout forced:
+plain 49.2-49.6 vs 50.0-50.6, spec +3-4%).
+
+Chrome 154 decode on the Mac (`chrome_bench.mjs <moe> 40`, base = origin/main, runs interleaved, all golden,
+spec == plain, 0 GPU errors), plain / spec tok/s, two-sum then hash-map:
+
+| run | main | this branch |
+|---|---|---|
+| 1 | 75.8 / 93.0, 38.6 / 13.0 | 73.3 / 96.1, 39.1 / 15.2 |
+| 2 | 67.8 / 75.1, 23.2 / 10.3 | 73.7 / 97.7, 40.6 / 17.7 |
+| 3 | 68.2 / 75.1, 22.9 / 9.1 | 70.7 / 88.9, 31.7 / 10.2 |
+
+These are far below the quiet-machine numbers (85.9 / 135.5) and swing 2x between runs, so they only say "not
+slower": this branch is ahead in 11 of 12 pairs. Scaling the kernel ratios onto the quiet profile (moe_gus 1.60, moe_dnc
+0.98, moe_route 0.55 ms per token) gives about 1.5 ms of 11.7 ms, i.e. roughly +13% plain decode; to be re-measured on
+an idle Mac.
+
+GB10 Chrome decode (default = legacy layout, only moe_route changed), 2 runs each: main plain 50.0 / 50.5, 49.0 / 50.2,
+spec 79.9 / 72.7, 80.8 / 72.8; branch plain 50.5 / 50.1, 50.4 / 50.6, spec 81.2 / 72.3, 80.9 / 72.3 (noise).
+
+Gates: test_moe.js 3/3 llama.cpp + spec == plain on the Mac (MOE_FUSED_LAYOUT=wide, and the default) and on the GB10
+(default, and MOE_FUSED_LAYOUT=wide); test_q38_bits.js ATTN_PREFILL_TILE=0 unchanged (GB10 85b12667 / eba0b8d5, Mac
+b72e4d1f / ac403b4e); unit tests (tests/unit/moe_fused_wide_test.js new); tests/e2e/moe_fused_cpu.mjs (WGSL
+interpreter, race detection) passes for the legacy and two wide layouts (its fused == unfused check now uses the legacy
+unfused layout; it had failed since MOE_DEFAULT became the unfused default).
+
+## 2026-09-28: Metal optimizations (overnight), branch perf/metal
+
+This branch combines the two Metal branches that were kept:
+- **perf/metal-wide-prefill-256-apple** (42136dd). `_prefillWide` submits a command buffer every `WIDE_SUBMIT_LAYERS = 8` layers instead of one per whole-model chunk. This fixes ubatch 256 on Apple Metal under Deno, and the arithmetic is unchanged.
+- **perf/metal-moe-fused-expert-kernels-apple** (b46c1cd). Adds the `moeFusedLayout` wide fused expert kernels, the default on Apple adapters in Chrome and Safari, and the faster `moe_route`, which gives the same bits on every GPU.
+
+Both cherry-picked cleanly onto main c6ca8cc, and the sections above give the details of each.
+
+Commands:
+- Deno: `D = deno run --unstable-webgpu --allow-read --allow-env --allow-write=$HOME/.cache/swarmllm-weights --allow-net`, run from `tests/`.
+- Chrome: `node tests/bench/chrome_bench.mjs <model> 40 [extra]`.
+- Base (origin/main) and branch ran alternately in the same session: base, branch, base, branch.
+- bench_ctx builds its prompt from repo source that this branch edits (engine/qwen35.js, engine/wgsl/moe.js). The GB10 A/B therefore sets `CTX_SRC=<base checkout>`, so base and branch prefill the same tokens.
+
+### GB10 (NVIDIA, Vulkan): no regression, MoE prefill +5%
+
+| | main c6ca8cc | perf/metal |
+|---|---|---|
+| bench_ctx MoE defaults, prefill 512 / 4k / 16k (2 runs) | 259.0 / 360.5 / 297.7, 293.8 / 362.4 / 298.2 | 288.7 / 381.2 / 311.3, 303.9 / 382.7 / 311.1 |
+| bench_ctx MoE defaults, plain decode 512 / 4k / 16k | 26.53 / 26.60 / 23.53, 26.68 / 26.39 / 23.54 | 27.32 / 26.79 / 23.87, 26.85 / 26.44 / 23.94 |
+| bench_ctx MoE defaults, spec decode 512 / 4k / 16k | 33.43 / 31.37 / 34.04, 33.55 / 31.54 / 33.73 | 33.55 / 31.52 / 34.11, 33.65 / 31.88 / 33.94 |
+| bench_ctx 27B `CTX=16640`, prefill / plain / spec at 4k | 75.7 / 9.05 / 13.25 | 75.6 / 9.11 / 13.27 |
+| Chrome MoE decode, plain two-sum / hash-map (2 runs) | 49.97 / 50.69, 50.99 / 50.26 | 49.04 / 50.01, 50.23 / 49.59 |
+| Chrome MoE decode, spec two-sum / hash-map | 79.61 / 72.39, 81.83 / 71.94 | 80.68 / 71.58, 81.66 / 71.44 |
+| Chrome MoE `prefilllen=2048&prefillall=1`, all-on tok/s (relDiff) | 251.8 (2.14e-3), 249.3 (2.38e-3) | 258.2 (2.14e-3), 258.6 (2.14e-3) |
+
+Reading the table:
+- MoE prefill (bench_ctx, same tokens) is 5-6% faster at 4k and 4-5% faster at 16k, consistently across both run pairs. This is outside the noise. The likely cause is the per-8-layer submit: the GPU starts on the first layers while the rest are still being encoded.
+- Chrome prefill at 2048 tokens is +3% (2 runs each).
+- Decode is unchanged (<2%, noise). The GB10 keeps the legacy fused layout, so only `moe_route` changed for it.
+- 27B is unchanged: wide prefill is opt-in for dense models, so bench_ctx does not use it.
+- In every run, spec == plain, the Chrome output matches the golden text and there are 0 GPU errors.
+
+### M5 Max (Metal): Chrome MoE decode +5.6% plain, +11% spec; the Deno MoE defaults run
+
+The Chrome runs come from a quiet period of the Mac: main's numbers match the earlier quiet-machine baseline (85.9 / 135.5). They used Chrome 154 through `chrome_bench.mjs` with the macOS flag fix from PR #205, copied into both checkouts. Every run gave golden text, spec == plain and 0 GPU errors.
+
+| Chrome 154, `chrome_bench.mjs <moe> 40` | main c6ca8cc | perf/metal |
+|---|---|---|
+| plain two-sum / hash-map, 5 interleaved runs | 85.32 / 86.26, 86.44 / 86.17, 86.32 / 86.25, 86.40 / 86.26, 86.11 / 85.26 | 90.80 / 91.25, 89.70 / 90.51, 91.23 / 91.31, 91.06 / 91.40, 90.97 / 91.14 |
+| plain, mean | 86.1 | **90.9 (+5.6%)** |
+| spec two-sum / hash-map | 137.81 / 122.61, 137.37 / 122.68, 137.76 / 122.90, 135.61 / 122.72, 136.13 / 122.24 | 152.22 / 135.72, 152.40 / 136.08, 152.46 / 136.39, 151.93 / 136.21, 150.58 / 136.03 |
+| spec, mean | 136.9 / 122.6 | **151.9 / 136.1 (+11%)** |
+| `prefilllen=2048&prefillall=1`, all off / all on tok/s (2 runs) | 173.9 / 242.5, 172.4 / 243.9 | 196.8 / 262.5, 195.0 / 261.1 (+13% / +8%) |
+| same, relDiff (argmax) | 0.292, 0.227 (520 = 520) | 0.382, 0.173 (520 = 520) |
+| 27B `prefilllen=2048&ubatch=256` (1 run): off / wide tok/s, relDiff | 63.9 / 109.8, 0.0316 | 63.7 / 112.5, 0.0172 |
+| 27B decode plain / spec | 21.64 / 45.51 | 21.77 / 45.13 |
+
+- The decode gain comes from the wide fused layout: this is the "+13% estimated" from the per-branch kernel A/B, now measured at +5.6% plain. Spec gains more, probably because its verify step runs the same fused kernels once per column.
+- The Chrome prefill relDiff (0.17-0.38 on the MoE with all options on, 0.02-0.03 on the 27B) is the open Chrome-on-Metal nondeterminism noted on the wide-prefill branch. It is present on main and not changed by this branch; argmax is equal in every run.
+- The 27B is unchanged, as expected: it has no MoE layers, and in Chrome, one command buffer per chunk was not failing.
+
+Deno (wgpu/Metal), `MODEL=moe FILLS=512,4096,16384 $D bench_ctx.js` (engine defaults). This ran earlier, while the Mac was loaded: NVIDIA Sync used 240-290% CPU and plain decode on identical code swung from 6 to 32 tok/s. So only the pass/fail column means anything:
+
+| run | main c6ca8cc | perf/metal |
+|---|---|---|
+| 1 | **fails**: `OperationError: validation error occurred` at `forwardToken` `mapAsync` after the first prefill | runs, spec == plain on every row, 0 GPU errors |
+| 2 | **fails** (same error) | runs, spec == plain on every row, 0 GPU errors |
+
+`PREFILL_UBATCH=0` and the 27B (`CTX=16640`) ran on both base and branch, with spec == plain on every row including the 27B at 16384 (22/36). The speed spread from the load makes those numbers meaningless, so they are not listed.
+
+### Gates
+
+| Gate | GB10 | M5 Max |
+|---|---|---|
+| `test_moe.js` (default) | MATCH llama.cpp 3/3, spec == plain on 3/3 (layout legacy) | MATCH 3/3, spec == plain on 3/3 (Deno: layout legacy, new moe_route) |
+| `MOE_FUSED_LAYOUT=wide test_moe.js` | MATCH 3/3, spec == plain on 3/3 | MATCH 3/3, spec == plain on 3/3 |
+| `ATTN_PREFILL_TILE=0 test_q38_bits.js` | BITS plain 85b12667 hidden eba0b8d5 (unchanged) | BITS plain b72e4d1f hidden ac403b4e (unchanged); spec == plain; GPU sampling == logits path |
+| `MODEL=27b PREFILL_UBATCH=256 LENS=150,700,2100 test_prefill_wide.js` | PASS, max relDiff 7.26e-5 | **PASS**, max relDiff 6.50e-5, 0 GPU errors (main: validation error at 700) |
+| `MODEL=moe [PREFILL_UBATCH=256] LENS=150,700,2100 test_prefill_wide.js` | PASS, max relDiff 1.23e-3 | 150 tokens pass (3.64e-5); **700: `validation error occurred` at `forwardToken` `mapAsync`** (see below) |
+| unit tests, `node --check`, generator_smoke | 248 passed / 0 failed, pass, pass | (not run on the Mac) |
+| tests/e2e/moe_fused_cpu.mjs (WGSL interpreter) | MOE FUSED CPU PASS (legacy + two wide layouts, no races) | |
+
+**Open: MoE test_prefill_wide at 700 tokens on the Mac.** It hit the known Deno-only `mapAsync` validation error once. That is the same error bench_ctx hits on main, and on this branch bench_ctx with the same wide + grouped prefill defaults ran 2 of 2 times. The wide-prefill branch passed this case when it was measured on its own. An A/B job (this branch vs 42136dd alone, alternated 2x) was set up twice but never ran: the first time the SSH connection dropped, the second time the shared Mac GPU lock stayed taken by other jobs for over an hour. Whether this is intermittent or caused by the combination is not settled. Output never silently changes: when the error happens, the run throws.
+
 ## 2026-09-28: M5 Max profile at main c6ca8cc (Chrome 154 / Deno 2.9.7, Metal)
 
 Same Mac Studio as above. Chrome runs: `CHROME_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`.
