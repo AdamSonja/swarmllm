@@ -9,6 +9,12 @@ All notable changes to Pooled (called SwarmLLM before September 2026). Format fo
 The first stable release: peer-to-peer inference in the browser at [pooled.run](https://pooled.run).
 
 ### Added
+- **Anyone in a room can drive Code** (not only the host): requests queue with the asker's name, the asker or the host approves or stops, and the model's heavy role goes to the strongest device (WebGPU, a computer before a phone, then memory).
+- **Code on phones** as Agent / Preview / Files tabs, with the prompt above the keyboard and approvals that can't be missed; other devices' previews run by themselves.
+- **The landing demo matches the room** (download card with each device's layers, the chat band's token sweep, Code cards and the Editing overlay) and starts at Chat.
+- **Device colours** are the same on every screen (the host's order) and don't repeat: 16 swatches, then generated shades; each download row and the device screen show the layers being downloaded.
+- **The device screen** says Serving / Working with the device's layers, a hop dot per pass, tok/s and ms per hop.
+- First Apple GPU results (M5 Max, Metal) and the first two-machine room over Tailscale in docs/bench-log.md.
 - **Sampling on the GPU** (`gpuSample`, on by default; `?gpusample=0` / `GPU_SAMPLE=0` for the logits path): the head's argmax or top-k runs in the same submit (`topk_a` / `topk_b`), so 16 bytes come back per greedy token instead of the 1 MB logits vector, and the draft chain's argmax is a two-stage multi-workgroup kernel. Chrome on the GB10, 35B MoE: plain 48 -> 50.5 tok/s (+5%), speculative 72 -> 80 (two-sum) and 65 -> 71.5 (hash map), +10-12%; 27B +1% plain, +3-4% speculative. In a room (MoE, `japan` prompt): one device +7% plain / +9% speculative, two devices +6% speculative. Same tokens as before (sampling never changes the logits; the 27B bit fingerprint is unchanged), MoE matches llama.cpp, split rooms equal one device. A masked sampler (Code mode's tool-name constraint) still gets full logits.
 - **MoE prompt processing 2-3x faster by default**: tiled prefill attention, the wide prefill GEMM and expert-grouped MoE FFN are on for Qwen 3.6 35B (Chrome, 2048 tokens: 168 -> 402 tok/s). Checked: a split room equals one device, spec equals plain, phone-class limits fall back cleanly; MoE prefill logits tolerance is 2e-2 (the batched path's own baseline).
 - **Qwen3 1.7B kernels** (bit-exact): parallel attention softmax, fused residuals and norms, one QKV GEMV, encode-ahead. Chrome: prompt processing at 4K 22 -> 177 tok/s, decode at 4K context 10.4 -> 32.9 tok/s, short chats ~52 -> ~61 tok/s.
@@ -77,6 +83,10 @@ The first stable release: peer-to-peer inference in the browser at [pooled.run](
 - **SwarmLLM is now Pooled, at [pooled.run](https://pooled.run).** swarmllm.ai and www.swarmllm.ai redirect to pooled.run for good, and join links like `/r/ABCD` keep working. The repo moved to github.com/Nehanth/pooled; the old GitHub URLs redirect. Browser caches are per site, so the first visit to pooled.run downloads model weights again. Rooms now use the PeerJS id prefix `pooled-room-`, so a pooled.run tab and an old swarmllm.ai tab never land in the same room.
 
 ### Fixed
+- **The 35B MoE on Apple GPUs:** the expert-grouped prefill kernel wrote single components of shared vec4s, which Metal can lose; it gave wrong output when a Mac hosted the MoE. Now a scalar array, same arithmetic order.
+- **Rooms could not start a model:** the load-time kernel check read a merged q/k/v view as a buffer.
+- **Code in a tab opened before a deploy** failed to link a newer module; it now falls back or asks to reload.
+- Peer names can't inject markup; a reloaded host goes straight back into its room.
 - **Rooms could not start a model**: the load-time kernel check read the dense engine's merged q/k/v view as a buffer, so every device failed "GPU kernel FAILED" (PR #91; `tests/test_selftest.js` now runs first in `tests/run.sh quick`).
 - **Split rooms**: a speculative rollback pending when the room reset was dropped, so workers saved checkpoints with rejected drafts in their state and a resumed turn went wrong (`tests/test_moe_split.js`).
 - Peer names can no longer inject markup (quotes escaped, names cleaned on join).
