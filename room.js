@@ -187,6 +187,15 @@ function metaOf(name) {
   for (const m of members.values()) if (m.name === name) return m.meta || {};
   return null;
 }
+// the room's one order (the host first, then join order: the same slots the colours use), so every screen lists
+// the devices the same way instead of "me first"
+const bySlot = (a, b) => (devSlots.has(a) ? devSlots.get(a) : 1e6) - (devSlots.has(b) ? devSlots.get(b) : 1e6);
+function orderCards() {
+  const box = $("peers"); if (!box) return;
+  const cards = [...box.querySelectorAll(":scope > .peer-card")];
+  const sorted = [...cards].sort((x, y) => bySlot(x.dataset.name, y.dataset.name));
+  if (sorted.some((c, i) => c !== cards[i])) for (const c of sorted) box.appendChild(c);
+}
 function devColor(name) {
   if (name == null) return "var(--faint)";
   const meta = metaOf(name);
@@ -224,6 +233,7 @@ function peerCard(id, name, meta, self) {
     </div>`;
   paintCard(card, name, meta, self);
   $("peers").appendChild(card);
+  if (devSlots.size) orderCards();
   card.querySelector(".pchip").addEventListener("click", (e) => { e.stopPropagation(); chipPop(card); });
   if (!self) card.querySelector(".bw-btn").addEventListener("click", () => bwTest(id));
   return card;
@@ -349,7 +359,7 @@ function updateCluster() {
 // The model card's side: what the room pools (one segment per device, in its colour, with a tick at
 // each model's need), what this device lends (+/-), and the invite (QR, code, copy link).
 function renderPool(pledged) {
-  const devs = [{ name: myName, meta: myMeta }, ...[...members.values()].map((m) => ({ name: m.name || "device", meta: m.meta || {} }))]
+  const devs = [{ name: myName, meta: myMeta }, ...[...members.values()].map((m) => ({ name: m.name || "device", meta: m.meta || {} }))].sort((x, y) => bySlot(x.name, y.name))
     .filter((d) => d.meta?.webgpu && d.meta?.contribGB);
   const needs = Object.entries(PICK_NEED).sort((a, b) => a[1] - b[1]);
   const top = Math.max(pledged, ...needs.map((x) => x[1])) * 1.06 || 1;
@@ -367,7 +377,7 @@ function renderPool(pledged) {
     || '<li class="none">No device with WebGPU yet</li>';
   const can = !!myMeta.webgpu;
   $("ap-step").hidden = !can; $("ap-no").hidden = can;
-  if (can) { $("ap-gb").textContent = myMeta.contribGB; $("ap-minus").disabled = myMeta.contribGB <= lendMin(); $("ap-plus").disabled = myMeta.contribGB >= 64; }
+  if (can) { if (document.activeElement !== $("ap-gb")) $("ap-gb").value = myMeta.contribGB; $("ap-minus").disabled = myMeta.contribGB <= lendMin(); $("ap-plus").disabled = myMeta.contribGB >= 64; }
 }
 const lendMin = () => (myMeta.phone ? 0.5 : 1);
 function selfSteps(card) { const s = card.querySelectorAll(".gbstep .step"); if (s.length) { s[0].disabled = myMeta.contribGB <= lendMin(); s[1].disabled = myMeta.contribGB >= 64; } }
@@ -382,6 +392,15 @@ function lendGB(v) {
 }
 $("ap-minus").addEventListener("click", () => lendGB(myMeta.contribGB - (myMeta.phone ? 0.5 : 1)));
 $("ap-plus").addEventListener("click", () => lendGB(myMeta.contribGB + (myMeta.phone ? 0.5 : 1)));
+// or type the amount: applied on Enter or on leaving the box, clamped like the steps (and shown back as applied)
+function typedGB() {
+  const el = $("ap-gb"), v = parseFloat(String(el.value).replace(",", "."));
+  if (Number.isFinite(v)) lendGB(v);
+  el.value = myMeta.contribGB;
+}
+$("ap-gb").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); typedGB(); e.target.blur(); } else if (e.key === "Escape") { e.target.value = myMeta.contribGB; e.target.blur(); } });
+$("ap-gb").addEventListener("blur", typedGB);
+$("ap-gb").addEventListener("focus", (e) => e.target.select());
 $("ap-copy").addEventListener("click", copyRoomLink);
 
 function enterRoom() {
@@ -552,6 +571,7 @@ function onData(from, d) {
         devSlots.clear(); order.forEach((n) => devSlots.set(n, devSlots.size));
         for (const c of document.querySelectorAll(".peer-card")) c.style.setProperty("--sw", devColor(c.dataset.name));
       }
+      queueMicrotask(orderCards);   // after this message's cards exist
       const seen = new Set();
       for (const m of d.members) {
         if (m.id === peer.id) continue;
@@ -1112,7 +1132,7 @@ function aiLoading(show, title) {
 }
 function loadCardRender() {
   const rows = $("lc-rows"); if (!rows) return;
-  const names = [myName, ...[...conns.values()].map((c) => c.name)];
+  const names = [myName, ...[...conns.values()].map((c) => c.name)].sort(bySlot);
   const by = ai.layersByName || {};
   const order = Object.keys(by);
   rows.innerHTML = names.map((nm) => {

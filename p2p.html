@@ -557,7 +557,8 @@
   .ap-step { display: inline-flex; align-items: center; gap: 4px; padding: 3px; border: 1px solid var(--border-2); border-radius: 12px; background: var(--panel); }
   .ap-step .step { width: 34px; height: 34px; padding: 0; border: 0; border-radius: 8px; font: 400 17px/1 var(--sans); color: var(--ink-2); background: transparent; display: grid; place-items: center; }
   .ap-step .step:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
-  #ap-gb { min-width: 36px; text-align: right; font: 500 17px/1 var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
+  #ap-gb { width: 4.2ch; min-width: 36px; padding: 4px 2px; border: 0; border-radius: 6px; background: transparent; text-align: right; font: 500 17px/1 var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
+  #ap-gb:focus { outline: none; background: var(--panel-2); }   /* type an amount: Enter or leaving the box applies it */
   .ap-step .u { font: 400 12px/1 var(--mono); color: var(--muted); margin-right: 4px; }
   .ap-no { flex-basis: 100%; font-size: 12px; color: var(--muted); }
   /* invite: the QR and the code, right in the card */
@@ -1476,7 +1477,7 @@
         </section>
         <section class="ap-me" id="ap-me" aria-label="This device">
           <p class="ap-k"><span>This device gives</span></p>
-          <div class="ap-step" id="ap-step"><button class="step" id="ap-minus" type="button" aria-label="Less memory">&minus;</button><output id="ap-gb" aria-live="polite">1</output><span class="u">GB</span><button class="step" id="ap-plus" type="button" aria-label="More memory">+</button></div>
+          <div class="ap-step" id="ap-step"><button class="step" id="ap-minus" type="button" aria-label="Less memory">&minus;</button><input id="ap-gb" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="Memory this device gives, in GB" value="1"><span class="u">GB</span><button class="step" id="ap-plus" type="button" aria-label="More memory">+</button></div>
           <p class="ap-no" id="ap-no" hidden>This browser can't use its graphics chip, so this device can chat but not help run the model.</p>
         </section>
         <section class="ap-room" id="side-room" aria-label="Invite more devices">
