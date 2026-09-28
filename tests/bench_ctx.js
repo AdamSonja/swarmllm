@@ -18,6 +18,9 @@ const ROOM_KEY = MODEL === "27b" ? "qwen3.8-27b" : "qwen3.6-35b-moe";
 const MAXSEQ = +env("CTX", CTX[ROOM_KEY].def);
 const N = +env("TOKENS", 32), K = +env("K", 3);
 const FILLS = env("FILLS", [1024, 4096, 16384, 32768, 65536].filter((f) => f + 2 * N + 16 <= MAXSEQ).join(",")).split(",").map(Number);
+// decode runs N tokens past each fill (and spec drafts past that): a fill too close to maxSeq writes past the KV cache
+// and the plain / spec comparison is meaningless (27B, CTX 16384, FILLS=16384 "spec DIFFERS" on the M5 Max)
+for (const f of FILLS) if (f + 2 * N + 16 > MAXSEQ) { console.error(`fill ${f} + ${2 * N + 16} decode positions exceeds maxSeq ${MAXSEQ}: raise CTX`); Deno.exit(2); }
 
 const model = openGGUF(PATH);   // node:fs reads through the converted-weights cache (tests/weight_cache.js; WEIGHT_CACHE=0 disables)
 const readAt = model.readAt;

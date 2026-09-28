@@ -182,9 +182,9 @@ const i8x4 = (w) => `vec4<f32>(unpack4xI8(${w}))`;
 // CPU tests (tests/unit/moe_group_test.js runs the kernel bodies with one generator per thread). The WGSL
 // spellings are the ones the fused kernels always had, so their generated code does not change.
 // (div parenthesizes a compound dividend: "c + 7u" / "8u" must not become c + 7u / 8u)
-export const FOPS = Object.freeze({ q4lo, q4hi, i8x4, div: (a, b) => `${/[^\w.]/.test(a) ? `(${a})` : a} / ${b}` });
+export const FOPS = Object.freeze({ q4lo, q4hi, i8x4, div: (a, b) => `${/[^\w.]/.test(a) ? `(${a})` : a} / ${b}`, v4: (...c) => `vec4<f32>(${c.join(", ")})` });
 export const FOPS_JS = Object.freeze({ q4lo: (w) => `q4lo(${w})`, q4hi: (w) => `q4hi(${w})`, i8x4: (w) => `i8x4(${w})`,
-  div: (a, b) => `Math.floor((${a}) / (${b}))` });
+  div: (a, b) => `Math.floor((${a}) / (${b}))`, v4: (...c) => `[${c.join(", ")}]` });
 export const tree = (WG, n, red) => `
   workgroupBarrier();
   for (var st: u32 = ${WG / 2}u; st > 0u; st >>= 1u) {

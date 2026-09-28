@@ -107,8 +107,12 @@ export async function q38Context({ skipTokenizer = false } = {}) {
 
 // Upload every quantized matrix and f32 tensor of a weight set once; engines then reuse entry.gpu.
 // The embedding keeps its CPU copy (per-token row lookups) and is never uploaded here.
-export function preuploadWeights(device, w) {
-  let bytes = 0;
+// Flushes every ~2 GB (a submit, then waiting for the queue): on Metal (Deno/wgpu), ~15 GB of staged writes with no
+// submit in between came out with every f32 tensor reading back as zeros (the 27B's norms, so NaN logits in
+// run_q38_once.js); 13.9 GB was still intact. docs/bench-log.md, 2026-09-27 M5 Max.
+export async function preuploadWeights(device, w, flushBytes = 2 * 2 ** 30) {
+  let bytes = 0, since = 0;
+  const flush = async () => { device.queue.submit([device.createCommandEncoder().finish()]); await device.queue.onSubmittedWorkDone(); since = 0; };
   const f32 = (e) => {
     const src = new Uint8Array(e.data.buffer, e.data.byteOffset, e.data.byteLength);
     const buf = device.createBuffer({ size: Math.ceil(src.byteLength / 4) * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
@@ -116,15 +120,18 @@ export function preuploadWeights(device, w) {
     buf.unmap();
     return { kind: "f32", buf };
   };
-  const up = (e) => {
+  const up = async (e) => {
     if (!e || e.gpu) return;
+    const b0 = bytes;
     if (e.kind === "q4" || e.kind === "q8") { bytes += e.qs.byteLength + e.scales.byteLength; gpuUploadEntry(device, e, false); }
     else if (e.kind === "f32") { bytes += e.data.byteLength; e.gpu = f32(e); }   // keep e.data: some layers read it directly
+    if ((since += bytes - b0) >= flushBytes) await flush();
   };
-  const layer = (L) => { for (const v of Object.values(L)) if (v && typeof v === "object" && "kind" in v) up(v); };
-  for (const L of w.layers) layer(L);
-  up(w.finalNorm); up(w.head);
-  if (w.mtp) { layer(w.mtp.layer); up(w.mtp.ehProj); up(w.mtp.enorm); up(w.mtp.hnorm); up(w.mtp.sharedHeadNorm); }
+  const layer = async (L) => { for (const v of Object.values(L)) if (v && typeof v === "object" && "kind" in v) await up(v); };
+  for (const L of w.layers) await layer(L);
+  await up(w.finalNorm); await up(w.head);
+  if (w.mtp) { await layer(w.mtp.layer); await up(w.mtp.ehProj); await up(w.mtp.enorm); await up(w.mtp.hnorm); await up(w.mtp.sharedHeadNorm); }
+  await flush();
   return bytes;
 }
 
@@ -138,8 +145,7 @@ export async function sharedQ38Context() {
   const full = await model.weights({ lo: 0, hi: L, hasEmbed: true, hasHead: true, mtp: true });
   const tRead = performance.now() - t0;
   t0 = performance.now();
-  const up = preuploadWeights(device, full);
-  await device.queue.onSubmittedWorkDone();
+  const up = await preuploadWeights(device, full);
   const tUp = performance.now() - t0;
   console.log(`shared 27B: ${L} layers + head + mtp read/convert ${(tRead / 1000).toFixed(1)} s, GPU upload ${(up / 2 ** 30).toFixed(2)} GB in ${(tUp / 1000).toFixed(1)} s${model.cache ? "; " + model.cache.summary() : ""}`);
   // same structure as qwen35Weights(G, ..., range), minus the load

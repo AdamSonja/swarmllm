@@ -131,7 +131,7 @@ function ffnBoth({ fmt, sfmt, dim, ei, sDim, nExp, K, C, R = 1, RG = R, UC, skew
     const { grp, ind } = runSort(sel, { U: C, K, nExp, UC, gx: gxT, dx: dxT });
     const nCh = ind[1], src = tiledGroupWGSL({ K, UC, U: C, nExp, gu: [[fmt, sfmt]], dn: [[fmt, sfmt]] }, FOPS_JS);
     const G = `tg${fmt}${sfmt}`, E = `td${fmt}${sfmt}`, XT = Math.max(UC * 64, 512);
-    const wg = (P) => ({ [`${P}_xt`]: () => Array.from({ length: XT }, () => [NaN, NaN, NaN, NaN]), [`${P}_xo`]: () => new Array(UC).fill(NaN),
+    const wg = (P) => ({ [`${P}_xt`]: () => new Array(4 * XT).fill(NaN), [`${P}_xo`]: () => new Array(UC).fill(NaN),
       [`${P}_cs`]: () => new Array(UC).fill(NaN), [`${P}_n`]: () => NaN });
     const hB = new Array(C * KS * hs).fill(NaN), yB = new Array(C * KS * dim).fill(NaN), xB = Array.from(x0);
     // the kernels copy vec4s into the workgroup tile and later write floats into it: hand out copies, as a GPU load does
