@@ -478,8 +478,10 @@ function ensureCard(id, name, meta) {
     cards.set(id, card);
     updateCluster();
     log("room", `${name || id} joined`);
-    presence(name || id, true);
-    if ($("ai-output").style.display === "block") sysNote(`${name || id} joined${meta?.contribGB && meta?.webgpu ? ` with ${meta.contribGB} GB` : ""}`, "join");
+    const noted = $("ai-output").style.display === "block";
+    if (noted) sysNote(`${name || id} joined${meta?.contribGB && meta?.webgpu ? ` with ${meta.contribGB} GB` : ""}`, "join");
+    // the chat on screen says it in the log already: no toast on top of that same line
+    if (!(noted && $("ai-output").getClientRects().length)) presence(name || id, true);
     mascot(`${name || id} joined! ${members.size + 1} devices in the room.`);
   }
   const e = conns.get(id);
@@ -560,7 +562,7 @@ function onData(from, d) {
     case "bye":
       toast(d.reason);
       log("room", d.reason);
-      if (from === PREFIX + roomCode) { $("room-over").hidden = false; $("room-over-why").textContent = d.reason; }
+      if (from === PREFIX + roomCode) { $("room-over").hidden = false; $("room-over-h").textContent = "Room over"; $("room-over-why").textContent = d.reason; }
       break;
     case "roster": {
       // the host's view of the room: draw a card per device, no mesh connections
@@ -654,6 +656,8 @@ setInterval(() => broadcastAll({ t: "ping", ts: performance.now() }), 2500);
 const stepGB = (d) => { const i = $("join-gb"); const lo = parseFloat(i.min) || 1; const st = parseFloat(i.step) || 1; i.value = Math.min(64, Math.max(lo, (parseFloat(i.value) || lo) + d * st)); };
 $("gb-minus").addEventListener("click", () => stepGB(-1));
 $("gb-plus").addEventListener("click", () => stepGB(1));
+// a typed amount is clamped like the steps once the box is left (100 becomes 64, -5 the minimum)
+$("join-gb").addEventListener("change", () => stepGB(0));
 // a friendly name for this device ("otter"): one lowercase word, filled in on the join screen; any edit wins
 const NAMES = ["otter", "falcon", "panda", "fox", "heron", "koala", "lynx", "robin", "badger", "dolphin", "owl", "tiger", "wombat", "sparrow",
   "moose", "gecko", "puffin", "beaver", "marten", "crane", "finch", "orca", "bison", "lemur", "raven", "tapir", "walrus", "yak", "zebra",
@@ -683,6 +687,8 @@ function joinFailed(text) {
   joinWait(false);
   $("join-status").textContent = text;
   $("create-btn").disabled = $("join-btn").disabled = false;
+  // on a phone the status line sits below the fold: bring it to where the user is looking
+  $("join-status").scrollIntoView({ block: "center", behavior: "smooth" });
 }
 // --- join / create ---
 async function start(create, resume = null) {
@@ -694,7 +700,7 @@ async function start(create, resume = null) {
   $("join-status").textContent = "Connecting…";
   myMeta = await metaPromise;
   const gbIn = parseFloat($("join-gb").value);
-  myMeta.contribGB = Math.max(myMeta.phone ? 0.5 : 1, gbIn > 0 ? gbIn : (myMeta.contribGB || 1));
+  myMeta.contribGB = Math.min(64, Math.max(myMeta.phone ? 0.5 : 1, gbIn > 0 ? gbIn : (myMeta.contribGB || 1)));
 
   // STUN for hole-punching; TURN as fallback for symmetric NAT / CGNAT peers.
   // ICE prefers direct candidates, so TURN only carries traffic when a direct
@@ -783,7 +789,10 @@ async function keepAwake() {
     }
     await awakeVideo.play();
     if (!wakeLock) awakeStatus("screen stays awake (video) \u2713");
-  } catch (e) { if (!wakeLock) awakeStatus("This screen can\u2019t stay awake on its own: set Auto-Lock to Never"); }
+  } catch (e) {
+    // the setting is Auto-Lock on an iPhone, the screen timeout (Settings > Display) on Android
+    if (!wakeLock) awakeStatus(`This screen can\u2019t stay awake on its own: ${myMeta?.ua === "iPhone" ? "set Auto-Lock to Never" : "set the screen timeout to its longest (Settings \u203a Display)"}`);
+  }
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { keepAwake(); document.title = "pooled \u00b7 room"; } });
 document.addEventListener("touchstart", keepAwake, { passive: true });
@@ -820,10 +829,12 @@ function deviceMark() {
 setInterval(deviceMark, 1000);
 $("create-btn").addEventListener("click", () => { keepAwake(); start(true); });
 // (auto-rejoin removed: the user prefers to see what happened)
-$("join-btn").addEventListener("click", () => { keepAwake(); start(false); });
-$("code-input").addEventListener("keydown", (e) => { if (e.key === "Enter") start(false); });
+// Join only with a whole code: the greyed button and Enter in a short code do nothing but put the cursor back
+const codeOk = () => /^[A-Z0-9]{4,6}$/i.test($("code-input").value.trim());
+$("join-btn").addEventListener("click", () => { if (!codeOk()) { $("code-input").focus(); return; } keepAwake(); start(false); });
+$("code-input").addEventListener("keydown", (e) => { if (e.key === "Enter" && codeOk()) start(false); });
 const codeReady = () => {
-  $("join-btn").classList.toggle("ready", /^[A-Z0-9]{4,6}$/i.test($("code-input").value.trim()));
+  $("join-btn").classList.toggle("ready", codeOk());
   $("code-input").parentElement.classList.toggle("full", $("code-input").value.length >= 4);
 };
 // four boxes, four characters: letters and digits only; the fourth one hands off to Join (on a
@@ -832,8 +843,13 @@ $("code-input").addEventListener("input", (e) => {
   const el = e.target, v = el.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
   if (el.value !== v) el.value = v;
   codeReady();
-  if (v.length === 4 && e.isTrusted && document.activeElement === el) $("join-btn").focus();
+  if (v.length === 4 && e.isTrusted && document.activeElement === el) { $("join-btn").focus(); el.parentElement.scrollIntoView({ block: "nearest" }); }
+  else codeInView();
 });
+// a phone's keyboard shrinks the screen after the boxes took focus: keep the four boxes whole in view,
+// not half under the header or the keyboard (the input is an overlay the browser scrolls to by its caret)
+const codeInView = () => { if (document.activeElement === $("code-input")) $("code-input").parentElement.scrollIntoView({ block: "nearest" }); };
+visualViewport?.addEventListener("resize", codeInView);
 // Virtual devices: the host can add devices that are iframes of this page on this same computer.
 // Each joins the room like any other device (its own WebGPU device, its own WebRTC link, its own
 // layers), which shows what a room does before friends arrive; the GPU is shared, so it is a
@@ -1832,7 +1848,7 @@ function aiMaybeReady() {
   setAfterAnswer(false, !!ai.conv.turns.length);
   emptyText("The model is ready. Ask anything.");
   sysNote(`Model ready on ${n} device${n > 1 ? "s" : ""}`);
-  $("ai-prompt").focus();
+  if (!matchMedia("(pointer: coarse)").matches) $("ai-prompt").focus();   // touch: the keyboard opens when the user taps the prompt
   broadcastAll({ t: "ai-ready-all", model: ai.model });
   pushMap(0, null, false, true);
   offerRedealForNewcomers();
@@ -2227,7 +2243,8 @@ new MutationObserver(() => bandFold(bandFolded())).observe($("chatpane"), { attr
   new ResizeObserver(stick).observe(out);
   const coarse = matchMedia("(pointer: coarse)");
   const kbd = () => {
-    const a = document.activeElement, typing = a && (a.id === "ai-prompt" || a.id === "code-prompt" || a.id === "ed-text");
+    const a = document.activeElement, typing = a && (a.id === "ai-prompt" || a.id === "code-prompt" || a.id === "ed-text"
+      || (!!a.closest?.("#code-pane") && a.matches("textarea, input[type=text]")));   // e.g. a rejection's reason
     document.body.classList.toggle("kbd", !!(typing && coarse.matches && (visualViewport?.height ?? innerHeight) < 600));
     // how much of the page the keyboard covers where the browser does not shrink the page for it
     // (iOS Safari): Code on a phone lifts its prompt by that much
@@ -2686,7 +2703,9 @@ function hostGone() {
   codeRoleChanged();
   $("ai-row").style.display = "none";
   $("room-over").hidden = false;
+  $("room-over-h").textContent = "Host reconnecting";
   $("room-over-why").textContent = "The host's tab closed. Waiting a minute in case it comes back…";
+  const was = $("ai-status").textContent;
   aiStatus("the host left; waiting for it to come back…");
   const t0 = Date.now();
   clearInterval(hostGone.timer);
@@ -2695,6 +2714,7 @@ function hostGone() {
     if (Date.now() - t0 > HOST_WAIT_MS) {
       clearInterval(hostGone.timer);
       ai.engine = null;
+      $("room-over-h").textContent = "Room over";
       $("room-over-why").textContent = "The host didn't come back. The host holds the conversation and the model's first and last layers, so this room can't answer any more.";
       aiStatus("the host left; this room is over");
       mascot("The host left. Start a new room?");
@@ -2708,7 +2728,8 @@ function hostGone() {
       conn.send({ t: "hello", name: myName, meta: myMeta, v: PROTOCOL, back: 1 });
       ai.hostId = PREFIX + roomCode;
       $("room-over").hidden = true;
-      aiStatus("the host is back; waiting for it to deal the layers…");
+      // layers to deal only if a model was running; otherwise the card goes back to what it said
+      aiStatus(ai.role ? "the host is back; waiting for it to deal the layers…" : was);
       toast("the host is back");
     });
     conn.on("error", () => {});
@@ -3134,10 +3155,34 @@ document.addEventListener("keydown", (e) => {
 });
 document.addEventListener("change", (e) => { if (e.target.closest?.("#room-menu")) syncSegs(); });
 buildSegs();
-$("room-menu").addEventListener("toggle", () => { if ($("room-menu").open) syncSegs(); });
+$("room-menu").addEventListener("toggle", () => {
+  if (!$("room-menu").open) { if (cacheArmed) cacheDisarm(); return; }
+  syncSegs();
+  // the room card pictures a finished answer's speed: not offered before one, and Share only where the browser can
+  $("card-btn").hidden = !(bestTps || lastMap?.st?.tps || lastSoloTps);
+  $("card-share").hidden = !navigator.canShare;
+  $("export-chat").disabled = !document.querySelector("#ai-output .m.user");   // nothing asked yet: nothing to save
+});
 $("menu-close").addEventListener("click", () => { $("room-menu").open = false; $("room-menu").querySelector("summary").focus(); });
+// two steps: the first click says how much would go, a second one within a few seconds deletes it
+let cacheArmed = 0;
+function cacheLabel(t, sub) { const a = $("cache-clear"); a.childNodes[1].textContent = t; a.querySelector("small").textContent = sub; }
+const cacheDisarm = () => { cacheArmed = 0; cacheLabel("Clear cached weights", "Frees this device's disk; the next start downloads again"); };
+async function cachedBytes() {
+  const c = await getWeightCache(); let n = 0;
+  if (c) for (const k of await c.keys()) n += +((await c.match(k))?.headers.get("x-swarm-len") || 0);
+  return n;
+}
 $("cache-clear").addEventListener("click", async (ev) => {
   ev.preventDefault();
+  if (!cacheArmed) {
+    const n = await cachedBytes().catch(() => 0);
+    if (!n) { toast("no cached weights on this device"); return; }
+    cacheLabel(`Clear ${fmtBytes(n)}?`, "Press again to delete them; the next start downloads them again");
+    const t = cacheArmed = setTimeout(() => { if (cacheArmed === t) cacheDisarm(); }, 6000);
+    return;
+  }
+  cacheDisarm();
   try { await caches.delete("swarmllm-weights-v1"); weightCache = null; toast("cached weights cleared"); } catch { toast("could not clear the cache"); }
 });
 $("new-chat").addEventListener("click", aiNewChat);
