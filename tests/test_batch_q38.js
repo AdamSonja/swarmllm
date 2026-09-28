@@ -28,7 +28,12 @@ export async function run({ device, model }) {
   for (let i = 0; i < ref.length; i++) { md = Math.max(md, Math.abs(got[i] - ref[i])); sc = Math.max(sc, Math.abs(ref[i])); }
   const rel = md / sc;
   console.log(`argmax seq=${argmax(ref)} batch=${argmax(got)}  relDiff=${rel.toExponential(2)}  batchedPrefill=${((ids.length - 1) / ((t1 - t0) / 1000)).toFixed(1)} tok/s`);
-  const ok = argmax(ref) === argmax(got) && rel < 2e-3;
+  // NaN-aware: all-NaN or all-equal logits give argmax 0 == 0 and relDiff 0 (that passed on Metal with every f32
+  // weight zeroed by the one-process upload); demand finite, non-constant logits on both paths
+  const sane = (a) => { let lo = Infinity, hi = -Infinity; for (const v of a) { if (!Number.isFinite(v)) return false; lo = Math.min(lo, v); hi = Math.max(hi, v); } return hi > lo; };
+  const finite = sane(ref) && sane(got);
+  if (!finite) console.log("non-finite or constant logits");
+  const ok = finite && argmax(ref) === argmax(got) && rel < 2e-3;
   console.log(ok ? "Q38 BATCH PREFILL PASS ✓" : "Q38 BATCH PREFILL FAIL");
   return ok;
 }

@@ -295,6 +295,10 @@ ${combKernel(K)}
 // differs from moe_gus / moe_dnc (a different rounding of the same sum), so this path is validated against
 // tolerances and the goldens, not bit-identity. Same bindings, entry points, chunk list, sort and combine as
 // the exact kernels; launch x = ceil(rows / TR).
+// The workgroup scratch is a scalar array<f32> (vec4 reads assemble 4 scalars): the reduction stores one float per
+// invocation, and a per-component store into a workgroup array<vec4<f32>> (xt[i >> 2][i & 3] = ...) by different
+// invocations loses writes on Apple GPUs (Metal lowers it to a whole-vec4 read-modify-write). Same layout and
+// arithmetic order as the vec4 version, so the results elsewhere are unchanged. Do not reintroduce that pattern.
 export const TILE_RPT = { gu: 2, dn: 4 };
 export const tileRows = (kind) => 32 * TILE_RPT[kind];
 function tiledKernel(kind, fmt, sfmt, K, UC, CO, O = FOPS) {
@@ -311,7 +315,7 @@ function tiledKernel(kind, fmt, sfmt, K, UC, CO, O = FOPS) {
   const dotb = (f, m, r) => f === "q4"
     ? `${m}s${r} * (${[0, 1, 2, 3].map((j) => `(dot(${O.q4lo(`${m}w${r}_${j}`)}, xv${j}) + dot(${O.q4hi(`${m}w${r}_${j}`)}, xv${j + 4}))`).join(" + ")})`
     : `${m}s${r} * (${[0, 1, 2, 3, 4, 5, 6, 7].map((j) => `dot(${O.i8x4(`${m}w${r}_${j}`)}, xv${j})`).join(" + ")})`;
-  const accum = (f) => US.map((u) => `        ${guard(u, `${[0, 1, 2, 3, 4, 5, 6, 7].map((j) => `let xv${j} = ${P}_xt[${u * 64 + j * 8}u + ln];`).join(" ")}\n${RS.map((r) => mats.map((m) => `          a${m}${r}_${u} += ${dotb(f, m, r)};`).join("\n")).join("\n")}`)}`).join("\n");
+  const accum = (f) => US.map((u) => `        ${guard(u, `${[0, 1, 2, 3, 4, 5, 6, 7].map((j) => `let xv${j} = ${O.v4(...[0, 1, 2, 3].map((c) => `${P}_xt[${4 * (u * 64 + j * 8) + c}u + 4u * ln]`))};`).join(" ")}\n${RS.map((r) => mats.map((m) => `          a${m}${r}_${u} += ${dotb(f, m, r)};`).join("\n")).join("\n")}`)}`).join("\n");
   const er = (r) => `e * S.dOut + tr${r}`;
   const routed = RS.map((r) => gu
     ? `${load(fmt, "g", r, `${P}_gq`, "0u", `${P}_gs`, "0u", er(r))}\n${load(fmt, "u", r, `${P}_uq`, "0u", `${P}_us`, "0u", er(r))}`
@@ -323,14 +327,14 @@ function tiledKernel(kind, fmt, sfmt, K, UC, CO, O = FOPS) {
   for (let q0 = 0; q0 < UC; q0 += PR) {
     const np = Math.min(PR, UC - q0);
     const body = `  workgroupBarrier();
-${Array.from({ length: np }, (_, i) => RS.map((r) => mats.map((m, mi) => `  { let ri = ${((i * NM + mi) * RPT + r) * WG}u + t; ${P}_xt[ri >> 2u][ri & 3u] = a${m}${r}_${q0 + i}; }`).join("\n")).join("\n")).join("\n")}
+${Array.from({ length: np }, (_, i) => RS.map((r) => mats.map((m, mi) => `  { let ri = ${((i * NM + mi) * RPT + r) * WG}u + t; ${P}_xt[ri] = a${m}${r}_${q0 + i}; }`).join("\n")).join("\n")).join("\n")}
   workgroupBarrier();
   if (t < ${TR * np}u) {
     let lr = t & ${TR - 1}u; let pi = t >> ${Math.log2(TR)}u; let u = ${q0}u + pi; let orow = row0 + lr; let rr = lr >> 5u; let rw = lr & 31u;
     if (u < n && orow < dOut) {
       let cs = ${P}_cs[u];
 ${mats.map((m, mi) => `      var s${m}: f32 = 0.0;
-      for (var l: u32 = 0u; l < 8u; l++) { let ri = ((pi * ${NM}u + ${mi}u) * ${RPT}u + rr) * ${WG}u + rw * 8u + l; s${m} += ${P}_xt[ri >> 2u][ri & 3u]; }`).join("\n")}
+      for (var l: u32 = 0u; l < 8u; l++) { let ri = ((pi * ${NM}u + ${mi}u) * ${RPT}u + rr) * ${WG}u + rw * 8u + l; s${m} += ${P}_xt[ri]; }`).join("\n")}
       ${gu ? `${P}_h[cs * S.ys + orow] = sg / (1.0 + exp(-sg)) * su;` : `${P}_y[cs * S.dOut + orow] = sy;`}
     }
   }`;
@@ -355,7 +359,7 @@ ${mats.map((m, mi) => `      var s${m}: f32 = 0.0;
 @group(1) @binding(6) var<storage, read> ${P}_ss: array<u32>;
 @group(1) @binding(7) var<uniform> ${P}_s: MOEF;`;
   return `${decl}
-var<workgroup> ${P}_xt: array<vec4<f32>, ${XT}>;
+var<workgroup> ${P}_xt: array<f32, ${XT * 4}>;
 var<workgroup> ${P}_xo: array<u32, ${UC}>;
 var<workgroup> ${P}_cs: array<u32, ${UC}>;
 var<workgroup> ${P}_n: u32;
@@ -376,7 +380,7 @@ ${US.map((u) => `  ${RS.map((r) => mats.map((m) => `var a${m}${r}_${u}: f32 = 0.
     workgroupBarrier();
     for (var i: u32 = t; i < ${UC * 64}u; i += ${WG}u) {
       let u = i >> 6u; let v = i & 63u; let kb = kt * 8u + v;
-      if (u < n && kb < nbk * 8u) { ${P}_xt[(i & ${~63 >>> 0}u) + (v & 7u) * 8u + (v >> 3u)] = ${P}_x[${P}_xo[u] + kb]; }
+      if (u < n && kb < nbk * 8u) { let xi = 4u * ((i & ${~63 >>> 0}u) + (v & 7u) * 8u + (v >> 3u)); let xx = ${P}_x[${P}_xo[u] + kb]; ${P}_xt[xi] = xx[0]; ${P}_xt[xi + 1u] = xx[1]; ${P}_xt[xi + 2u] = xx[2]; ${P}_xt[xi + 3u] = xx[3]; }
     }
     workgroupBarrier();
     let b = kt + ln;

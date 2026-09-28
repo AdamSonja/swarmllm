@@ -19,8 +19,10 @@ export async function run({ device, model }) {
     const ids = Array.from({ length: n }, (_, i) => 1000 + i * 37);
     const go = async (b4) => { eng.reset(); eng.pos = 0; eng.b4 = b4; eng.gemm = false; return Float32Array.from(await eng.embedRunBatch(ids, 0)); };
     const twin = await go(true), full = await go(false), r = rel(twin, full);
-    if (r !== 0) fail++;
-    console.log(`n=${String(n).padEnd(2)} twin vs full-width: relDiff ${r.toExponential(2)} ${r === 0 ? "identical" : "MISMATCH"}`);
+    // NaN-aware: a non-finite output fails even when both sides agree
+    const finite = twin.every(Number.isFinite) && full.every(Number.isFinite);
+    if (r !== 0 || !finite) fail++;
+    console.log(`n=${String(n).padEnd(2)} twin vs full-width: relDiff ${r.toExponential(2)} ${!finite ? "NON-FINITE" : r === 0 ? "identical" : "MISMATCH"}`);
   }
   console.log(fail ? "TWINS FAIL" : "TWINS PASS ✓ (bit-identical at every width)");
   return !fail;
