@@ -35,7 +35,7 @@ export function lendStatus(s) {
   if (s.over) return s.over.final
     ? { title: "Room over", sub: s.over.why || "The host left, so this room can't answer any more. Start a new room to lend this device again." }
     : { title: "Host reconnecting", sub: s.over.why || "The host's tab closed. Waiting a minute in case it comes back." };
-  const has = s.lo != null && s.hi != null;
+  const has = s.lo != null && s.hi != null && s.hi > s.lo;   // an empty range (lo == hi) holds nothing
   const model = s.model || "the model";
   // "Layers 1–20 · 2.4 GB · Qwen": which layers, and how much of the model's weights they are
   const held = has ? `Layers ${s.lo + 1}–${s.hi}${s.bytes ? " · " + gb(s.bytes) : ""} · ${model}` : "";
@@ -51,7 +51,7 @@ export function lendStatus(s) {
 // the tab was just hidden (null once the note has had its time).
 export function lendNotes(s) {
   // only while this device loads or holds layers: a device the room isn't using has nothing to keep up
-  if (s.over || s.phase === "idle" || (s.phase === "serving" && (s.lo == null || s.hi == null))) return [];
+  if (s.over || s.phase === "idle" || (s.phase === "serving" && !(s.lo != null && s.hi != null && s.hi > s.lo))) return [];
   const notes = [];
   if (s.awayMs >= 3000) notes.push(`This tab was in the background for ${Math.round(s.awayMs / 1000)} s, and passes can stall there. Keep it in front while lending.`);
   if (s.awake === "none") notes.push(s.ios ? "This screen can sleep and stop serving: set Auto-Lock to Never." : "This screen can sleep and stop serving: set the screen timeout to its longest.");
@@ -169,7 +169,7 @@ export function computeScreen({ state, keepAwake = () => {}, newRoom = () => {} 
     const s = state();
     $("cs-code").textContent = s.code || "----";
     $("cs-devs").textContent = `${s.devices} device${s.devices === 1 ? "" : "s"}`;
-    const has = s.lo != null && s.hi != null;
+    const has = s.lo != null && s.hi != null && s.hi > s.lo;   // an empty range (lo == hi) holds nothing
     // one status line and one small line: this screen is for the person whose device it is
     const { title, sub } = lendStatus(s);
     root.dataset.phase = s.over ? "over" : s.phase;
