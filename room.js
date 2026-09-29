@@ -200,7 +200,7 @@ const ICONS = {
   desk: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M1.8 2.8h12.4v8.4H1.8zM8 11.2v2.6M5.2 13.8h5.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
   phone: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="4.5" y="1.5" width="7" height="13" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 12.2h2" stroke="currentColor" stroke-width="1.3"/></svg>',
   // an API client (`pooled serve`): angle brackets, code talking to the room
-  api: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M5.5 4 1.8 8l3.7 4M10.5 4l3.7 4-3.7 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  api: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M6 1.8v2.9M10 1.8v2.9M4.3 4.7h7.4v2.4a3.7 3.7 0 0 1-7.4 0zM8 10.8v3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',   // a plug: an API client (pooled serve)
 };
 const iconFor = (meta) => meta.api ? ICONS.api : meta.phone || /iPhone|Android$/.test(meta.ua || "") ? ICONS.phone : /Mac|iPad/.test(meta.ua || "") ? ICONS.laptop : ICONS.desk;
 // "0–19" (what the deal sends) -> "1–20", the way people count layers
@@ -724,6 +724,7 @@ function onData(from, d) {
       }
       for (const id of [...members.keys()]) if (!seen.has(id)) { members.delete(id); dropCard(id); }
       updateCluster();
+      apiPanel();   // the API clients in the roster: the Serve API dot and list
       break;
     }
     case "ping": sendTo(from, { t: "pong", ts: d.ts }); break;
@@ -1146,6 +1147,8 @@ const overlays = [...document.querySelectorAll(".overlay")];
 let modalReturn = null;   // what had focus before an overlay that opened on its own took it
 function syncModal() {
   const open = overlays.some((o) => !o.hidden);
+  // Serve API is a popover, not an overlay: it closes when one opens over the page (Host reconnecting, Room over)
+  if (open) closeApi(false);
   for (const el of document.querySelectorAll("body > header, #join-screen, #room-screen")) el.inert = open;
   // the compute screen (a lending device's screen) sits above the overlays: while it is up, they wait
   // underneath, out of the Tab order, and take focus only once it closes
@@ -1636,12 +1639,13 @@ const COPY_SVG = '<svg class="cp" width="15" height="15" viewBox="0 0 16 16" fil
 
 // ---- the room's social bits: who is typing, answers read aloud (emoji reactions were removed) ----
 function copyText(text, what, btn) {
-  if (!navigator.clipboard) { toast("this browser can't copy here"); return; }
-  navigator.clipboard.writeText(text).then(() => {
-    if (!btn) { toast(`${what} copied`); return; }
+  if (!navigator.clipboard) { toast("this browser can't copy here"); return Promise.resolve(false); }
+  return navigator.clipboard.writeText(text).then(() => {
+    if (!btn) { toast(`${what} copied`); return true; }
     btn.classList.add("done"); btn.setAttribute("aria-label", "Copied");
     clearTimeout(btn._t); btn._t = setTimeout(() => { btn.classList.remove("done"); btn.setAttribute("aria-label", `Copy the ${what}`); }, 1600);
-  }, () => toast("couldn't copy"));
+    return true;
+  }, () => { toast("couldn't copy"); return false; });
 }
 // copy an answer (its raw text, markdown and all) or one code block
 $("ai-output").addEventListener("click", (ev) => {
@@ -2721,8 +2725,8 @@ new MutationObserver(() => bandFold(bandFolded())).observe($("chatpane"), { attr
 {
   const home = document.querySelector(".mode-row"), wide = matchMedia("(min-width: 821px), (max-height: 500px) and (pointer: coarse)");
   const place = () => { const b = $("mode-bar"); if (wide.matches) { if (b.parentNode !== $("room-badge").parentNode) $("room-badge").after(b); } else if (b.parentNode !== home) home.append(b); b.after($("api-open")); };
-  place(); wide.addEventListener("change", place);
-  const sync = () => { $("api-open").hidden = $("mode-bar").hidden; };
+  place(); wide.addEventListener("change", () => { place(); apiPlace(); });
+  const sync = () => { $("api-open").hidden = $("mode-bar").hidden; if ($("api-open").hidden) closeApi(false); };
   sync(); new MutationObserver(sync).observe($("mode-bar"), { attributes: true, attributeFilter: ["hidden"] });
 }
 // phones: the chat stays on the newest message when the screen shrinks (the keyboard opens), if
@@ -3850,7 +3854,7 @@ function apiWelcome(from, d) {
     : ai.apiKicked.has(from) ? "the host disconnected this API client" : null;
   if (why) { apiBye(from, why); return false; }
   const known = ai.apis.get(from);
-  ai.apis.set(from, { name: d.name, client: d.meta.client, answered: known?.answered || 0 });
+  ai.apis.set(from, { name: d.name, client: d.meta.client, answered: known?.answered || 0, tool: known?.tool });
   apiPanel();
   return true;
 }
@@ -3885,6 +3889,9 @@ function apiAsk(from, d) {
   if (!ai.settings.apiAllow) return busy("the host does not allow API clients in this room", "off");
   const v = validateApiAsk(d);
   if (v.err) return busy(v.err, v.code);
+  // the program behind the bridge (its User-Agent, read by cli/lib/http.js: Continue, OpenAI/Python...), for the Serve API panel
+  const tool = v.req.params.client !== "API" ? v.req.params.client : null, known = ai.apis.get(from);
+  if (tool && known.tool !== tool) { known.tool = tool; apiPanel(); }
   if (ai.degraded) return busy("a device left the room; the host has to re-deal the layers first", "degraded");
   if (!ai.engine || ai.readyPeers.size < ai.chain.length) return busy("the model is still loading", "loading");
   const entry = { api: v.req, name: ai.apis.get(from).name, from };
@@ -3924,6 +3931,7 @@ async function apiGenerate({ api: req, name, from }) {
   ai.askerId = from;
   ai.lastWasApi = true;
   const run = ai.apiRun = { rid, from, ac: new AbortController() };
+  apiPanel();
   setBusyUI(true, true);
   setAfterAnswer(false, false);
   // the screens: the room's visibility applies as for any guest, except that the asker (the bridge)
@@ -3968,43 +3976,192 @@ async function apiGenerate({ api: req, name, from }) {
   if (ai.degraded) showRedeal(true);
 }
 
-// Serve API (the button next to Chat | Code): the command that serves this room on the user's own computer, and (host) the
-// API clients connected now, with Disconnect
+// Serve API (the button next to Chat | Code): a popover under it (a sheet from the bottom on phones) with the
+// command that serves this room on the user's own computer, its two base URLs, short examples, who is
+// connected now (the host can Disconnect each), and the host's switch for API clients
+const API_BASE = "http://127.0.0.1:8080";
+const API_EXAMPLES = {
+  curl: `curl ${API_BASE}/v1/chat/completions \\
+  -H 'content-type: application/json' \\
+  -d '{"model": "pooled",
+    "messages": [{"role": "user", "content": "Hi"}]}'`,
+  py: `# pip install openai
+from openai import OpenAI
+
+client = OpenAI(base_url="${API_BASE}/v1", api_key="pooled")
+r = client.chat.completions.create(
+    model="pooled", messages=[{"role": "user", "content": "Hi"}])
+print(r.choices[0].message.content)`,
+  js: `// npm install openai
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "${API_BASE}/v1", apiKey: "pooled" });
+const r = await client.chat.completions.create({
+  model: "pooled", messages: [{ role: "user", content: "Hi" }] });
+console.log(r.choices[0].message.content);`,
+  anth: `# pip install anthropic
+from anthropic import Anthropic
+
+client = Anthropic(base_url="${API_BASE}", api_key="pooled")
+r = client.messages.create(model="pooled", max_tokens=400,
+    messages=[{"role": "user", "content": "Hi"}])
+print(r.content[0].text)`,
+};
+// one line under each example, in its card: how to stream (the install line is in the code)
+const API_EX_HINTS = {
+  curl: 'Add <code>"stream": true</code> to stream tokens.',
+  py: 'Pass <code>stream=True</code> to stream tokens.',
+  js: 'Pass <code>stream: true</code> to stream tokens.',
+  anth: 'The same room through the Messages API. <code>stream=True</code> streams.',
+};
+let apiTab = "curl";
 function apiCommand() {
   return `npx @pooled/cli serve ${roomCode || "CODE"}${SIGNAL ? ` --signal ${SIGNAL}` : ""}`;
 }
+// the API clients in this room: the host's own map (with how many answers each got), or the roster's
+function apiClients() {
+  return isHost ? [...ai.apis.entries()] : [...members.entries()].filter(([, m]) => m.meta?.api).map(([id, m]) => [id, { name: m.name, client: m.meta.client }]);
+}
+function apiShowTab(key) {
+  apiTab = key;
+  for (const b of document.querySelectorAll(".api-tabs [role=tab]")) {
+    const on = b.id === `api-t-${key}`;
+    b.setAttribute("aria-selected", String(on)); b.tabIndex = on ? 0 : -1;
+    if (on) $("api-code").setAttribute("aria-labelledby", b.id);
+  }
+  // comments muted, the base URL in the accent: the one thing to change if --port moves it
+  const esc = (t) => t.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  $("api-code").innerHTML = API_EXAMPLES[key].split("\n").map((l) => /^\s*(#|\/\/)/.test(l) ? `<span class="c">${esc(l)}</span>`
+    : esc(l).replaceAll(API_BASE, `<span class="u">${API_BASE}</span>`)).join("\n");
+  $("api-code").scrollLeft = 0;
+  $("api-ex-hint").innerHTML = API_EX_HINTS[key];
+  apiFade();
+}
+// a fade at the code's (and the command's) right edge while more of it is out of view
+function apiFade() {
+  for (const c of [$("api-code"), $("api-cmd")]) c.parentElement.classList.toggle("more", c.scrollWidth - c.clientWidth - c.scrollLeft > 2);
+  // the command is a Tab stop only when it scrolls (a keyboard can then reach its end)
+  $("api-cmd").tabIndex = $("api-cmd").scrollWidth - $("api-cmd").clientWidth > 2 ? 0 : -1;
+}
+// what a screen reader hears: a client coming or going, or a copy (not every request)
+function apiSay(t) {
+  const el = $("api-live"); if (!el) return;
+  el.textContent = ""; setTimeout(() => { el.textContent = t; }, 60);
+}
+let apiSeen = null;   // the client ids the panel last showed, to announce who came and went
+// an API client by what the person knows: the tool (from its User-Agent) once it has asked, else the bridge's name
+const apiLabel = (c) => c.tool || c.name;
 function apiPanel() {
   if (!$("api-sheet")) return;
-  $("api-cmd").textContent = apiCommand();
-  const box = $("api-clients"), list = isHost ? [...ai.apis.entries()] : [...members.entries()].filter(([, m]) => m.meta?.api).map(([id, m]) => [id, { name: m.name, client: m.meta.client }]);
+  const list = apiClients(), running = isHost && ai.apiRun && ai.apis.get(ai.apiRun.from);
+  $("api-open").classList.toggle("live", list.length > 0);
+  $("api-open").title = list.length ? `Serve API: ${list.length} API client${list.length > 1 ? "s" : ""} connected` : "Use this room from your own tools: an OpenAI and Anthropic endpoint on your computer";
+  if ($("api-sheet").hidden) return;
+  if ($("api-cmd").textContent !== apiCommand()) { $("api-cmd").textContent = apiCommand(); apiFade(); }
+  const st = $("api-status"), off = isHost && !ai.settings.apiAllow;
+  st.className = "api-status " + (off ? "off" : list.length ? "live" : "wait");
+  st.querySelector("span").textContent = off ? "API clients are off in this room"
+    : running ? `Answering ${apiLabel(running)}`
+    : list.length === 1 ? `${apiLabel(list[0][1])} is connected`
+    : list.length ? `${list.length} API clients connected`
+    : "Waiting for a client to connect";
+  $("api-sub").textContent = off ? "Turn on Allow API clients below to let tools in."
+    : list.length ? "" : "Run step 1. Your tool shows up here when it connects.";
+  // step 1 done: the host sees a tick on it while a client is connected
+  $("api-sheet").querySelector(".api-pop").classList.toggle("done", isHost && list.length > 0);
   $("api-clients-wrap").hidden = !list.length;
-  box.replaceChildren(...list.map(([id, c]) => {
+  const ids = list.map(([id]) => id);
+  if (apiSeen) {
+    const came = list.filter(([id]) => !apiSeen.includes(id)), went = apiSeen.length - (ids.length - came.length);
+    if (came.length) apiSay(came.length === 1 ? `${apiLabel(came[0][1])} connected` : `${came.length} API clients connected`);
+    else if (went > 0) apiSay(list.length ? `An API client left. ${list.length} connected` : "The API client left. Waiting for a client");
+  }
+  apiSeen = ids;
+  // the list is rebuilt: a focused Disconnect gets its focus back on the new button (or Copy, if that client left)
+  const had = $("api-clients").contains(document.activeElement) ? document.activeElement.dataset.id || "" : null;
+  $("api-clients").replaceChildren(...list.map(([id, c]) => {
     const li = document.createElement("li");
-    const t = document.createElement("span");
-    t.textContent = `${c.name}${c.client ? " · " + c.client : ""}${isHost ? ` · ${c.answered} answered` : ""}`;
-    li.appendChild(t);
+    li.innerHTML = `<span class="ic">${ICONS.api}</span><span class="nm"><b></b><small></small></span>`;
+    li.querySelector("b").textContent = apiLabel(c);
+    // "via pooled serve kqzt · 3 answered": each part kept whole, mono only for the number
+    const parts = [c.tool ? `via ${c.name}` : c.client || "API client"].map((t) => { const e = document.createElement("span"); e.textContent = t; return e; });
+    if (isHost) { const e = document.createElement("span"); e.innerHTML = `<span class="n"></span> answered`; e.firstChild.textContent = c.answered; parts.push(e); }
+    const sm = li.querySelector("small");
+    // the dot rides on the part before it, so a wrapped line never starts or ends on a bare dot
+    parts.forEach((e, i) => { if (i < parts.length - 1) e.append("\u00a0·"); sm.append(e); });
+    sm.title = [c.name, c.client].filter(Boolean).join(" · ");
     if (isHost) {
       const b = document.createElement("button");
-      b.type = "button"; b.textContent = "Disconnect";
-      b.addEventListener("click", () => apiKick(id));
+      b.type = "button"; b.textContent = "Disconnect"; b.dataset.id = id; b.setAttribute("aria-label", `Disconnect ${apiLabel(c)}`);
+      b.addEventListener("click", () => { apiKick(id); if (!$("api-sheet").contains(document.activeElement)) $("api-copy").focus({ preventScroll: true }); });
       li.appendChild(b);
     }
     return li;
   }));
+  if (had != null) (had && [...$("api-clients").querySelectorAll("button")].find((b) => b.dataset.id === had) || $("api-copy")).focus({ preventScroll: true });
   if ($("api-allow")) { $("api-allow").checked = !!ai.settings.apiAllow; $("api-allow-row").hidden = !isHost; }
 }
-function openApi() {
-  $("room-menu").open = false;
-  apiPanel();
-  $("api-sheet").hidden = false;
-  $("api-close").focus({ preventScroll: true });
+// desktop: under the button, its left edge a little left of the button's, kept on screen; the caret
+// on the button's centre and the popover growing from there. Phones: CSS makes it a bottom sheet
+const apiSheetMQ = matchMedia("(max-width: 640px)");
+function apiPlace() {
+  if ($("api-sheet").hidden || apiSheetMQ.matches) return;
+  const r = $("api-open").getBoundingClientRect(), pop = $("api-sheet").querySelector(".api-pop");
+  if (!r.width) { closeApi(false); return; }   // the button went away (the room ended, the switch hid)
+  const w = pop.offsetWidth, left = Math.max(12, Math.min(r.left - 12, innerWidth - w - 12)), top = r.bottom + 10, cx = r.left + r.width / 2;
+  Object.assign(pop.style, { left: left + "px", top: top + "px", maxHeight: `calc(100dvh - ${top + 16}px)` });
+  pop.style.setProperty("--cx", cx - left + "px");
+  Object.assign($("api-sheet").querySelector(".api-caret").style, { left: cx + "px", top: top + "px" });
 }
-function closeApi() { $("api-sheet").hidden = true; }
+function openApi() {
+  $("room-menu").open = false; chipPop(null);
+  $("api-sheet").hidden = false;
+  $("api-open").setAttribute("aria-expanded", "true");
+  $("api-sheet").querySelector(".api-pop").setAttribute("aria-modal", String(apiSheetMQ.matches));
+  apiShowTab(apiTab); apiPanel(); apiPlace();
+  $("api-copy").focus({ preventScroll: true });
+}
+// back = return focus to the button (Esc, the close button, the scrim); a click elsewhere keeps its own focus
+function closeApi(back = true) {
+  if ($("api-sheet").hidden) return;
+  const inside = $("api-sheet").contains(document.activeElement);
+  $("api-sheet").hidden = true; apiSeen = null;
+  $("api-open").setAttribute("aria-expanded", "false");
+  if ((back || inside) && !$("api-open").hidden && $("api-open").offsetParent) $("api-open").focus({ preventScroll: true });
+}
 if ($("api-sheet")) {
-  $("api-open").addEventListener("click", openApi);
-  $("api-close").addEventListener("click", closeApi);
-  $("api-sheet").addEventListener("click", (e) => { if (e.target === $("api-sheet")) closeApi(); });
+  for (const b of $("api-sheet").querySelectorAll(".icon-act")) b.innerHTML = COPY_SVG;
+  $("api-code-copy").insertAdjacentHTML("beforeend", '<span class="lb">Copy</span>');
+  $("api-code").addEventListener("scroll", apiFade, { passive: true });
+  $("api-cmd").addEventListener("scroll", apiFade, { passive: true });
+  $("api-open").addEventListener("click", () => $("api-sheet").hidden ? openApi() : closeApi());
+  $("api-close").addEventListener("click", () => closeApi());
+  $("api-sheet").addEventListener("click", (e) => { if (e.target === $("api-sheet")) closeApi(); });   // the phone sheet's scrim
+  document.addEventListener("pointerdown", (e) => { if (!$("api-sheet").hidden && !apiSheetMQ.matches && !e.target.closest?.("#api-sheet, #api-open")) closeApi(false); });
+  addEventListener("resize", () => { apiPlace(); if (!$("api-sheet").hidden) apiFade(); });
+  addEventListener("scroll", apiPlace, true);
+  apiSheetMQ.addEventListener("change", () => closeApi(false));
   $("api-copy").addEventListener("click", () => copyText(apiCommand(), "command"));
+  for (const b of $("api-sheet").querySelectorAll(".api-url .icon-act")) b.addEventListener("click", () => copyText(b.dataset.copy, b.dataset.what, b).then((ok) => ok && apiSay(`${b.dataset.what} copied`)));
+  $("api-code-copy").addEventListener("click", (e) => copyText(API_EXAMPLES[apiTab], "example", e.currentTarget).then((ok) => ok && apiSay("Example copied")));
+  const tabs = [...$("api-sheet").querySelectorAll(".api-tabs [role=tab]")];
+  for (const b of tabs) {
+    b.addEventListener("click", () => apiShowTab(b.id.slice(6)));
+    b.addEventListener("keydown", (e) => {
+      const i = tabs.indexOf(b), j = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : null;
+      if (j == null) return;
+      e.preventDefault();
+      const t = tabs[(j + tabs.length) % tabs.length]; apiShowTab(t.id.slice(6)); t.focus();
+    });
+  }
+  // Tab stays inside while it is open
+  $("api-sheet").addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const f = [...$("api-sheet").querySelectorAll("button, input, pre[tabindex], [tabindex='0']")].filter((el) => !el.closest("[hidden]") && el.tabIndex >= 0 && el.offsetParent);
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
   $("api-allow").addEventListener("change", (e) => {
     ai.settings.apiAllow = e.target.checked;
     if (!ai.settings.apiAllow) for (const id of [...ai.apis.keys()]) apiKick(id, "the host does not allow API clients in this room");
