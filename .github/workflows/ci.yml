@@ -41,6 +41,9 @@ jobs:
         # (runs after a test failure too, for the list; not when an earlier step kept the tests from running)
         if: ${{ !cancelled() && steps.unit.outcome != 'skipped' }}
         run: node scripts/check-test-report.mjs unit-report.xml
+      - name: tests/run.sh selftest (no GPU; a printed FAIL must fail the run)
+        env: { DENO_NO_PACKAGE_JSON: "1" }
+        run: tests/run.sh selftest
   browser:
     # Code mode's preview in headless Chromium, no GPU needed. Optional until it has a track record in CI.
     runs-on: ubuntu-latest
