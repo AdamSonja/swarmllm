@@ -33,6 +33,7 @@ import { probe as preflight, deviceKind } from "./room/preflight.js";
 import { computeScreen } from "./room/compute.js";
 import { CACHE_NAME, PREFIX as CACHE_PREFIX, cacheKey, cachedModels, deleteModel } from "./room/weightcache.js";
 import { working, liveWords } from "./room/working.js";
+import { attachBrowserWeightCache, convertedBytes, clearConverted, convertedByModel, deleteConverted, modelOf } from "./room/convertedcache.js";
 
 // Hidden-state transport (room/transport.js). ?wire=off falls back to PeerJS messages;
 // ?wire=slice uses one sliced channel; ?wire=stripeN spreads slices over N peer connections.
@@ -1265,6 +1266,25 @@ async function serveWeight(from, d) {
   ai.servedBytes = (ai.servedBytes || 0) + buf.length;
 }
 
+// ---- converted weights on disk (room/convertedcache.js, OPFS): a second load of the same layers skips
+// the CPU conversion (K-quant -> Q8, BF16/Q5_0 -> f32, the embedding's repack). Keyed by model URL,
+// its pinned revision, the GGUF header and engine/gguf.js itself, so any of those changing starts
+// fresh. ?wcache=0 turns it off (A/B); ?wcacheverify=1 also checks each entry's payload hash.
+const WCACHE = new URLSearchParams(location.search).get("wcache") !== "0";
+const WCACHE_VERIFY = new URLSearchParams(location.search).get("wcacheverify") === "1";
+async function useConvertedCache(G, url) {
+  if (!WCACHE) { G.entryCache = null; return null; }
+  return attachBrowserWeightCache(G, url, { srcUrl: new URL("./engine/gguf.js", import.meta.url).href, verify: WCACHE_VERIFY });
+}
+async function convertedSummary(c, t0) {
+  if (!c) return;
+  await c.flush();   // background writes done before the engine is built
+  if (!(c.stats.hit || c.stats.write || c.stats.full)) return;
+  const msg = `${c.summary()}; this device's layers loaded in ${((performance.now() - t0) / 1000).toFixed(1)} s`;
+  console.info(msg);
+  if (c.stats.hit) log("room", `${myName}: ${msg}`);
+}
+
 async function fetchGGUFHeader(url, needTokenizer = true) {
   let size = 12 * 2 ** 20;
   for (;;) {
@@ -1762,8 +1782,10 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
     }
     planPrefetch(M.gguf, shardInfos(G, names));
     G.streamEntry = streamWithRetry(M.gguf, streamOpts);
+    const wc = await useConvertedCache(G, M.gguf), tw = performance.now();
     const weights = await qwen35Weights(G, rangeBytesOf(M.gguf), opts, (done) => onProg(done, total),
       (e, name) => gpuUploadEntry(ai.device, e, name === GGML_EMBED));   // straight to the GPU, RAM stays flat
+    await convertedSummary(wc, tw);
     aiStatus("building GPU pipelines (compiling shaders)\u2026");
     ai.engine = await Qwen35Engine.create({
       device: ai.device, meta: G.meta, weights, vocab: G.tensors[GGML_EMBED]?.shape?.[0],
@@ -1790,8 +1812,10 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
     if (hasHead) names.push(GGML_FINAL_NORM, GGML_OUTPUT);
     planPrefetch(M.gguf, shardInfos(G, names));
     G.streamEntry = streamWithRetry(M.gguf, streamOpts);
+    const wc = await useConvertedCache(G, M.gguf), tw = performance.now();
     const weights = await ggufWeights(G, rangeBytesOf(M.gguf), opts, (done) => onProg(done, total),
       (e, name) => gpuUploadEntry(ai.device, e, name === GGML_EMBED));
+    await convertedSummary(wc, tw);
     aiStatus("building GPU pipelines\u2026");
     ai.engine = await DenseEngine.create({
       coopWG: ai.tune?.wg, coopRows: ai.tune?.rows,
@@ -3481,6 +3505,7 @@ const cacheDisarm = () => { cacheArmed = 0; cacheLabel("Clear cached weights", "
 async function cachedBytes() {
   const c = await getWeightCache(); let n = 0;
   if (c) for (const k of await c.keys()) n += +((await c.match(k))?.headers.get("x-swarm-len") || 0);
+  try { n += await convertedBytes(await navigator.storage.getDirectory()); } catch { /* no OPFS */ }
   return n;
 }
 $("cache-clear").addEventListener("click", async (ev) => {
@@ -3493,6 +3518,7 @@ $("cache-clear").addEventListener("click", async (ev) => {
     return;
   }
   cacheDisarm();
+  try { await navigator.storage.getDirectory().then(clearConverted); } catch { /* no OPFS */ }
   try { await caches.delete(CACHE_NAME); weightCache = null; toast("cached weights cleared"); } catch { toast("could not clear the cache"); }
   renderCacheModels();
 });
@@ -3503,6 +3529,10 @@ let cacheRenderGen = 0;
 async function renderCacheModels() {
   const gen = ++cacheRenderGen, ul = $("cache-models"), c = await getWeightCache();
   const list = c ? await cachedModels(c, MODELS).catch(() => []) : [];
+  // converted weights (room/convertedcache.js) count toward their model's row and go with it
+  const opfs = await navigator.storage?.getDirectory?.().catch(() => null);
+  const conv = opfs ? await convertedByModel(opfs) : new Map();
+  for (const g of list) g.bytes += conv.get(modelOf(g.url)) || 0;
   if (gen !== cacheRenderGen) return;
   ul.replaceChildren(); ul.hidden = !list.length;
   if (!list.length) return;
@@ -3521,7 +3551,7 @@ async function renderCacheModels() {
         return;
       }
       armed = 0; b.disabled = true;
-      try { const r = await deleteModel(c, g.url); toast(`deleted ${fmtBytes(r.bytes)} of cached weights`); } catch { toast("could not delete those weights"); }
+      try { const r = await deleteModel(c, g.url); if (opfs) r.bytes += await deleteConverted(opfs, g.url); toast(`deleted ${fmtBytes(r.bytes)} of cached weights`); } catch { toast("could not delete those weights"); }
       renderCacheModels();
     });
     li.append(name, b); ul.append(li);
