@@ -1,19 +1,28 @@
 // Pooled room: signaling, WebRTC mesh, layer assignment, weight streaming and the
 // generation loop (prefill, decode, speculative verify). Served with p2p.html at /room.
-import { autotuneCoop, makeTokenizer, DenseEngine, argmax, fetchModelShard, shardTensorNames, gpuSelfTest, kernelMicroTests }
-  from "./engine/engine.js";
+// The inference engine (engine/engine.js, engine/qwen35.js and their WGSL kernels, ~250 KB) is not
+// part of the join screen's module graph: loadEngine() imports it when this device enters a room,
+// and aiLoadShard waits for it. The join screen works as soon as the lobby modules below are in.
+import { argmax } from "./engine/sampling.js";
+let autotuneCoop, makeTokenizer, DenseEngine, fetchModelShard, shardTensorNames, gpuSelfTest, kernelMicroTests, Qwen35Engine;
+let engineLoad = null;
+function loadEngine() {
+  return engineLoad ||= Promise.all([import("./engine/engine.js"), import("./engine/qwen35.js")]).then(([e, q]) => {
+    ({ autotuneCoop, makeTokenizer, DenseEngine, fetchModelShard, shardTensorNames, gpuSelfTest, kernelMicroTests } = e);
+    ({ Qwen35Engine } = q);
+  }, (err) => { engineLoad = null; throw new Error("couldn't load the inference engine (" + (err?.message || err) + "). Check the connection and try again"); });
+}
 import { f32ToF16, f16ToF32, parseGGUFHeader, ggufWeights, ggufShardBytes, GGML_EMBED, GGML_OUTPUT, GGML_FINAL_NORM,
   ggmlLayerNames, qwen35Weights, qwen35ShardBytes, qwen35MtpBytes, qwen35LayerNames, qwen35NamesFor, tokenizerFromGGUF, gpuUploadEntry, streamEntryToGPU }
   from "./engine/gguf.js";
-import { Qwen35Engine } from "./engine/qwen35.js";
-import { roomQwen35Options, roomEngineFlags, applyRoomFlags } from "./engine/preset.js";
+import { roomQwen35Options, roomEngineFlags, applyRoomFlags } from "./engine/preset.js";   // no imports of its own; the engine itself loads late (loadEngine)
 import { WIRE_F16, badF32, f32ToB64, packF16, unpackF16, asU16, packWire, unpackWire, asF32, b64ToF32, wireStats } from "./room/wire.js";
 import { esc, md, mdChat } from "./room/markdown.js";
 import { pickSampler, SAMPLING } from "./room/sampling.js";
 import { chatRecipients } from "./room/visibility.js";
 import { validateApiAsk, apiPrompt, apiRun, AnswerCache, API_LIMITS, pieceDecoder, helloMeta, withStyle } from "./room/api.js";
 import { PrefixIndex, pinSplit } from "./harness/prefix.js";
-import { MODELS, NEED_GB, PICKER, MAX_SEQ, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM, maxSeqFor, kvBytesPerLayerPos, kvModeFor, kvForLoad } from "./room/models.js";
+import { MODELS, NEED_GB, FILE_GB, PICKER, MAX_SEQ, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM, maxSeqFor, kvBytesPerLayerPos, kvModeFor, kvForLoad } from "./room/models.js";
 // the context window of the loaded engine (per model: room/models.js CTX; 2048 for the small ones)
 const ctxMax = () => ai.engine?.maxSeq || MAX_SEQ;
 // ?ckpt=N: keep the room's state after the last N answers on every device (GPU copies), so a
@@ -147,17 +156,23 @@ preflight().then((v) => {
   $("join-gpu-t").textContent = v.line;
   $("join-gpu-d").textContent = v.detail || "";
   $("join-gpu").querySelector("details").hidden = !v.detail;
+  $("join-gpu").querySelector("details").open = !!v.detail;   // the remedy is the useful part: show it
   $("join-gpu").hidden = false;
   $("join-pledge").classList.add("no-gpu");
   $("ap-no").textContent = v.line;
+  if (v.detail) { const d = document.createElement("span"); d.className = "ap-no-d"; d.textContent = v.detail; $("ap-no").append(" ", d); }
 });
+// the least any model in the picker needs (the 1.7B's 4 GB)
+const SMALLEST_NEED = Math.min(...PICKER.map((k) => NEED_GB[k]));
 // probe once at load; fill the contribution selector
 const metaPromise = (async () => {
   const m = await probeGPU();
   if (m.webgpu && m.budgetGB) m.contribGB = Math.max(0.2, Math.round(m.budgetGB * 0.5 * 10) / 10);
   m.phone = m.ua === "iPhone" || m.ua === "Android";
   if (m.phone) { m.contribGB = 0.5; $("join-gb").min = "0.5"; $("join-gb").step = "0.5"; }
-  else if (m.contribGB) m.contribGB = Math.max(1, Math.round(m.contribGB));
+  // a laptop gives at least what the smallest model needs, when its probe allows, so one laptop can
+  // run the 1.7B alone (half of maxBufferSize is 2 GB on a typical laptop, and 2 GB runs nothing)
+  else if (m.contribGB) m.contribGB = Math.max(1, Math.round(m.contribGB), Math.min(SMALLEST_NEED, Math.floor(m.budgetGB)));
   if (m.contribGB) $("join-gb").value = m.contribGB;
   return m;
 })();
@@ -354,16 +369,37 @@ function setModelValue(key) { if (!MODELS[key]) return; addModelOption(key); $("
 function renderLadder(pledged) {
   const el = $("ai-ladder"); if (!el) return;
   const none = !(pledged > 0);
+  // a radio group: one tab stop (the picked row), arrows move the pick. The rows are re-rendered
+  // on every change, so the focus follows the picked row when it was in the group.
+  const had = el.contains(document.activeElement);
   el.innerHTML = (none ? '<p class="ai-nogpu">Needs a device with WebGPU</p>' : "") + ladder(PICK_NEED, pledged).map((x) => {
     const gb = `<span class="nd">${NEED_GB[x.key] ?? ""} GB</span>`;
     const fig = x.ok ? `${gb}<b>fits</b>` : none ? gb : `<span class="more">needs ${x.short} GB more</span>`;
-    return `<button type="button" class="rung${x.ok ? " ok" : " short"}${x.key === $("ai-model").value ? " sel" : ""}" data-k="${x.key}" aria-pressed="${x.key === $("ai-model").value}"${x.ok ? "" : ' title="Invite a device to fit this"'}><span class="rn">${esc(shortName(x.key))}</span><span class="fig">${fig}</span></button>`;
+    // with no device that can hold layers, nothing reads as picked: there is nothing to start yet
+    const sel = !none && x.key === $("ai-model").value;
+    return `<button type="button" role="radio" class="rung${x.ok ? " ok" : " short"}${sel ? " sel" : ""}" data-k="${x.key}" aria-checked="${sel}" tabindex="${sel ? 0 : -1}"${x.ok ? "" : ` title="${giveFor(x.short) ? "Raise This device gives, or invite a device" : "Invite a device to fit this"}"`}><span class="rn">${esc(shortName(x.key))}</span><span class="fig">${fig}</span></button>`;
   }).join("");
+  if (!el.querySelector(".rung.sel")) el.querySelector(".rung")?.setAttribute("tabindex", "0");
+  if (had) el.querySelector('.rung[tabindex="0"]')?.focus({ preventScroll: true });
 }
-$("ai-ladder").addEventListener("click", (e) => {
-  const b = e.target.closest(".rung"); if (!b || $("ai-model").disabled) return;
-  setModelValue(b.dataset.k); modelTouched = true; updateCluster();
+function pickRung(b) { if (!b || $("ai-model").disabled) return; setModelValue(b.dataset.k); modelTouched = true; updateCluster(); }
+$("ai-ladder").addEventListener("click", (e) => pickRung(e.target.closest(".rung")));
+$("ai-ladder").addEventListener("keydown", (e) => {
+  const rs = [...$("ai-ladder").querySelectorAll(".rung")], i = rs.indexOf(e.target.closest(".rung"));
+  const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+  const to = step ? (i + step + rs.length) % rs.length : e.key === "Home" ? 0 : e.key === "End" ? rs.length - 1 : -1;
+  if (i < 0 || to < 0) return;
+  e.preventDefault(); pickRung(rs[to]);
 });
+// how much this device would give to cover `short` GB, or 0 when it can't: needs WebGPU, and stays
+// within what its probe allows (a phone keeps its small default; a laptop goes up to its budget)
+function giveFor(short) {
+  if (!(short > 0) || !myMeta.webgpu || myMeta.phone) return 0;
+  const v = Math.ceil((myMeta.contribGB + short) * 10 - 1e-6) / 10;
+  const cap = Math.min(64, Math.max(SMALLEST_NEED, Math.floor(myMeta.budgetGB || 0)));
+  return v <= cap ? Math.ceil(v) : 0;
+}
+$("ai-give").addEventListener("click", (e) => lendGB(+e.currentTarget.dataset.gb));
 function updateNeed(pledged) {
   if (!modelTouched && !ai.engine && !ai.busy && !$("ai-model").disabled) $("ai-model").value = bestFit(PICK_NEED, pledged);
   renderLadder(pledged);
@@ -376,6 +412,29 @@ function updateNeed(pledged) {
     : `Needs ${need} GB. The room has ${has} GB, ${(need - pledged).toFixed(1)} GB short.`;
   $("ai-need").classList.toggle("ok", ok);
   if (!ai.busy && !ai.engine) $("ai-start").disabled = !ok;
+  // short, and this device alone can close the gap: offer that one tap next to the disabled Start
+  const give = giveFor(need - pledged);
+  $("ai-give").hidden = ok || !give || ai.busy || !!ai.engine;
+  // what pressing Start costs this device: about its share of the weights file (layers are dealt by
+  // memory given), so a phone on mobile data sees ~0.2 GB and a laptop alone the whole file
+  const file = FILE_GB[$("ai-model").value];
+  const mine = ok && file && myMeta.webgpu && myMeta.contribGB ? file * Math.min(1, myMeta.contribGB / pledged) : 0;
+  const size = (gb) => gb < 1 ? `${Math.max(10, Math.round(gb * 1024 / 10) * 10)} MB` : `${gb.toFixed(1)} GB`;
+  $("ap-note").textContent = mine
+    ? (mine >= file * 0.98 ? `Start downloads the whole ${size(file)} model to this device, once. It stays cached for next time.`
+      : `Start downloads about ${size(mine)} to this device (its share of ${size(file)}), once. It stays cached for next time.`)
+    : ok && file && !myMeta.webgpu ? "This device only chats, so it downloads no layers."
+    : "Each device downloads only its own layers, once. They stay cached for next time.";
+  // every device here is chat only: say why Start is off, right under it
+  $("ai-why").hidden = pledged > 0 || ai.busy || !!ai.engine;
+  // and say so beside the stepper, which is the one-tap fix (not a second device)
+  $("ap-me-hint").hidden = ok || !give;
+  $("ap-me-hint").textContent = `Raise this to ${give} GB to fit ${shortName($("ai-model").value)}.`;
+  if (give) { $("ai-give").textContent = `Give ${give} GB from this device`; $("ai-give").dataset.gb = give; }
+  // why Start is off, for screen readers (sighted users see it in the rows and the pool card)
+  $("start-why").textContent = ok ? "" : !(pledged > 0) ? "No device with WebGPU yet. Invite one to start a model."
+    : `${shortName($("ai-model").value)} needs ${need} GB and the room has ${has} GB, ${+(need - pledged).toFixed(1)} GB short. Invite a device or give more memory.`;
+  if (ok) $("ai-start").removeAttribute("aria-describedby"); else $("ai-start").setAttribute("aria-describedby", "start-why");
   if (ok && !wasReady) { $("ai-start").classList.remove("unlocked"); void $("ai-start").offsetWidth; $("ai-start").classList.add("unlocked"); }
   wasReady = ok;
 }
@@ -448,6 +507,7 @@ $("ap-gb").addEventListener("focus", (e) => e.target.select());
 $("ap-copy").addEventListener("click", copyRoomLink);
 
 function enterRoom() {
+  loadEngine().catch(() => {});   // fetch the engine while the room fills; aiLoadShard reports a failure when it needs it
   $("join-screen").style.display = "none";
   $("room-screen").style.display = "flex";
   $("room-badge").style.display = "";
@@ -455,11 +515,14 @@ function enterRoom() {
   roomSince = performance.now();
   $("compute-open").hidden = false;
   $("room-badge").textContent = roomCode;
+  $("room-h").textContent = `Room ${roomCode}`;
   $("side-code").textContent = roomCode;
   $("side-code").addEventListener("click", openShare);
   $("ap-qr").innerHTML = qrSVG(roomLink(), { size: 112 });
-  // Chat | Code shows once a model is ready (?mock=code: at once, there is no model); peers see Code once the host starts a session
-  if (isHost) { $("host-controls").hidden = false; if (MOCK) $("mode-bar").hidden = false; }
+  // Chat | Code shows from the lobby on, so a visitor who came for Code sees where it is; Code stays
+  // off (codeGate) until a model is running (?mock=code: at once, there is no model)
+  if (isHost) $("host-controls").hidden = false;
+  $("mode-bar").hidden = false; codeGate();
   peerCard("self", myName, myMeta, true);
   updateCluster();
   log("room", `${roomCode}: type this code on your other devices`);
@@ -855,6 +918,8 @@ async function start(create, resume = null) {
       ...(window.TURN_SERVERS || []),
     ],
   };
+  // PeerJS is a deferred script from cdn.jsdelivr.net (p2p.html): without it the page still renders, so say why nothing connects
+  if (typeof Peer !== "function") { joinFailed("couldn't load the connection library from cdn.jsdelivr.net (offline, or blocked by an extension or network). Reload to try again"); return; }
   // host claims the well-known id for the code; joiners get random ids
   peer = new Peer(create ? PREFIX + code : undefined, { debug: 1, config: ICE, ...SIGNAL_OPTS });
 
@@ -1142,7 +1207,15 @@ if (backAsHost && Date.now() - backAsHost.t < 60000 && !(linkCode && linkCode !=
   joinWait(true, `Joining room ${linkCode}`);
   $("join-status").textContent = "Checking this device\u2026";
   metaPromise.then(() => { if (!peer) start(false); });
+} else if (window.pooledEarly) {
+  // a tap on Start a room or Join before this module (the whole engine) had loaded: p2p.html's early
+  // script kept it and showed the wait state; run it now instead of dropping it
+  const early = window.pooledEarly;
+  if (early === "create") { keepAwake(); start(true); }
+  else if (codeOk()) { keepAwake(); start(false); }
+  else joinWait(false);
 }
+window.pooledWired = true;
 
 // ================= distributed inference =================
 
@@ -1500,10 +1573,13 @@ function chatBotStart(mid) {
   const m = document.createElement("div");
   m.className = "m bot";
   if (mid != null) m.dataset.mid = mid;
-  m.innerHTML = `<div class="who"><span class="wn"></span><span class="wd" aria-hidden="true"><i></i><i></i><i></i></span></div><div class="bubble"></div>`;
+  // the bubble stays out of the live region while tokens stream in (#ai-output is role=log);
+  // chatBotEnd swaps in a fresh bubble so a screen reader announces the finished answer once
+  m.innerHTML = `<div class="who"><span class="wn"></span><span class="wd" aria-hidden="true"><i></i><i></i><i></i></span></div><div class="bubble" aria-hidden="true"></div>`;
   m.querySelector(".wn").textContent = shortName(ai.model || $("ai-model").value) || "room";
   // until the first token: the working line (the first piece replaces it)
-  m.querySelector(".bubble").append(working());
+  const n = Object.keys(ai.layersByName || {}).length;
+  m.querySelector(".bubble").append(working({ lead: n ? `Reading your message on ${n} device${n > 1 ? "s" : ""}` : "" }));
   m.classList.add("live");
   m.pieces = [];
   o.appendChild(m); scrollChat();
@@ -1534,6 +1610,9 @@ function chatBotPiece(text, d) {
 function chatBotEnd(note, stats) {
   if (!botEl) chatBotStart();
   if (note) botEl.pieces = [{ t: note, d: 0 }];
+  // a new bubble node (not the streamed one un-hidden) is what the log announces
+  const fresh = document.createElement("div"); fresh.className = "bubble";
+  botEl.querySelector(".bubble").replaceWith(fresh);
   renderBot(botEl, false);
   botEl.classList.remove("live");
   // a finished answer in a background tab: say so in the tab title until the tab is looked at
@@ -1677,6 +1756,7 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
   if (ai.device) { try { ai.device.destroy(); } catch {} ai.device = null; ai.engine = null; }
   ai.firstGpuError = null;
   ai.peerBytes = 0; ai.netBytes = 0; cacheHits = 0;   // per load: a count left from an earlier load in this tab mislabels the status
+  if (!Qwen35Engine) { aiStatus("loading the inference engine\u2026"); await loadEngine(); }
   const adapter = await navigator.gpu?.requestAdapter();
   if (!adapter) throw new Error("This browser has no WebGPU, so this device can't hold layers. Open the room in a recent Chrome, Edge or Safari, or run the model from another device");
   ai.device = await adapter.requestDevice({
@@ -3376,8 +3456,10 @@ function codeWelcome(id) {
 // so the chat page's load cost does not change.
 function loadCode() {
   if (MOCK && isHost && !ai.role) { ai.role = "host"; ai.hostId = peer?.id; }
-  return codeLoad ||= import("./room/code.js").then((m) => m.initCode?.(roomApi, { mock: MOCK ? window.__pooledMock : null }))
+  const p = codeLoad ||= import("./room/code.js").then((m) => m.initCode?.(roomApi, { mock: MOCK ? window.__pooledMock : null }))
     .catch((err) => { codeLoad = null; throw err; });
+  codeGate();   // a Code session reached this device (a host's code message): its tab turns on
+  return p;
 }
 // In arrival order, even across the first message's lazy load.
 function codeOnData(from, d) {
@@ -3400,6 +3482,18 @@ function codeOnData(from, d) {
 // Chat is the room's first tab; Code is one click away (no switch on its own when the model is ready)
 let simReady = false;
 // initCode returns { show(mode) }; the Chat tab is handled by code.js once it is loaded
+// Code runs on the room's model: until one is online its tab is shown but off, and a tap says why
+function codeGate() {
+  const off = !MOCK && !codeLoad && !$("ai-panel").classList.contains("online") && $("mode-code").getAttribute("aria-selected") !== "true";
+  $("mode-code").setAttribute("aria-disabled", String(off));
+  $("mode-code").title = off ? "Start a model first: Code mode runs on the room's model" : "";
+}
+new MutationObserver(codeGate).observe($("ai-panel"), { attributes: true, attributeFilter: ["class"] });
+document.addEventListener("click", (e) => {
+  if (!e.target.closest?.("#mode-code") || $("mode-code").getAttribute("aria-disabled") !== "true") return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  toast("Start a model first: Code mode runs on the room's model.");
+}, true);
 document.addEventListener("click", (e) => { if (e.target.closest?.("#mode-code") && $("mode-code").getAttribute("aria-selected") !== "true") window.pooledSparkle?.($("mode-code")); }, true);   // switching to Code sparkles (site/js/sparkle.js); capture: before the tab flips
 // A tab opened before a deploy has the old modules in memory; Code mode's newer files can then fail to
 // link against them. Say so plainly: a host reloads (it goes straight back into its room), a guest is asked to.
@@ -3421,6 +3515,7 @@ const roomApi = {
   role: () => ai.role,                                  // "host" | "worker" | "guest" | undefined
   ready: () => MOCK || simReady || (!!ai.engine && !ai.degraded),   // host: can generate now (simReady: ?sim=1 pictures only)
   tok: () => ai.tok,
+  model: () => ai.model || $("ai-model").value,   // the room's model key (Code's empty state sizes its example to it)
   chatTemplate: () => ai.tok?.chatTemplate || ai.G?.meta?.["tokenizer.chat_template"] || "",
   maxSeq: () => ctxMax(),
   generate: roomGenerate,
