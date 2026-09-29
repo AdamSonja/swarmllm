@@ -12,7 +12,7 @@ import { esc, md, mdChat } from "./room/markdown.js";
 import { pickSampler, SAMPLING } from "./room/sampling.js";
 import { chatRecipients } from "./room/visibility.js";
 import { validateApiAsk, apiPrompt, apiRun, AnswerCache, API_LIMITS, pieceDecoder, helloMeta, withStyle } from "./room/api.js";
-import { PrefixIndex } from "./harness/prefix.js";
+import { PrefixIndex, pinSplit } from "./harness/prefix.js";
 import { MODELS, NEED_GB, PICKER, MAX_SEQ, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM, maxSeqFor, kvBytesPerLayerPos, kvModeFor, kvForLoad } from "./room/models.js";
 // the context window of the loaded engine (per model: room/models.js CTX; 2048 for the small ones)
 const ctxMax = () => ai.engine?.maxSeq || MAX_SEQ;
@@ -2172,7 +2172,9 @@ function ckptClear(tellChain = false) {   // engines rebuilt or in an unknown st
   if (tellChain && keys.length && ai.chain.length) ai.pendingCtl = { ...ai.pendingCtl, dp: [DROP_ALL] };
   ai.ckpt = new PrefixIndex(1 << 30); ai.ckptN = ai.ckptN || 0;
 }
-function ckptSave() {
+// pin: this save is the system prompt + tools (Code mode, issue #73). It is kept apart from the
+// CKPT_MAX answer checkpoints, never evicted by them, and replaces the previous pinned one.
+function ckptSave(pin = false) {
   if (!CKPT_MAX || !ai.fed?.length || !ai.engine?.saveSlot) return;
   if (!ai.ckpt) ckptClear();
   // a worker applies sv before dp, so a save riding with DROP_ALL would be gone at once on every
@@ -2182,15 +2184,27 @@ function ckptSave() {
   // before the first prefill round): the frame header carries one save, so this one supersedes it.
   // Forget it here too, or a later resume could load a slot no worker saved. Its drops stay pending.
   const prev = ai.chain.length ? ai.pendingCtl?.sv : null;
-  if (prev != null) { ai.ckpt.remove(prev); try { ai.engine.dropSlot(prev); } catch {} }
+  if (prev != null) {
+    // a pinned save superseded at the same tokens (Stop right after it) stays pinned
+    const p = ai.ckpt.items.find((x) => x.key === prev);
+    if (p?.pin && p.ids.length === ai.fed.length && p.ids.every((t, i) => t === ai.fed[i])) pin = true;
+    ai.ckpt.remove(prev); try { ai.engine.dropSlot(prev); } catch {}
+  }
+  // the caches hold exactly a checkpoint already on every device (Stop right after the pinned
+  // save, solo; or a regenerate stopped before its first frame): keep that one instead of a
+  // second slot with the same state, which would only evict an answer checkpoint
+  const same = ai.ckpt.items.find((x) => x.ids.length === ai.fed.length && x.ids.every((t, i) => t === ai.fed[i]));
+  if (same && (same.pin || !pin)) { same.t = ++ai.ckpt.clock; return; }
   const drop = [];
-  while (ai.ckpt.items.length >= CKPT_MAX) {
-    const old = ai.ckpt.items.reduce((a, b) => (a.t < b.t ? a : b));
+  if (same) { ai.ckpt.remove(same.key); ai.engine.dropSlot(same.key); drop.push(same.key); }   // re-saved pinned below
+  if (pin) for (const old of ai.ckpt.pinned()) { ai.ckpt.remove(old.key); ai.engine.dropSlot(old.key); drop.push(old.key); }
+  else while (ai.ckpt.unpinned().length >= CKPT_MAX) {
+    const old = ai.ckpt.unpinned().reduce((a, b) => (a.t < b.t ? a : b));
     ai.ckpt.remove(old.key); ai.engine.dropSlot(old.key); drop.push(old.key);
   }
   const key = ai.ckptN = (ai.ckptN || 0) % 65534 + 1;   // slot numbers ride the frame header (u16)
   ai.engine.saveSlot(key);
-  ai.ckpt.add(ai.fed.slice(), key);
+  ai.ckpt.add(ai.fed.slice(), key, { pin });
   if (ai.chain.length) {
     const dp = [...new Set([...[].concat(ai.pendingCtl?.dp ?? []), ...drop])];
     ai.pendingCtl = { ...ai.pendingCtl, sv: key, ...(dp.length ? { dp } : {}) };
@@ -2620,7 +2634,10 @@ const MAXNEW_PARAM = Math.max(0, parseInt(new URLSearchParams(location.search).g
 //   signal                AbortSignal; ai.abort (the Stop button) works too
 // -> { tokens, reason: "stop"|"max"|"ctx"|"abort", reused, prefilled, count, tps, acc, copied,
 //      tPre, tDecode, preFrames, stats }
-async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, sample = pickSampler(ai.settings.sampling), signal, onStatus = () => {} } = {}) {
+// pin: the length of the prompt's fixed start (Code mode: the system prompt + tools). When the
+// caches do not hold it yet, the prefill pauses there and saves a pinned checkpoint on every
+// device, so a later prompt that changes after it (a compacted agent conversation) resumes there.
+async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, sample = pickSampler(ai.settings.sampling), signal, onStatus = () => {}, pin = 0 } = {}) {
   if (!ai.engine) throw new Error("the model is not loaded");
   // a device in the chain is gone: its frames would go nowhere and wait out the lap timeouts
   if (ai.degraded) throw new Error("a device left: re-deal the layers first");
@@ -2652,7 +2669,20 @@ async function roomGenerate(ids, { onToken = () => {}, stop, maxNew = MAX_NEW, s
     onStatus(reused ? `prefill: ${rest.length} new tokens (${reused} already in the room's caches)…` : `prefill: ${rest.length} tokens…`);
     const t0Pre = performance.now();
     ai.frames = 0;
-    let logits = rest.length ? await aiPrefill(rest, { aborted, onStatus, desc }) : null;
+    // the fixed start first, then its checkpoint, then the rest (the same tokens at the same
+    // positions, so the answer is the same; the head's logits after the first part are unused)
+    // Stopped during the first part: nothing more is sent, and the end-of-answer save below keeps
+    // what the caches hold, as for any stop during a prefill.
+    const cut = CKPT_MAX && ai.engine.saveSlot ? pinSplit(reused, pin, ids.length) : 0;
+    let logits = null;
+    if (!cut) logits = rest.length ? await aiPrefill(rest, { aborted, onStatus, desc }) : null;
+    else {
+      const part = await aiPrefill(ids.slice(reused, cut), { aborted, onStatus, desc });
+      // the whole fixed start is in the caches (also when Stop came during its last lap): pin it,
+      // or the next request, which reuses it from the plain end save, would never pin it
+      if (ai.fed?.length === cut) ckptSave(true);
+      if (part && !aborted()) logits = await aiPrefill(ids.slice(cut), { aborted, onStatus, desc });
+    }
     tPre = performance.now() - t0Pre;
     if (prefilled) compute.pass(prefilled);
     preFrames = ai.frames;
