@@ -1,6 +1,6 @@
 # Room protocol
 
-Browsers in a room form a WebRTC mesh (PeerJS signaling for the introduction only). The host registers with PeerJS as `pooled-room-<CODE>`; before the rename to Pooled the prefix was `swarmllm-room-`, so a pooled.run tab and an old swarmllm.ai tab never meet in one room. One browser is the **host**: it owns the conversation, the tokenizer, the embedding table, the LM head and the sampler. The others are **workers** holding contiguous layer ranges; together they form a **chain** in layer order, with the last worker sending back to the host.
+Browsers in a room form a WebRTC mesh (PeerJS signaling for the introduction only). The host registers with PeerJS as `pooled-room-<CODE>`; before the rename to Pooled the prefix was `swarmllm-room-`, so a pooled.run tab and an old swarmllm.ai tab never meet in one room. One browser is the **host**: it owns the conversation, the tokenizer, the embedding table, the LM head and the sampler. The others are **workers** holding contiguous layer ranges; together they form a **chain** in layer order, with the last worker sending back to the host. By memory, phones hold no layers at all while the host and the other computers can hold the model (`phonesToLeaveOut`; `?phonelayers=1` overrides): they join as ask-only guests.
 
 ## Lifecycle
 
@@ -46,6 +46,7 @@ Hidden states travel as binary frames: an f16-packed `Uint16Array` (10 KB for `d
 ## Ordering guarantees
 
 - Data channels are ordered and reliable. Frames are sliced (≤ 4.6 KB) and striped across several associations, so consecutive frames can complete out of order at the receiver; the transport hands them over strictly in send order (a gap with no progress for 5 s is skipped, and a frame arriving after its gap was skipped is dropped rather than run out of order). A worker runs frames one at a time from a queue in that order, so recurrent states advance deterministically.
+- Keep-alive: while a wire link has carried a frame in the last 1.5 s, each end sends a 1-byte message on a second negotiated channel (id 78, `swarm-ka`, unordered, never retransmitted) whenever it has sent nothing on that link for 10 ms (`?ka=ms`, `?ka=0` off). It keeps a phone's Wi-Fi out of power save between laps. Receivers ignore it; a peer without the channel drops it, so it is not a protocol change.
 - Because of that, the host keeps up to 6 prefill rounds in flight: round r+1 runs on the host while round r is on a worker, and the chain works as a pipeline. Output is unchanged: every device sees the same frames in the same order.
 - The prefill rounds come back as full hidden states, which the host feeds to the draft block (`mtpRun`) so the first speculative steps after a prompt draft from a warm cache.
 - Inside a batched frame, columns are processed strictly in order; snapshot slots are indexed by global column (`frame.snap` packs base and total), so an 8-column verify split into two 4-column chunks on an older worker still rolls back correctly.

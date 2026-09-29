@@ -19,9 +19,9 @@ const ctxMax = () => ai.engine?.maxSeq || MAX_SEQ;
 // regenerate, an edited question or a branch resumes from the longest saved turn instead of
 // prefilling the whole conversation again. 0 turns it off.
 const CKPT_MAX = Math.max(0, parseInt(new URLSearchParams(location.search).get("ckpt") ?? "2", 10) || 0);
-import { makeLink, attachWire, wireReady, sendFrame, PROTOCOL, DROP_ALL } from "./room/transport.js";
+import { makeLink, attachWire, wireReady, sendFrame, setKeepalive, PROTOCOL, DROP_ALL } from "./room/transport.js";
 import { PERSONAS, specials, fitContext, reusablePrefix } from "./room/conversation.js";
-import { planSplit, planForSpeed, ladder, bestFit, codeFromLocation, pickModelHost } from "./room/plan.js";
+import { planSplit, planForSpeed, phonesToLeaveOut, isPhoneMeta, ladder, bestFit, codeFromLocation, pickModelHost } from "./room/plan.js";
 import { qrSVG } from "./room/qr.js";
 import { lookupDrafts } from "./room/lookup.js";
 import { drawCard } from "./room/card.js";
@@ -34,6 +34,9 @@ import { working, liveWords } from "./room/working.js";
 // ?wire=slice uses one sliced channel; ?wire=stripeN spreads slices over N peer connections.
 const WIRE = (new URLSearchParams(location.search).get("wire") || "stripe4").toLowerCase();
 const WIRE_STRIPES = WIRE === "off" ? 0 : WIRE.startsWith("stripe") ? Math.max(1, Math.min(8, parseInt(WIRE.slice(6), 10) || 1)) : 1;
+// ?ka=ms: keep-alive period on a wire link while frames flow (keeps a phone's Wi-Fi out of power
+// save between laps; room/transport.js), ?ka=0 turns it off
+{ const ka = new URLSearchParams(location.search).get("ka"); if (ka != null) setKeepalive(parseInt(ka, 10) || 0); }
 // Signaling: ?signal=host:port points PeerJS at our own PeerServer (the emulator and big
 // rooms use one); default is the public PeerJS cloud.
 const SIGNAL = new URLSearchParams(location.search).get("signal");
@@ -515,7 +518,7 @@ ensureLink.pending = new Set();
 
 function sendTo(id, obj) { conns.get(id)?.conn.send(obj); }
 // debug: per-peer wire state (channels open, frames sent/received) — `pooledDebug()` in the console (`swarmDebug()` still works)
-window.pooledDebug = window.swarmDebug = () => [...conns].map(([id, e]) => ({ id, name: e.name, chans: e.link?.chans.filter((c) => c.readyState === "open").length ?? 0, sent: e.link?.sent ?? 0, recv: e.link?.recv ?? 0 }));
+window.pooledDebug = window.swarmDebug = () => [...conns].map(([id, e]) => ({ id, name: e.name, chans: e.link?.chans.filter((c) => c.readyState === "open").length ?? 0, sent: e.link?.sent ?? 0, recv: e.link?.recv ?? 0, ka: e.link?.kaSent ?? 0 }));
 // activations go over the sliced wire channel when it is up, else as a normal message
 // ?netlag=ms delays every activation frame this device sends, to emulate a slow link in tests
 // (equal delays keep send order)
@@ -1728,7 +1731,8 @@ async function aiStart(modelArg) {
       // fastest devices first (measured ms per layer from earlier answers), fewest hops; devices
       // that are not needed stay in the room as ask-only guests
       const nameOf = (id) => conns.get(id)?.name || id;
-      const sp = planForSpeed(L, caps.map((c) => Math.floor(c / layerBytes)), [ai.msPerLayer.get(myName), ...ai.chain.map((id) => ai.msPerLayer.get(nameOf(id)))]);
+      const sp = planForSpeed(L, caps.map((c) => Math.floor(c / layerBytes)), [ai.msPerLayer.get(myName), ...ai.chain.map((id) => ai.msPerLayer.get(nameOf(id)))],
+        [isPhoneMeta(myMeta), ...ai.chain.map((id) => isPhoneMeta(conns.get(id)?.meta))]);
       const keep = sp.used.filter((i) => i > 0).map((i) => i - 1);
       ai.leftOut = new Set(ai.chain.filter((_, i) => !keep.includes(i)));
       ai.chain = keep.map((i) => ai.chain[i]);
@@ -1736,7 +1740,20 @@ async function aiStart(modelArg) {
       assigned = sp.used.map((i) => sp.assigned[i]);
       ranges = sp.used.map((i) => sp.ranges[i]);
       caps = sp.used.map((i) => caps[i]);
-    } else ({ assigned, ranges } = planSplit(L, caps));
+    } else {
+      // by memory, but phones hold layers only when the computers cannot hold the model
+      // (room/plan.js phonesToLeaveOut); ?phonelayers=1 deals them layers anyway
+      const nameOf = (id) => conns.get(id)?.name || id;
+      const out = PHONE_LAYERS ? [] : phonesToLeaveOut(L, caps.map((c) => c / layerBytes), [false, ...ai.chain.map((id) => isPhoneMeta(conns.get(id)?.meta))]);
+      if (out.length) {
+        ai.leftOut = new Set(out.map((i) => ai.chain[i - 1]));
+        ai.chain = ai.chain.filter((id) => !ai.leftOut.has(id));
+        ai.chainNames = ai.chain.map(nameOf);
+        caps = caps.filter((_, i) => !out.includes(i));
+        log("room", `${[...ai.leftOut].map(nameOf).join(", ")} ask${ai.leftOut.size > 1 ? "" : "s"} without holding layers: the computers hold the whole model, and a phone's layer would slow every token`);
+      }
+      ({ assigned, ranges } = planSplit(L, caps));
+    }
     ai.layersN = Object.fromEntries([[myName, assigned[0]], ...ai.chain.map((id, i) => [conns.get(id)?.name || id, assigned[i + 1]])]);
 
     const needGB = (L * layerBytes + embedBytes) / 2 ** 30;
@@ -1979,6 +1996,11 @@ const FILL_DRAFTS = new URLSearchParams(location.search).get("fill") !== "0";
 const MTP_REFILL = new URLSearchParams(location.search).get("mtprefill") !== "0";
 const PRE_DRAFT = new URLSearchParams(location.search).get("predraft") !== "0";
 const DRAFT_VOCAB = (() => { const v = new URLSearchParams(location.search).get("draftvocab"); return v === null ? 65536 : parseInt(v, 10) || 0; })();
+// ?phonelayers=1: phones hold layers even when the computers can hold the model (room/plan.js
+// phonesToLeaveOut), for A/B and demos
+const PHONE_LAYERS = new URLSearchParams(location.search).get("phonelayers") === "1";
+// ?split=memory|speed picks the layer split at load (test harnesses pin "memory"; the default is speed)
+{ const sp = new URLSearchParams(location.search).get("split"); if (sp === "memory" || sp === "speed") $("ai-split").value = sp; }
 const MTP_BATCH = new URLSearchParams(location.search).get("mtpbatch") !== "0";   // ?mtpbatch=0: one draft-cache row per submit, for A/B
 const GPU_SAMPLE = new URLSearchParams(location.search).get("gpusample") !== "0";   // on by default; see the engine options in aiLoadShard
 const ARGMAX_WIDE = (new URLSearchParams(location.search).get("argmaxwide") ?? (GPU_SAMPLE ? "1" : "0")) === "1";
@@ -3179,7 +3201,7 @@ const SEG_HELP = {
   "ai-visibility": { all: "Everyone in the room sees the questions and the answers.", host: "Only this device sees the text. Every device still helps write it.", asker: "Each answer goes to whoever asked it. Every device still helps write it." },
   "ai-length": { short: "About a paragraph at most (150 tokens).", normal: "A few paragraphs (400 tokens).", long: "Room for long answers and code (1,200 tokens)." },
   "ai-sampling": { creative: "Varied wording: ask twice, get two different answers.", focused: "Steadier wording, fewer surprises.", exact: "Always the likeliest word: the same question gets the same answer." },
-  "ai-split": { memory: "Every device holds some layers, sized by the memory it gives.", speed: "The fastest devices hold the layers, with the fewest hops. Takes effect when the layers are dealt again." },
+  "ai-split": { memory: "Every computer holds layers, sized by the memory it gives. A phone holds layers only when the computers can't fit the model.", speed: "The fastest devices hold the layers, with the fewest hops; the rest join to ask. Before the first answer measures them, computers go before phones. Takes effect when the layers are dealt again." },
 };
 const segLabel = (id, o) => SEG_LABEL[id]?.[o.value] || o.text.replace(/\s*\(.*\)$/, "").replace(/^./, (c) => c.toUpperCase());
 function buildSegs() {

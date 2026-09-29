@@ -9,6 +9,11 @@ All notable changes to Pooled (called SwarmLLM before September 2026). Format fo
 - **In the room**: API clients get their own card ("API client · Continue") and are not counted as devices; the host can disconnect one or switch API clients off; the room menu's **Use from code** panel gives the command for the room. API exchanges show in the chat marked "via API · not part of this chat's memory" and follow the room's visibility (the asking client always gets its whole answer). Protocol: new fields on existing messages, `PROTOCOL` stays 4 ([docs/protocol.md](docs/protocol.md#api-clients)).
 
 ### Changed
+- **Rooms with phones** (device matrix, Spark + M5 Max + iPhone 14 Pro Max):
+  - The layer split now defaults to **For speed**: the fastest devices fill first, each up to what it lends, and devices that aren't needed join to ask. Before the first answer measures each device, computers go before phones (an unmeasured phone counts as 20x slower), so a phone only takes the layers the computers can't hold. By memory is still in the room settings; `?split=memory|speed` picks one at load (the test harnesses pin `memory`).
+  - A room split by memory no longer gives a phone layers when the other devices can hold the model; the phone joins as an ask-only guest (`?phonelayers=1` restores the old split). Qwen 3.6 35B on a GB10 + iPhone room: 1.6-1.9x faster, the same speed as the GB10 alone.
+  - Keep-alive while an answer runs: each end sends 1 byte every 10 ms of silence on its own unordered channel (id 78), so Wi-Fi power save doesn't park the radio between laps. No protocol bump; `?ka=0` turns it off. Qwen3 1.7B, GB10 + iPhone: +17% plain.
+  - Test rig for rooms with the iPhone (`tests/e2e/xroom_phone.mjs`, `xroom_cluster.sh`) and the measured matrix in docs/bench-log.md.
 - **Metal (Apple GPUs)**:
   - The MoE's default prompt processing (wide prefill at ubatch 256 plus grouped experts) no longer loses the device under Deno on an M5 Max. Wide prefill now submits every 8 layers, which also makes GB10 MoE prefill about 5% faster, with bit-identical results.
   - Apple GPUs in Chrome and Safari get wider fused MoE expert kernels (`moeFusedLayout`; M5 Max kernel time: gate/up 0.49x, down 0.55x). Qwen 3.6 35B decode in Chrome on an M5 Max: +5.6% plain (86.1 -> 90.9 tok/s), +11% spec.
