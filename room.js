@@ -13,7 +13,7 @@ import { pickSampler, SAMPLING } from "./room/sampling.js";
 import { chatRecipients } from "./room/visibility.js";
 import { validateApiAsk, apiPrompt, apiRun, AnswerCache, API_LIMITS, pieceDecoder, helloMeta, withStyle } from "./room/api.js";
 import { PrefixIndex } from "./harness/prefix.js";
-import { MODELS, NEED_GB, PICKER, MAX_SEQ, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM, maxSeqFor, kvBytesPerLayerPos } from "./room/models.js";
+import { MODELS, NEED_GB, PICKER, MAX_SEQ, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM, maxSeqFor, kvBytesPerLayerPos, kvModeFor, kvForLoad } from "./room/models.js";
 // the context window of the loaded engine (per model: room/models.js CTX; 2048 for the small ones)
 const ctxMax = () => ai.engine?.maxSeq || MAX_SEQ;
 // ?ckpt=N: keep the room's state after the last N answers on every device (GPU copies), so a
@@ -1646,7 +1646,7 @@ function setCtx(used, max) {
   el.classList.toggle("warn", used > max * 0.8);
 }
 
-async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(modelKey)) {
+async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(modelKey), kv = kvModeFor(modelKey, KV_ASK)) {
   const M = MODELS[modelKey];
   ai.shardBytes = 0;   // until this load's first progress says how big the new range is
   aiLoading(true, `loading layers ${range[0]}\u2013${range[1] - 1} of ${M.label.split("\u00b7")[0].trim()}`);
@@ -1774,6 +1774,9 @@ async function aiLoadShard(modelKey, range, hasEmbed, hasHead, ctx = maxSeqFor(m
       // the same preset, so their numbers come from these settings. Prefill options are not set there:
       // every device takes the engine's defaults, so host and workers agree.
       ...roomQwen35Options(location.search),
+      // ?kv=q8 on the host: int8 KV cache. The host decides for every device and sends its choice with
+      // ai-load (room/models.js kvModeFor, kvForLoad), so this overrides the preset's own ?kv reading.
+      kvQ8: kv === "q8",
     });
   } else if (M.kind === "gguf") {
     aiStatus("reading model index\u2026");
@@ -1849,6 +1852,7 @@ async function aiStart(modelArg) {
     const M = MODELS[modelKey];
     // context for this room: the model's default, or ?ctx=N up to its cap (room/models.js CTX); every device builds its engine with it
     const ROOM_CTX = maxSeqFor(modelKey, +new URLSearchParams(location.search).get("ctx") || 0);
+    const ROOM_KV = kvModeFor(modelKey, KV_ASK);   // KV cache format for every device: f16, or int8 with ?kv=q8
     // devices without WebGPU join as ask-only guests: they get the chat, not layers
     ai.chain = [...conns.keys()].filter((id) => conns.get(id)?.meta?.webgpu).sort();
     ai.leftOut = new Set();
@@ -1863,7 +1867,7 @@ async function aiStart(modelArg) {
       ai.GModel = modelKey;
       L = ai.G.meta["qwen35.block_count"] - (ai.G.meta["qwen35.nextn_predict_layers"] || 0);
       layerBytes = qwen35ShardBytes(ai.G, { lo: 0, hi: 4, hasEmbed: false, hasHead: false }) / 4
-        + ROOM_CTX * kvBytesPerLayerPos(ai.G.meta);   // the attention layers' KV cache at this room's context
+        + ROOM_CTX * kvBytesPerLayerPos(ai.G.meta, ROOM_KV);   // the attention layers' KV cache at this room's context
       embedBytes = (ai.G.tensors[GGML_EMBED]?.byteLength || 0) + (ai.G.tensors[GGML_OUTPUT]?.byteLength || 0) + qwen35MtpBytes(ai.G);
     } else {
       cfg = await (await fetch(M.cfg)).json();
@@ -1930,7 +1934,7 @@ async function aiStart(modelArg) {
     ai.wsrc = M.gguf ? weightSources(M.gguf, inv) : null;
     ai.chain.forEach((id, i) => {
       const msg = {
-        t: "ai-load", v: PROTOCOL, model: modelKey, range: ranges[i + 1], ctx: ROOM_CTX,
+        t: "ai-load", v: PROTOCOL, model: modelKey, range: ranges[i + 1], ctx: ROOM_CTX, kv: ROOM_KV,
         next: i + 1 < ai.chain.length ? ai.chain[i + 1] : "host",
         host: peer.id,
         inv,
@@ -1942,9 +1946,9 @@ async function aiStart(modelArg) {
     broadcastAll({ t: "ai-layers", by: ai.layersByName });
     const splitDesc = [`you ${assigned[0]}+embed`, ...ai.chain.map((id, i) =>
       `${conns.get(id)?.name || id} ${assigned[i + 1]}`)].join(" · ");
-    log("room", `${M.label} — layer split ${$("ai-split").value === "speed" ? "for speed" : "by pledge"}: ${splitDesc}`);
+    log("room", `${M.label} — layer split ${$("ai-split").value === "speed" ? "for speed" : "by pledge"}${ROOM_KV === "q8" ? ", int8 KV" : ""}: ${splitDesc}`);
     ai.loadingShard = true;
-    try { await aiLoadShard(modelKey, ranges[0], true, true, ROOM_CTX); } finally { ai.loadingShard = false; }
+    try { await aiLoadShard(modelKey, ranges[0], true, true, ROOM_CTX, ROOM_KV); } finally { ai.loadingShard = false; }
     if (ai.startFailed) throw new Error(ai.startFailed);   // a device failed to load its layers while this one loaded
     if (ai.degraded) aiLoading(false);        // a device left while this one loaded: the Re-deal button is on the panel
     aiStatus(n === 1
@@ -2191,6 +2195,7 @@ const PHONE_LAYERS = new URLSearchParams(location.search).get("phonelayers") ===
 // ?split=memory|speed picks the layer split at load (test harnesses pin "memory"; the default is speed)
 { const sp = new URLSearchParams(location.search).get("split"); if (sp === "memory" || sp === "speed") $("ai-split").value = sp; }
 const MTP_BATCH = roomEngineFlags(location.search).mtpBatchFill;   // ?mtpbatch=0: one draft-cache row per submit, for A/B
+const KV_ASK = roomQwen35Options(location.search).kvQ8 ? "q8" : null;   // ?kv=q8 (engine/preset.js): int8 KV cache, host only; see aiLoadShard
 function fillDrafts(h, ids, i0, basePos, n) {
   if (!FILL_DRAFTS || !ai.engine?.mtp) return;
   const dim = ai.engine.dims.dim, E = ai.engine;
@@ -3116,7 +3121,8 @@ async function aiOnData(from, d) {
       ensureLink(d.next);   // open the link to my chain neighbour while the weights download
       try {
         ai.loadingShard = true; ai.loadKey = loadKey;
-        try { await aiLoadShard(d.model || "smollm-135m", d.range, false, false, d.ctx || maxSeqFor(d.model)); } finally { ai.loadingShard = false; }
+        // d.kv: the host's KV format (a host without it: this device's own ?kv=, as before)
+        try { await aiLoadShard(d.model || "smollm-135m", d.range, false, false, d.ctx || maxSeqFor(d.model), kvForLoad(d.model, d.kv, KV_ASK)); } finally { ai.loadingShard = false; }
         if (ai.startFailed) throw new Error(ai.startFailed);
         if (!(await ensureLink(d.next))) throw new Error("could not connect to the next device in the chain");
         aiStatus(`layers ${d.range[0]}–${d.range[1] - 1} ready · syncing with the room…`);

@@ -50,9 +50,12 @@ Deno.test("room.js builds its Qwen engine from the preset and reads no engine fl
   if (!/import \{[^}]*roomQwen35Options[^}]*\} from "\.\/engine\/preset\.js"/.test(src)) throw new Error("room.js does not import the preset");
   const create = src.slice(src.indexOf("ai.engine = await Qwen35Engine.create({"), src.indexOf("} else if (M.kind === \"gguf\")"));
   if (!create.includes("...roomQwen35Options(location.search)")) throw new Error("Qwen35Engine.create in room.js does not spread the preset");
-  for (const k of ["draftVocab", "draftChain", "specFuse", "kvQ8", "moeFuse", "gpuSample", "argmaxWide", "batchCols"]) {
+  for (const k of ["draftVocab", "draftChain", "specFuse", "moeFuse", "gpuSample", "argmaxWide", "batchCols"]) {
     if (new RegExp(`\\b${k}:`).test(create)) throw new Error(`room.js sets ${k} itself instead of taking it from the preset`);
   }
+  // the KV format is the host's choice for every device (sent with ai-load), so it overrides the preset's ?kv
+  const kvAt = create.indexOf('kvQ8: kv === "q8"');
+  if (kvAt < 0 || kvAt < create.indexOf("...roomQwen35Options(location.search)")) throw new Error("room.js must set kvQ8 from the host's ai-load value, after the preset");
   if (!src.includes("applyRoomFlags(ai.engine, location.search)")) throw new Error("room.js does not apply the preset's engine flags");
   for (const f of ["draftvocab", "dvauto", "draftchain", "specfuse", "kv", "moefuse", "moednrows", "gpusample", "argmaxwide", "mtprefill", "predraft", "mtpbatch"]) {
     if (src.includes(`get("${f}")`)) throw new Error(`room.js reads ?${f} itself; it belongs in engine/preset.js`);
