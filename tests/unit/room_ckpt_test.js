@@ -45,30 +45,30 @@ class FakeEngine {
   async runHiddenBatch(xs, base) { this.run(Array.from(xs), base); return Float32Array.from(xs); }
 }
 
-const HOST_FNS = ["sendChain", "resetState", "ckptClear", "ckptSave", "ckptResume"];
+const HOST_FNS = ["sendChain", "resetState", "ckptClear", "ckptSave", "ckptResume", "ckptWhere", "ckptPersist", "ckptForget", "ckptRestore", "ckptRejoin"];
 
-// the host's functions over a stub ai; sent frames land in `out`
-function host({ chain = ["w0"], ckptMax = 2, fed = [], engine = new FakeEngine(), out = [] } = {}) {
-  const ai = { chain, pendingCtl: {}, fed, pos: fed ? fed.length : 0, engine, ckpt: null, ckptN: 0 };
+// the host's functions over a stub ai; sent frames land in `out`. disk: a CkptStore (null: GPU only)
+function host({ chain = ["w0"], ckptMax = 2, fed = [], engine = new FakeEngine(), out = [], disk = null, room = "ROOM", model = "m" } = {}) {
+  const ai = { role: "host", model, chain, pendingCtl: {}, fed, pos: fed ? fed.length : 0, engine, ckpt: null, ckptN: 0 };
   const fns = roomFns(HOST_FNS, {
-    ai, CKPT_MAX: ckptMax, PrefixIndex, DROP_ALL, wireStats: { lastMax: 0 },
+    ai, CKPT_MAX: ckptMax, PrefixIndex, DROP_ALL, wireStats: { lastMax: 0 }, ckptDisk: disk, roomCode: room,
     sendHidden: (to, msg) => out.push({ to, msg }),
   });
   return { ai, out, engine, ...fns };
 }
 
 // a worker's workerFrame over a stub ai; what it forwards lands in `send`
-function worker({ next = "host", engine = new FakeEngine(), send = () => {} } = {}) {
-  const ai = { engine, next, hostId: "host", range: [0, 1] };
-  const { workerFrame } = roomFns(["workerFrame"], {
-    ai, DROP_ALL, performance,
+function worker({ next = "host", engine = new FakeEngine(), send = () => {}, disk = null, room = "ROOM", model = "m", ckptMax = 2 } = {}) {
+  const ai = { role: "worker", model, engine, next, hostId: "host", range: [0, 1] };
+  const { workerFrame, ckptRestore } = roomFns(["workerFrame", "ckptWhere", "ckptPersist", "ckptForget", "ckptRestore"], {
+    ai, DROP_ALL, performance, ckptDisk: disk, roomCode: room, CKPT_MAX: ckptMax, ckptClear: () => {},
     unpackWire: (d) => Float32Array.from(d.x),
     packWire: (h) => ({ x: Array.from(h) }),
     badF32: () => false,
     aiStatus: () => {}, sendTo: () => {}, teleNote: () => {}, compute: { pass() {} },
     sendHidden: send,
   });
-  return { ai, engine, workerFrame };
+  return { ai, engine, workerFrame, ckptRestore };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -201,6 +201,17 @@ Deno.test("ckptSave: the same tokens again never evict an answer checkpoint; a p
   t.ckptSave(); t.ckptSave(true);
   eq(t.ai.ckpt.items.map((x) => x.pin), [true]);
   eq([...t.engine.slots.keys()].length, 1);
+});
+
+Deno.test("ckptSave: a superseded save does not go out when the next save keeps an existing slot", () => {
+  const h = host({ fed: [1, 2, 3], ckptMax: 2 });
+  h.ckptSave(); h.ai.pendingCtl = {};             // slot 1 went out
+  h.ai.fed.push(4, 5); h.ckptSave();              // slot 2 pending
+  h.ai.pendingCtl = { ...h.ai.pendingCtl, ld: 1 }; h.ai.fed = [1, 2, 3];   // a resume of slot 1, Stop before a frame
+  h.ckptSave();
+  eq(h.ai.pendingCtl, { ld: 1 }, "no sv of a slot the host forgot");
+  eq(h.ai.ckpt.items.map((x) => x.key), [1]);
+  eq([...h.engine.slots.keys()], [1]);
 });
 
 Deno.test("ckptClear survives an engine whose dropSlot throws", () => {

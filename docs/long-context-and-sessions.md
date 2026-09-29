@@ -75,6 +75,35 @@ a re-deal or a failed answer clears them. Order on a device: rollback, save, dro
 `tests/e2e/room_synth.mjs --regen --expect-reuse` checks that a regenerate over 3 devices resumes
 from a checkpoint and repeats the greedy answer. `?ckpt=0` turns it off.
 
+Each device also keeps a copy of its part on disk (OPFS, `room/ckpt-store.js`), so a reload does not
+lose it. No new message: a device writes its copy when it applies `sv` and removes
+it on `dp`. The host writes its own copy only once the `sv` has gone out on a frame, with the
+checkpoint's token ids in the header, so it never indexes a slot the chain did not save. A copy is
+named by room code, slot and a hash of the model and the engine's `stateSignature()` (layers, KV
+format), and the header repeats them; a copy for other layers or another model, or in another file
+format version, reads as missing. A new copy of a slot removes the old one first, so a failed write
+(out of quota: the oldest copies of other rooms go first and the write is tried once more) leaves
+the slot missing, never stale.
+
+- A worker that reloads reads its copies back into GPU slots before it says it is ready. The host
+  keeps the checkpoints whose save went out before the worker left and forgets the one still
+  pending, so the next question resumes from the last answer the chain saved.
+- A host that reloads resumes its room (the conversation is in localStorage, with the slot
+  counter), reads its copies and their token ids back, and every device reads its own when the
+  layers are dealt again. Slot numbers go on from the saved counter, so an old copy on a device is
+  never taken for a new one.
+- A device that loads its layers lists the slots it read back in its `ai-ready`, and the host
+  forgets every checkpoint that device lacks (its copy never reached the disk, or the disk was
+  full), so it never asks the chain to load a slot a device does not hold; the next question then
+  resumes from an older checkpoint or prefills.
+- When a device of the chain leaves, the host keeps its checkpoints (the other devices still hold
+  them); a re-deal clears them and every device reads its copies back.
+- The pinned system prompt checkpoint (below) goes to disk with `pin` in its header; a host that
+  reloads indexes it pinned again (besides its newest `?ckpt=N` answer checkpoints), so answer saves
+  still never evict it, and a worker reads back one more copy for it. A pinned one replaced by a new
+  system prompt, or an answer checkpoint promoted to pinned, loses its disk copy like any dropped slot.
+- `?ckptdisk=0` keeps checkpoints on the GPU only.
+
 Code mode also pins the system prompt + tools (issue #73): `roomModel` passes its length as `pin`,
 and when the caches do not hold it yet `roomGenerate` prefills up to there, saves a pinned
 checkpoint (`ckptSave(true)`, riding the next frame like any save), then prefills the rest. The
@@ -195,8 +224,8 @@ each chosen expert once per token today), timing on real hardware.
 ## Next
 
 1. Time it on two Macs and a GB10: decode tok/s at 1K / 8K context, prefill tok/s, `?fuse=0`.
-2. Persist room checkpoints to OPFS on every device (the engine and store are there; the room
-   keeps them on the GPU today), so a session survives a reload.
+2. Room checkpoints on disk (landed, above): time a reload of one device on real hardware, and
+   stream the copy part by part (today a device reads its whole part into memory to write it).
 3. Stable prompt rendering for agents: done in part (#73: compaction is stable and the system
    prompt stays cached); a compaction still prefills everything after the system prompt once.
 4. Several sessions at once: per-session KV / state slots batched through one pass (design:
