@@ -21,7 +21,8 @@ Browsers in a room form a WebRTC mesh (PeerJS signaling for the introduction onl
 | `ai-inv-req {url}` / `ai-inv {url, have}` | host → all / all → host | before dealing, the host asks what byte ranges of the model each device has cached; the inventory goes out with every `ai-load` (`inv`) |
 | `ai-wget {id, url, lo, hi}` / `ai-wpart {id, off, data \| done \| miss}` | device ↔ device | take a cached range from another device instead of the model host, in 64 KB parts; any failure falls back to the network |
 | `ai-stop` | guest → host | stop the answer being generated. Honoured from the device that asked (the host can always stop); decoding ends after the lap in flight and `ai-gendone` unlocks every screen |
-| `ai-degraded {why}` | host → all | a device in the chain left; every lap in flight failed at once and the room waits for a re-deal |
+| `ai-linklost {name}` | worker → host | the worker's link to `name` (another device in the chain) went down and is being replaced; frames on it are gone, so the host fails the laps in flight now instead of timing out. Hosts that predate it ignore it |
+| `ai-degraded {why}` | host → all | a device in the chain left (or stopped responding, see Drop detection); every lap in flight failed at once and the room waits for a re-deal |
 | `ai-redeal {by, model}` | host → all | the host is dealing the layers again over the devices now in the room (after a departure, or to include late joiners); fresh `ai-load`s follow, cached ranges reload in seconds, the conversation is kept and re-prefilled on the next question |
 | `ai-ready-all {model}` to one device | host → newcomer | a device that joins an online room becomes an ask-only guest right away, followed by `ai-history {items}` (the last 20 exchanges) when the chat is visible to everyone |
 | `ai-style {persona, sampling, thinking}` | host → all | the host changed the answer style (screens show a toast); takes effect on the next question |
@@ -41,15 +42,39 @@ Control rides on frames. A frame's header flags byte (`room/transport.js` `packF
 
 Checkpoint control rides the same way, in header bytes 24..31 (u16 each, 0 = none): `sv` saves this device's state (its layers' KV rows, DeltaNet states, conv windows) as GPU slot `sv` before the frame, `ld` loads slot `ld`, `dp` drops up to two slots (`0xffff` = all). A device applies them in the order rollback, save, drop, reset, load, then runs the frame and forwards the control with it. The host saves after every answer (`?ckpt=N` keeps the last N, default 2) and loads the longest saved answer that is a prefix of a new prompt, so a regenerate or branch prefills only what is new (docs/long-context-and-sessions.md).
 
-Hidden states travel as binary frames: an f16-packed `Uint16Array` (10 KB for `dim = 5120`) with the wire format flag `WIRE_F16`; decoders accept f32 for older peers. Frames are correlated by position (`pos` / `basePos`), and the host keeps a timeout per outstanding lap.
+Hidden states travel as binary frames: an f16-packed `Uint16Array` (10 KB for `dim = 5120`) with the wire format flag `WIRE_F16`; decoders accept f32 for older peers. Frames are correlated by position (`pos` / `basePos`), and the host keeps a timeout per outstanding lap: 30 s for a token lap and 90 s for a verify or prefill round until four decode laps have been measured, then `max(25 s, 6 × the slowest recent lap + 2 × RTT + 2 s)` for decode laps (`lapTimeout` in `room/liveness.js`). A dead device is caught sooner by drop detection; the lap timeout is for a frame lost on a live chain.
 
 ## Ordering guarantees
 
-- Data channels are ordered and reliable. Frames are sliced (≤ 4.6 KB) and striped across several associations, so consecutive frames can complete out of order at the receiver; the transport hands them over strictly in send order (a gap with no progress for 5 s is skipped, and a frame arriving after its gap was skipped is dropped rather than run out of order). A worker runs frames one at a time from a queue in that order, so recurrent states advance deterministically.
+- Data channels are ordered and reliable. Frames are sliced (≤ 4.6 KB) and striped across several associations, so consecutive frames can complete out of order at the receiver; the transport hands them over strictly in send order. A missing frame on a reliable link is late, not lost (a device's network froze, a lost packet is waiting out SCTP's retransmission timer), so the receiver waits for it: it skips the gap at once only when every open channel has already delivered a newer frame (nothing older can still be queued), after 5 s when a channel closed in the last 15 s (the frame may have gone down with it), and otherwise after a 60 s backstop. A frame arriving after its gap was skipped is dropped rather than run out of order. Frames of up to 3 slices (a decode token's hidden state) are sent twice, on two associations, so one lost packet does not stall a token behind a retransmission timeout; receivers drop the second copy (`?wiredup=0` turns this off). Slices go to the open channel with the least data queued. A worker runs frames one at a time from a queue in that order, so recurrent states advance deterministically.
 - Keep-alive: while a wire link has carried a frame in the last 1.5 s, each end sends a 1-byte message on a second negotiated channel (id 78, `swarm-ka`, unordered, never retransmitted) whenever it has sent nothing on that link for 10 ms (`?ka=ms`, `?ka=0` off). It keeps a phone's Wi-Fi out of power save between laps. Receivers ignore it; a peer without the channel drops it, so it is not a protocol change.
 - Because of that, the host keeps up to 6 prefill rounds in flight: round r+1 runs on the host while round r is on a worker, and the chain works as a pipeline. Output is unchanged: every device sees the same frames in the same order.
 - The prefill rounds come back as full hidden states, which the host feeds to the draft block (`mtpRun`) so the first speculative steps after a prompt draft from a warm cache.
 - Inside a batched frame, columns are processed strictly in order; snapshot slots are indexed by global column (`frame.snap` packs base and total), so an 8-column verify split into two 4-column chunks on an older worker still rolls back correctly.
+
+## Dead links
+
+A network that passes no packets for longer than ICE's write timeout (about 15 s: frozen Wi-Fi, a closed laptop lid, a phone changing networks) kills a link's candidate pairs for good. Chrome then reports `connectionState: "failed"` while `iceConnectionState` stays `disconnected` and SCTP and every data channel still look open, so PeerJS never closes the connection and nothing sent on it arrives again. Shorter freezes recover on their own (the transport waits for late frames, above).
+
+Each device watches every link's `RTCPeerConnection`. When one fails:
+
+- The side that dialed it dials a new connection to the same peer id and sends `hello` with `back: 1`; both sides swap it in with a fresh wire (frame ids restart) and close the dead one and its stripes. The device keeps its place in the chain and its layers. A failed stripe is closed and redialed the same way.
+- The other side waits 45 s for that, then closes the link (the device left, as before). A device whose network died silently is therefore dropped about a minute after it went quiet (before, its link stayed open and the room waited on it indefinitely).
+- The host fails every lap in flight at once ("the link to X dropped; ask again") and the next question prefills from scratch. A worker whose link to another worker dropped tells the host with `ai-linklost`.
+
+No PROTOCOL change: a peer that predates this sees an ordinary new connection from a device it knows (it already replaces the old entry), and ignores `ai-linklost`.
+
+## Connecting: STUN and an optional TURN relay
+
+Links are direct WebRTC connections. Every device uses public STUN servers to find its public address; that is enough on most home and office networks. When both sides are behind symmetric NAT or carrier-grade NAT, or a firewall blocks UDP, no direct path exists and the join fails after 15 s with "found the room, but the direct connection failed" (the Network box under the join form opens). A TURN relay fixes that: it forwards the traffic between the two devices.
+
+Pooled does not run a relay and ships no credentials; it is off by default. To use one (your own [coturn](https://github.com/coturn/coturn), or a provider's):
+
+- **Network box** under the join form: relay URL (`turn:relay.example.org:3478`, `turns:` for TLS, comma-separate several), username and password. Saved in this browser only.
+- **URL**: `?turn=turn:relay.example.org:3478&turnuser=NAME&turncred=PASSWORD`. Overrides the saved setting.
+- **Self-hosted deployments**: define `window.TURN_SERVERS` (an `RTCIceServer` array) before `room.js` loads.
+
+ICE still prefers a direct path and only falls back to the relay when it has to. `?relay=1` (or "Always go through the relay") uses only the relay, so the other devices never see this device's IP address. Every device that cannot connect directly needs the relay configured; a device with an open network can reach a relayed one without it. Join links and QR codes never include `turn`, `turnuser`, `turncred` or `relay`. `pooledDebug()` shows each link's `path` (`direct` or `relay`), and the room log notes relayed links. A relay adds a hop to every token's round trip, so decode is slower through it than over a direct path. Tested with `node tests/e2e/room_chaos.mjs --plan turn` (a local test TURN server, `tests/e2e/turn_server.mjs`, with every direct candidate dropped).
 
 ## Conversation state
 
@@ -62,6 +87,11 @@ The host owns the conversation: `{system, turns}` rendered to ChatML ids by `roo
 | `hello {name, meta, v, died?}` | both ways on every link | `v` is the protocol version; on a mismatch each side says which one is older and who should reload (room/errors.js), and sends that as `bye {reason}` for a tab too old to word it itself. `died` is a joiner's crumb from a tab that was killed (surfaced on the host) |
 | `hello {…, back: 1}` | returning guest → host | a device reconnecting to a host that resumed the room (it keeps its transcript, so no `ai-history`) |
 | `leaving` | all → all | sent on `pagehide`; the receiver closes the link at once instead of waiting for ICE to notice (tens of seconds), so a departure mid-answer fails within a lap |
+| `ping {ts}` / `pong {ts}` | all → all / reply | every 2.5 s to every link (the RTT on each card); while an answer runs the host also pings each device in the chain every 500 ms (drop detection) |
+
+## Drop detection
+
+A device that dies without a `leaving` (its network drops, the tab freezes or is killed) says nothing until the ping loop drops it (15 s, see `isSilentGone`) or ICE gives up on the link. So that the room does not just look stuck meanwhile, while an answer runs the host counts anything it receives from a chain device as a sign of life (a `pong` to its 500 ms `ping`, any control message, any slice on any of its wire channels) and holds a device silent for longer than `clamp(3 s + 3 × RTT, 3.5 s, 5 s)` (`room/liveness.js`): the host's screen says "<name> stopped responding; waiting for it (Stop gives up)", the answer in flight waits (frames on a frozen link are late, not lost) and a new question waits for it too. A device that comes back (a frozen Wi-Fi, a laptop lid) finishes the answer and keeps its place and layers, with no re-deal. If ICE gives up on the link first (~15 s), the answer fails at once and the link is redialed (Dead links). It counts as back only once it answers a `ping` sent after it went quiet (a full round trip). One that stays silent is dropped by the ping loop (15 s for a computer, 60 s for a phone, never while it loads its layers; `isSilentGone` in `room/liveness.js`), which takes the departure path: `ai-degraded {why: "<name> stopped responding (layers …)"}` goes out and the host offers a re-deal. Silence before the answer began does not count, and a host tab that itself stalled (a timer tick more than 1.2 s late) restarts the count rather than blaming every device. The limit covers SCTP head-of-line stalls on a working link: with 5% loss the longest silence measured was 2.5 s at a 300 ms round trip (limit 3.9 s) and 3.65 s at 600 ms, i.e. 300 ms one way (limit 4.8 s) (tests/e2e/room_drop.mjs). Only the host judges and it only uses `ping`/`pong`, which every protocol version answers, so this needs no protocol change. `?hb=0` turns it off.
 
 ## Resuming a room
 
