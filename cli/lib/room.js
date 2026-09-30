@@ -70,9 +70,9 @@ export function signalOpts(signal) {
 }
 
 export class Bridge extends EventEmitter {
-  constructor({ code, key = null, signal = null, name, client, log = () => {} }) {
+  constructor({ code, key = null, signal = null, name, client, log = () => {}, Peer = null }) {
     super();
-    this.code = code; this.signal = signal; this.name = name; this.client = client; this.log = log;
+    this.code = code; this.signal = signal; this.name = name; this.client = client; this.log = log; this.PeerClass = Peer;
     this.key = key;             // the room's invite key, from its link: in without the host's Allow
     this.pass = null;           // what the host gave us once it let us in: back in after a reconnect
     this.waiting = false;       // in the host's lobby: it was asked to let us in
@@ -95,7 +95,7 @@ export class Bridge extends EventEmitter {
   }
   // -> resolves once the host said hello with meta.api; rejects with a message for the user
   async connect() {
-    const Peer = await loadPeer();
+    const Peer = this.PeerClass || await loadPeer();
     return new Promise((resolve, reject) => {
       let settled = false;
       const fail = (msg) => { if (settled) return; settled = true; clearTimeout(timer); this.destroy(); reject(new Error(msg)); };

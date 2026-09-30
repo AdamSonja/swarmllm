@@ -24,7 +24,7 @@ import { validateApiAsk, apiPrompt, apiRun, AnswerCache, API_LIMITS, pieceDecode
 import { tokenTexts } from "./harness/model-common.js";
 import { PrefixIndex, pinSplit } from "./harness/prefix.js";
 import { CkptStore } from "./room/ckpt-store.js";
-import { MODELS, NEED_GB, FILE_GB, PICKER, MAX_SEQ, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM, maxSeqFor, kvBytesPerLayerPos, kvModeFor, kvForLoad, hostHeldBytes, denseKvBytesPerLayerPos, roomBytes } from "./room/models.js";
+import { MODELS, NEED_GB, FILE_GB, PICKER, MAX_SEQ, MAX_NEW, MAX_NEW_THINKING, MIN_ROOM, maxSeqFor, ctxForBinding, kvBytesPerLayerPos, kvModeFor, kvForLoad, hostHeldBytes, denseKvBytesPerLayerPos, roomBytes } from "./room/models.js";
 // the context window of the loaded engine (per model: room/models.js CTX; 2048 for the small ones)
 const ctxMax = () => ai.engine?.maxSeq || MAX_SEQ;
 // ?ckpt=N: keep the room's state after the last N answers on every device (GPU copies), so a
@@ -166,6 +166,9 @@ async function probeGPU() {
         const info = a.info || {};
         meta.gpu = [...new Set([info.vendor, info.architecture || info.device].filter(Boolean))].join(" ") || "GPU";
         meta.maxBufGB = +(a.limits.maxBufferSize / 2 ** 30).toFixed(1);
+        // the largest buffer this device can bind (what aiLoadShardIn asks for; phones capped at 256 MB):
+        // the host keeps the room's context within every device's limit (room/models.js ctxForBinding)
+        meta.maxBindMB = Math.floor(Math.min(a.limits.maxStorageBufferBindingSize, a.limits.maxBufferSize, meta.ua === "iPhone" || meta.ua === "Android" ? 256 * 2 ** 20 : Infinity) / 2 ** 20);
         // browsers hide real GPU memory (fingerprinting). Default to the
         // conservative per-buffer limit; the user can opt in to a real
         // measurement (see measureBudgetGB) which replaces this estimate.
@@ -2948,7 +2951,7 @@ async function aiStart(modelArg) {
     const modelKey = $("ai-model").value;
     const M = MODELS[modelKey];
     // context for this room: the model's default, or ?ctx=N up to its cap (room/models.js CTX); every device builds its engine with it
-    const ROOM_CTX = maxSeqFor(modelKey, +new URLSearchParams(location.search).get("ctx") || 0);
+    let ROOM_CTX = maxSeqFor(modelKey, +new URLSearchParams(location.search).get("ctx") || 0);
     const ROOM_KV = kvModeFor(modelKey, KV_ASK);   // KV cache format for every device: f16, or int8 with ?kv=q8
     // devices without WebGPU join as ask-only guests: they get the chat, not layers
     // (a device whose tab was killed twice while loading its layers stays a guest: aiLoadDeath)
@@ -2963,6 +2966,11 @@ async function aiStart(modelArg) {
       aiStatus("reading model index… (11 MB)");
       ai.G = await fetchGGUFHeader(M.gguf);
       ai.GModel = modelKey;
+      // one attention layer's K (or V) cache is a single GPU buffer: hold the context to what the
+      // smallest binding limit in the room fits (a device from before maxBindMB counts as WebGPU's 128 MiB)
+      const bindMin = Math.min(...[myMeta, ...ai.chain.map((id) => conns.get(id)?.meta)].map((m) => (m?.maxBindMB || 128) * 2 ** 20));
+      const fitCtx = ctxForBinding(ai.G.meta, ROOM_CTX, ROOM_KV, bindMin);
+      if (fitCtx < ROOM_CTX) { log("room", `context ${ROOM_CTX} needs bigger GPU buffers than a device here allows: using ${fitCtx}`); ROOM_CTX = fitCtx; }
       L = ai.G.meta["qwen35.block_count"] - (ai.G.meta["qwen35.nextn_predict_layers"] || 0);
       layerBytes = qwen35ShardBytes(ai.G, { lo: 0, hi: 4, hasEmbed: false, hasHead: false }) / 4
         + ROOM_CTX * kvBytesPerLayerPos(ai.G.meta, ROOM_KV);   // the attention layers' KV cache at this room's context
@@ -3356,8 +3364,11 @@ function ckptClear(tellChain = false) {   // engines rebuilt or in an unknown st
 }
 // pin: this save is the system prompt + tools (Code mode, issue #73). It is kept apart from the
 // CKPT_MAX answer checkpoints, never evicted by them, and replaces the previous pinned one.
+// the engine keeps checkpoints here: the qwen35 engine (the dense one has GPU slots too, for the room
+// node, and says hostCkpt: false, so a browser host keeps to the qwen35 engine as before)
+function ckptEngine() { return !!ai.engine?.saveSlot && ai.engine.hostCkpt !== false; }
 function ckptSave(pin = false) {
-  if (!CKPT_MAX || !ai.fed?.length || !ai.engine?.saveSlot) return;
+  if (!CKPT_MAX || !ai.fed?.length || !ckptEngine()) return;
   if (!ai.ckpt) ckptClear();
   // a worker applies sv before dp, so a save riding with DROP_ALL would be gone at once on every
   // worker: skip it (the host would otherwise index a slot the chain does not have)
@@ -4014,7 +4025,7 @@ async function roomGenerateOnce(ids, { onToken = () => {}, stop, maxNew = MAX_NE
     const tag = pinTag || "code";
     if (pinned && ai.pinInfo && reused >= pinned.ids.length && pinned.ids.length <= ids.length && pinned.ids.every((t, i) => t === ids[i])) ai.pinInfo.hitAt = performance.now();
     if (pin && pinned && ai.pinInfo && ai.pinInfo.tag !== tag && performance.now() - ai.pinInfo.hitAt < PIN_KEEP_MS) pin = 0;
-    const cut = CKPT_MAX && ai.engine.saveSlot ? pinSplit(reused, pin, ids.length) : 0;
+    const cut = CKPT_MAX && ckptEngine() ? pinSplit(reused, pin, ids.length) : 0;
     let logits = null;
     if (!cut) logits = rest.length ? await aiPrefill(rest, { aborted, onStatus, desc }) : null;
     else {
@@ -4618,7 +4629,9 @@ async function aiOnData(from, d) {
         $("ldg-title").textContent = `layers ${d.range[0]}–${d.range[1] - 1} ready`;   // the card stays up as it is (Starting) until ai-ready-all
         $("ldg-sub").textContent = "syncing with the rest of the room";
         $("ldg-fill").style.width = "100%";
-        sendTo(ai.hostId, { t: "ai-ready", slots });   // the host forgets the checkpoints not in slots
+        // slots: the host forgets the checkpoints not in them; ckpt: this device applies sv / ld / dp
+        // (a room node hosting a dense model checks it: tabs from before the dense engine had slots ignore them)
+        sendTo(ai.hostId, { t: "ai-ready", slots, ckpt: ai.engine?.saveSlot ? 1 : 0 });
       } catch (err) {
         if (onLoadError(ai.startFailed) === "stopped") { workerStopped(); break; }   // the host stopped the start (ai-start-failed): this load stopped with it
         aiLoading(false);
