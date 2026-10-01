@@ -2,13 +2,14 @@
 // what the flags did not say (model, pledge), shows the room live (devices, pledges, who waits to
 // join, whether the pledges hold the model), starts it, and offers chat right there.
 import os from "node:os";
-import { hostable, memoryRule, fmtCode } from "./lend.js";
+import { hostable, memoryRule, fmtCode, ctxNote, UsageError } from "./lend.js";
 import { modelState } from "./cache.js";
-import { initialState, reduce, render, roomFitNow, modelRows, recommendModel, pledgeDefaults, devicesFrom, autoStart, colors, modelNeedGB } from "./hostui.js";
+import { initialState, reduce, render, roomFitNow, modelRows, recommendModel, pledgeDefaults, devicesFrom, autoStart, colors, modelNeedGB, pullDone, hereWhy } from "./hostui.js";
 import { liveRegion, keysOf, colorOn } from "./tui.js";
 import { pullWithProgress } from "./pullrun.js";
 import { style, detectTheme } from "./style.js";
 import { cleanText } from "./common.js";
+import { closeSoon } from "./lendrun.js";
 
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROOM_URL = "https://pooled.run/r/";
@@ -26,10 +27,15 @@ export async function runHostInteractive(opts, { prepared, version = "" }) {
   const smallest = Math.min(...keys.map((k) => modelNeedGB(lib, k, opts.ctx || 0) || 99));
   const pd = pledgeDefaults(mem, { maxGB, ruleGB: rule.gb, smallestNeedGB: Math.min(smallest, 4) });
   const pledge0 = opts.gbGiven ? rule.gb : pd.def;
-  const rowsFor = () => modelRows(lib, { keys, pulled, pledgeGB: S?.pledge.gb ?? pledge0, ctxAsk: opts.ctx || 0 });
+  const rowsFor = () => modelRows(lib, { keys, pulled, pledgeGB: S?.pledge.gb ?? pledge0, ctxAsk: opts.ctx || 0, maxGB: Math.max(pd.max, pledge0) });
   let S = null;
   const rows0 = rowsFor();
   const model0 = opts.modelGiven ? opts.model : recommendModel(rows0);
+  // --here with a model that this computer can't hold: say so before opening a room
+  if (opts.mode === "here" && opts.modelGiven && !rows0.find((r) => r.key === opts.model)?.hereGB) {
+    const row = rows0.find((r) => r.key === opts.model);
+    throw new UsageError(`--here: ${(rn.MODELS[opts.model]?.label || opts.model).split("·")[0].trim()} ${hereWhy(row, { max: Math.max(pd.max, pledge0) })}; --pool runs it with other devices`);
+  }
 
   // the look: the terminal's background is asked once, before the screen reads keys
   await detectTheme();
@@ -60,8 +66,11 @@ export async function runHostInteractive(opts, { prepared, version = "" }) {
   const home = dir.startsWith(os.homedir()) ? "~" + dir.slice(os.homedir().length) : dir;
 
   S = initialState({ rows: rows0, model: opts.modelGiven ? opts.model : null, pledge: { gb: pledge0, max: Math.max(pd.max, pledge0), totalGB: pd.totalGB },
-    fixedPledge: opts.gbGiven, flags: { start: opts.start, wait: opts.devices || 0, chat: opts.chat, split: opts.split }, pulled, code, link: "", yes: opts.yes, noPull: opts.noPull });
-  S.pledgeDone = opts.gbGiven;
+    fixedPledge: opts.gbGiven, flags: { start: opts.start, wait: opts.devices || 0, chat: opts.chat, split: opts.split, mode: opts.mode, splitGiven: opts.splitGiven }, pulled, code, link: "", yes: opts.yes, noPull: opts.noPull });
+  S.pledgeDone = S.pledgeDone || opts.gbGiven;
+  // a --here / --pool start chose the pledge and the split already (initialState runs no effects)
+  if (S.pledge.gb !== pledge0) node.setPledge(S.pledge.gb);
+  if (S.splitMode !== opts.split) node.setSplit(S.splitMode);
   S.gpu = gpu; S.gpuName = mem.name || prepared.adapterName; S.modelsDir = home; S.ctxAsk = opts.ctx || 0;
   S.gate = opts.allowAll ? "allow-all" : opts.denyUnknown ? "deny-unknown" : "ask";
 
@@ -77,9 +86,9 @@ export async function runHostInteractive(opts, { prepared, version = "" }) {
       onProgress: (p) => { if (S.dl.key === key) S.dl = { ...S.dl, done: p.done, total: p.total || S.dl.total, bps: p.bps ?? S.dl.bps }; } })
       .then((r) => {
         if (pullAbort === ac) pullAbort = null;
-        if (r.ok) { pulled.add(key); S.rows = rowsFor(); if (S.dl.key === key) S.dl = { ...S.dl, state: "done" }; log(`${key} downloaded`); }
-        else if (r.aborted) { if (S.dl.key === key && S.dl.state === "running") S.dl = { ...S.dl, state: "none" }; }
-        else { if (S.dl.key === key) S.dl = { ...S.dl, state: "error", error: r.error.message }; log(`download failed: ${r.error.message}`); }
+        S = pullDone(S, key, r);
+        if (r.ok) { pulled.add(key); S.rows = rowsFor(); log(`${key} downloaded`); }
+        else if (!r.aborted) log(`download failed: ${r.error.message}`);
         refresh();
       });
   };
@@ -122,15 +131,17 @@ export async function runHostInteractive(opts, { prepared, version = "" }) {
     stopKeys();
     region.log(`${stamp()} ${ST.ink3(`closing room ${fmtCode(node.code)} and freeing the GPU`)}`);
     region.close();
-    try { await node.close(); } catch {}
+    await closeSoon(node);   // the room is told it is over at once; closing the links may take longer
     process.exit(code);
   }
+  // --ctx above what the chosen model takes: say what it gets instead of lowering it silently
+  const sayCtx = (key) => { const n = ctxNote(rn, key, opts.ctx); if (n) log(`--ctx ${opts.ctx}: ${n}`, { keep: true }); };
   const run = (fx) => {
     for (const f of fx) {
       if (f.do === "quit") bye(0);
       else if (f.do === "pull") doPull(f.key);
       else if (f.do === "stream") log(`${f.key}: not downloading; each start streams this computer's layers from Hugging Face`);
-      else if (f.do === "model") { if (!node.ai.engine) node.ai.model = f.key; S.rows = rowsFor(); }
+      else if (f.do === "model") { if (!node.ai.engine) node.ai.model = f.key; S.rows = rowsFor(); sayCtx(f.key); }
       else if (f.do === "pledge") { node.setPledge(f.gb); S.rows = rowsFor(); }
       else if (f.do === "start" || f.do === "redeal") doStart();
       else if (f.do === "allow") node.allowJoin(f.id)?.catch?.((e) => log(`couldn't let it in: ${e.message}`));
@@ -185,6 +196,7 @@ export async function runHostInteractive(opts, { prepared, version = "" }) {
   function stopKeys() { process.stdin.off("data", onData); try { process.stdin.setRawMode(false); } catch {} process.stdin.pause(); }
   process.on("SIGINT", () => { if (!chatting) bye(0); });   // (in the chat, Ctrl-C stops an answer)
   process.on("SIGTERM", () => bye(0));
+  if (opts.modelGiven) sayCtx(opts.model);
   if (S.dl.state === "running") doPull(S.dl.key);
   startKeys();
   setInterval(() => { spinAt++; refresh(); }, 80).unref?.();
